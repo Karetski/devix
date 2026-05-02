@@ -16,12 +16,10 @@ use notify::{RecursiveMode, Watcher};
 use ratatui::Terminal;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Style};
-use ratatui::widgets::Paragraph;
 
 use teditor_buffer::{Buffer, Range};
 use teditor_config::{Keymap, chord_from_key, default_keymap};
-use teditor_ui::{EditorView, render_editor};
+use teditor_ui::{EditorView, StatusInfo, render_editor, render_status as render_status_widget};
 use teditor_workspace::{Action, Context, EditorState, StatusLine, Viewport, dispatch};
 
 struct App {
@@ -174,33 +172,17 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &mut App) {
 }
 
 fn render_status(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
-    let path = app
-        .editor
-        .buffer
-        .path()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "[scratch]".into());
-    let dirty = if app.editor.buffer.dirty() { " [+]" } else { "" };
+    let path_str = app.editor.buffer.path().map(|p| p.display().to_string());
     let head = app.primary().head;
-    let line = app.editor.buffer.line_of_char(head) + 1;
-    let col = app.editor.buffer.col_of_char(head) + 1;
-    let sel_len = app.primary().len();
-    let sel = if sel_len > 0 { format!(" ({sel_len} sel)") } else { String::new() };
-
-    let left = format!(" {}{}  {}:{}{}", path, dirty, line, col, sel);
-    let right = app
-        .status
-        .get()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "Ctrl+S save · Ctrl+Q quit".to_string());
-
-    let total = area.width as usize;
-    let pad = total
-        .saturating_sub(left.chars().count() + right.chars().count() + 1);
-    let text = format!("{}{}{} ", left, " ".repeat(pad), right);
-
-    let para = Paragraph::new(text).style(Style::default().bg(Color::DarkGray).fg(Color::White));
-    frame.render_widget(para, area);
+    let info = StatusInfo {
+        path: path_str.as_deref(),
+        dirty: app.editor.buffer.dirty(),
+        line: app.editor.buffer.line_of_char(head) + 1,
+        col: app.editor.buffer.col_of_char(head) + 1,
+        sel_len: app.primary().len(),
+        message: app.status.get(),
+    };
+    render_status_widget(&info, area, frame);
 }
 
 fn handle_event(ev: Event, app: &mut App) {
