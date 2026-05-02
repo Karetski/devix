@@ -1,7 +1,6 @@
 //! Editor application: owns terminal-side state and runs the event loop.
 
 use std::path::PathBuf;
-use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -15,7 +14,7 @@ use devix_workspace::{Action, StatusLine, Workspace};
 use crate::clipboard;
 use crate::events::{handle_event, run_action};
 use crate::render::render;
-use crate::watcher::{drain_disk_events, spawn_watcher};
+use crate::watcher::drain_disk_events;
 
 pub struct App {
     pub workspace: Workspace,
@@ -25,8 +24,6 @@ pub struct App {
     pub last_editor_area: Rect,
     pub last_gutter_width: u16,
     pub clipboard: Option<arboard::Clipboard>,
-    pub _watcher: Option<notify::RecommendedWatcher>,
-    pub disk_rx: Option<mpsc::Receiver<()>>,
     pub dirty: bool,
     pub pending_scroll: isize,
 }
@@ -36,16 +33,8 @@ const POLL_TIMEOUT: Duration = Duration::from_millis(100);
 
 impl App {
     pub fn new(path: Option<PathBuf>) -> Result<Self> {
-        let workspace = Workspace::open(path.clone())?;
+        let workspace = Workspace::open(path)?;
         let clipboard = clipboard::init();
-
-        let (watcher, rx) = match path.as_deref() {
-            Some(p) if p.exists() => spawn_watcher(p)
-                .ok()
-                .map(|(w, r)| (Some(w), Some(r)))
-                .unwrap_or((None, None)),
-            _ => (None, None),
-        };
 
         Ok(Self {
             workspace,
@@ -55,8 +44,6 @@ impl App {
             last_editor_area: Rect::default(),
             last_gutter_width: 0,
             clipboard,
-            _watcher: watcher,
-            disk_rx: rx,
             dirty: true,
             pending_scroll: 0,
         })
