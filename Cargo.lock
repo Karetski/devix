@@ -764,7 +764,9 @@ dependencies = [
  "notify",
  "ratatui",
  "teditor-buffer",
+ "teditor-config",
  "teditor-ui",
+ "teditor-workspace",
 ]
 
 [[package]]
@@ -779,6 +781,10 @@ dependencies = [
 [[package]]
 name = "teditor-config"
 version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "teditor-workspace",
+]
 
 [[package]]
 name = "teditor-lsp"
@@ -803,6 +809,10 @@ dependencies = [
 [[package]]
 name = "teditor-workspace"
 version = "0.1.0"
+dependencies = [
+ "arboard",
+ "teditor-buffer",
+]
 
 [[package]]
 name = "unicode-ident"
