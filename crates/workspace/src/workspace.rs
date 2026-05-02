@@ -13,7 +13,6 @@ use crate::document::{DocId, Document};
 use crate::frame::{Frame, FrameId};
 use crate::layout::{Axis, Direction, Node, SidebarSlot};
 use crate::view::{View, ViewId};
-use devix_buffer::Buffer;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum LeafRef {
@@ -101,10 +100,6 @@ impl Workspace {
     pub fn active_doc(&self) -> Option<&Document> {
         let v = self.active_view()?;
         self.documents.get(v.doc)
-    }
-
-    pub fn insert_buffer(&mut self, buf: Buffer) -> DocId {
-        self.documents.insert(Document::from_buffer(buf))
     }
 
     /// Resolve focus to (frame, view, doc) IDs in one immutable borrow,

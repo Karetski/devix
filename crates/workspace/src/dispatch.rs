@@ -164,6 +164,10 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
         },
 
         // ---- splits / frames ----
+        // Action names follow user intuition (a "vertical split" creates a
+        // vertical dividing line); Axis names describe the layout direction
+        // children are arranged in. So a vertical split means children laid out
+        // horizontally, and vice versa.
         SplitVertical => cx.workspace.split_active(crate::layout::Axis::Horizontal),
         SplitHorizontal => cx.workspace.split_active(crate::layout::Axis::Vertical),
         CloseFrame => cx.workspace.close_active_frame(),

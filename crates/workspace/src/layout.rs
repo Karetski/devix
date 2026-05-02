@@ -98,29 +98,6 @@ impl Node {
         false
     }
 
-    /// Take the leaf at `path` out, leaving a placeholder Frame with a null FrameId.
-    /// Caller is expected to replace the placeholder before next use.
-    /// Returns the original child if the path was valid.
-    pub fn take_leaf_at(&mut self, path: &[usize]) -> Option<Node> {
-        use slotmap::Key;
-        if path.is_empty() { return None; }
-        let mut node = self;
-        for (i, &idx) in path.iter().enumerate() {
-            match node {
-                Node::Split { children, .. } => {
-                    if idx >= children.len() { return None; }
-                    if i + 1 == path.len() {
-                        let placeholder = Node::Frame(crate::frame::FrameId::null());
-                        return Some(std::mem::replace(&mut children[idx].0, placeholder));
-                    }
-                    node = &mut children[idx].0;
-                }
-                _ => return None,
-            }
-        }
-        None
-    }
-
     /// Recursively collapse any Split with one child into that child.
     pub fn collapse_singleton_splits(&mut self) {
         if let Node::Split { children, .. } = self {
