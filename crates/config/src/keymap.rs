@@ -108,7 +108,7 @@ pub fn default_keymap() -> Keymap {
     }
 
     // tabs
-    k.bind(chord(ch('t'), C | S), Action::NewTab);
+    k.bind(chord(ch('t'), C), Action::NewTab);
     k.bind(chord(ch('w'), C), Action::CloseTab);
     k.bind(chord(ch('w'), C | S), Action::ForceCloseTab);
     k.bind(chord(KeyCode::Char('['), C | S), Action::PrevTab);
@@ -124,6 +124,10 @@ pub fn default_keymap() -> Keymap {
     // splits
     k.bind(chord(ch('\\'), C), Action::SplitVertical);
     k.bind(chord(ch('-'), C), Action::SplitHorizontal);
+
+    // sidebars (VS Code convention: B for the primary, Alt+B for the secondary)
+    k.bind(chord(ch('b'), C),     Action::ToggleSidebar(devix_workspace::SidebarSlot::Left));
+    k.bind(chord(ch('b'), C | A), Action::ToggleSidebar(devix_workspace::SidebarSlot::Right));
 
     // directional focus traversal
     k.bind(chord(KeyCode::Left,  C | A), Action::FocusDir(devix_workspace::Direction::Left));
