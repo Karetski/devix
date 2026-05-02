@@ -139,6 +139,12 @@ pub fn default_keymap() -> Keymap {
     k.bind(chord(KeyCode::Enter, NONE), Action::InsertNewline);
     k.bind(chord(KeyCode::Tab, NONE), Action::InsertTab);
 
+    // Reserved bindings (Phase 7 multicursor):
+    //   Shift + Ctrl + Up   → MulticursorAddAbove (not yet wired)
+    //   Shift + Ctrl + Down → MulticursorAddBelow (not yet wired)
+    // These chords currently fall through to plain MoveUp/MoveDown { extend: true }.
+    // Adding the action variants will reclaim them.
+
     k
 }
 
