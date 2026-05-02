@@ -7,7 +7,6 @@ use anyhow::Result;
 use crossterm::event;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
-use ratatui::layout::Rect;
 use devix_config::{Keymap, default_keymap};
 use devix_workspace::{Action, StatusLine, Workspace};
 
@@ -21,8 +20,6 @@ pub struct App {
     pub keymap: Keymap,
     pub status: StatusLine,
     pub quit: bool,
-    pub last_editor_area: Rect,
-    pub last_gutter_width: u16,
     pub clipboard: Option<arboard::Clipboard>,
     pub dirty: bool,
     pub pending_scroll: isize,
@@ -41,8 +38,6 @@ impl App {
             keymap: default_keymap(),
             status: StatusLine::default(),
             quit: false,
-            last_editor_area: Rect::default(),
-            last_gutter_width: 0,
             clipboard,
             dirty: true,
             pending_scroll: 0,

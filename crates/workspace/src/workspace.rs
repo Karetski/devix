@@ -33,7 +33,6 @@ pub struct Workspace {
     pub layout: Node,
     pub focus: Vec<usize>,
     pub doc_index: HashMap<PathBuf, DocId>,
-    pub last_editor_focus: Vec<usize>,
     pub render_cache: RenderCache,
 }
 
@@ -59,7 +58,6 @@ impl Workspace {
         let frame_id = frames.insert(Frame::with_view(view_id));
         let layout = Node::Frame(frame_id);
         let focus = vec![]; // root is the frame leaf itself
-        let last_editor_focus = focus.clone();
 
         Ok(Self {
             documents,
@@ -68,7 +66,6 @@ impl Workspace {
             layout,
             focus,
             doc_index,
-            last_editor_focus,
             render_cache: RenderCache::default(),
         })
     }
@@ -245,7 +242,6 @@ impl Workspace {
         }
         // Re-anchor focus to the first remaining frame, deepest path.
         self.focus = first_frame_path(&self.layout);
-        self.last_editor_focus = self.focus.clone();
     }
 }
 
@@ -317,8 +313,7 @@ impl Workspace {
         // Move focus to the new (right/bottom) frame at index 1 in the new Split.
         let mut new_focus = focus_path;
         new_focus.push(1);
-        self.focus = new_focus.clone();
-        self.last_editor_focus = new_focus;
+        self.focus = new_focus;
     }
 }
 
@@ -339,7 +334,6 @@ impl Workspace {
             let mut new_focus = vec![0];
             new_focus.extend(self.focus.iter().copied());
             self.focus = new_focus;
-            self.last_editor_focus = self.focus.clone();
         }
         let Node::Split { children, .. } = &mut self.layout else {
             unreachable!("we just lifted the root into a horizontal Split")
@@ -370,9 +364,6 @@ impl Workspace {
     pub fn focus_dir(&mut self, dir: Direction) {
         if let Some(target_path) = compute_focus_target(&self.layout, &self.focus, dir, &self.render_cache) {
             self.focus = target_path;
-            if matches!(self.layout.leaf_at(&self.focus), Some(LeafRef::Frame(_))) {
-                self.last_editor_focus = self.focus.clone();
-            }
             return;
         }
         // Edge: try to move into a sidebar.
@@ -549,10 +540,7 @@ impl Workspace {
                 && (row >= rect.y && row < rect.y + rect.height)
             {
                 if let Some(path) = path_to_leaf(&self.layout, leaf) {
-                    self.focus = path.clone();
-                    if matches!(leaf, LeafRef::Frame(_)) {
-                        self.last_editor_focus = path;
-                    }
+                    self.focus = path;
                     return;
                 }
             }

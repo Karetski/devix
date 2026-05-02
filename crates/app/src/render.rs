@@ -49,15 +49,6 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
         }
     }
 
-    // Track the active frame's body rect for legacy fields. render_frame
-    // wrote frame_rects[id] = body_area, so this picks up the correct rect
-    // for click hit-testing (without the tab strip row).
-    if let Some(active_id) = app.workspace.active_frame() {
-        if let Some(rect) = app.workspace.render_cache.frame_rects.get(active_id) {
-            app.last_editor_area = *rect;
-        }
-    }
-
     render_status(frame, status_area, app);
 }
 
@@ -116,7 +107,6 @@ fn render_frame(id: devix_workspace::FrameId, area: Rect, app: &mut App, frame: 
         scroll_top: view.scroll_top,
     };
     let r = render_editor(editor_view, body_area, frame);
-    app.last_gutter_width = r.gutter_width;
     if app.workspace.active_frame() == Some(id) {
         if let Some((x, y)) = r.cursor_screen { frame.set_cursor_position((x, y)); }
     }

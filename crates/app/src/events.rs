@@ -71,12 +71,27 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
 }
 
 pub fn run_action(app: &mut App, action: Action) {
+    // Resolve the viewport against the *currently focused* frame at dispatch
+    // time. Mouse handlers update focus before calling this, so reading from
+    // the render cache here picks up the new frame's body rect — using cached
+    // last-render values would translate clicks against the previously-active
+    // frame.
+    let rect = app
+        .workspace
+        .active_frame()
+        .and_then(|fid| app.workspace.render_cache.frame_rects.get(fid).copied())
+        .unwrap_or_default();
+    let gutter_width = app
+        .workspace
+        .active_doc()
+        .map(|d| (d.buffer.line_count().to_string().len() as u16) + 2)
+        .unwrap_or(0);
     let viewport = Viewport {
-        x: app.last_editor_area.x,
-        y: app.last_editor_area.y,
-        width: app.last_editor_area.width,
-        height: app.last_editor_area.height,
-        gutter_width: app.last_gutter_width,
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        gutter_width,
     };
     let is_scroll = matches!(action, Action::ScrollBy(_));
 
