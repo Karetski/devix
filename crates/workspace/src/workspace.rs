@@ -545,6 +545,64 @@ fn find_sidebar(node: &Node, slot: SidebarSlot) -> Option<Vec<usize>> {
     if go(node, slot, &mut p) { Some(p) } else { None }
 }
 
+impl Workspace {
+    /// Set focus to the leaf whose Rect contains (col, row), if any.
+    pub fn focus_at_screen(&mut self, col: u16, row: u16) {
+        let leaves = self.layout.leaves_with_rects(self.outer_editor_area());
+        for (leaf, rect) in leaves {
+            if (col >= rect.x && col < rect.x + rect.width)
+                && (row >= rect.y && row < rect.y + rect.height)
+            {
+                if let Some(path) = path_to_leaf(&self.layout, leaf) {
+                    self.focus = path.clone();
+                    if matches!(leaf, LeafRef::Frame(_)) {
+                        self.last_editor_focus = path;
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    /// The total area the layout tree occupies, derived from cached rects.
+    /// Used by hit-testing without re-running a layout pass.
+    fn outer_editor_area(&self) -> ratatui::layout::Rect {
+        use ratatui::layout::Rect;
+        let rects: Vec<Rect> = self.render_cache.frame_rects.values().copied()
+            .chain(self.render_cache.sidebar_rects.values().copied())
+            .collect();
+        if rects.is_empty() { return Rect::default(); }
+        let x = rects.iter().map(|r| r.x).min().unwrap();
+        let y = rects.iter().map(|r| r.y).min().unwrap();
+        let x_end = rects.iter().map(|r| r.x + r.width).max().unwrap();
+        let y_end = rects.iter().map(|r| r.y + r.height).max().unwrap();
+        Rect { x, y, width: x_end - x, height: y_end - y }
+    }
+}
+
+fn path_to_leaf(node: &Node, target: LeafRef) -> Option<Vec<usize>> {
+    fn matches(node: &Node, target: LeafRef) -> bool {
+        match (node, target) {
+            (Node::Frame(a), LeafRef::Frame(b)) => *a == b,
+            (Node::Sidebar(a), LeafRef::Sidebar(b)) => *a == b,
+            _ => false,
+        }
+    }
+    fn go(node: &Node, target: LeafRef, out: &mut Vec<usize>) -> bool {
+        if matches(node, target) { return true; }
+        if let Node::Split { children, .. } = node {
+            for (i, (c, _)) in children.iter().enumerate() {
+                out.push(i);
+                if go(c, target, out) { return true; }
+                out.pop();
+            }
+        }
+        false
+    }
+    let mut p = Vec::new();
+    if go(node, target, &mut p) { Some(p) } else { None }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

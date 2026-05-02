@@ -51,6 +51,7 @@ pub fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
 pub fn handle_mouse(me: MouseEvent, app: &mut App) {
     match me.kind {
         MouseEventKind::Down(MouseButton::Left) => {
+            app.workspace.focus_at_screen(me.column, me.row);
             let extend = me.modifiers.contains(KeyModifiers::SHIFT);
             run_action(app, Action::ClickAt {
                 col: me.column, row: me.row, extend,
