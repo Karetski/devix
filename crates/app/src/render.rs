@@ -3,6 +3,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use devix_ui::{EditorView, StatusInfo, render_editor, render_status as render_status_widget};
+use devix_workspace::LeafRef;
 
 use crate::app::App;
 
@@ -13,36 +14,68 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
         .split(frame.area());
     let editor_area = chunks[0];
     let status_area = chunks[1];
-    app.last_editor_area = editor_area;
 
-    let visible = editor_area.height as usize;
-    // Anchor pass: read view + doc, compute new scroll_top, write back.
-    let Some((_, vid, did)) = app.workspace.active_ids() else { return };
-    let head = app.workspace.views[vid].primary().head;
-    let cur_anchored = app.workspace.views[vid].view_anchored;
-    let mut scroll_top = app.workspace.views[vid].scroll_top;
-    if cur_anchored && visible > 0 {
-        let cur_line = app.workspace.documents[did].buffer.line_of_char(head);
+    // Compute every leaf's Rect from the layout tree. Cache for hit-testing
+    // and viewport-aware actions (scroll, focus traversal).
+    let leaves = app.workspace.layout.leaves_with_rects(editor_area);
+    app.workspace.render_cache.frame_rects.clear();
+    app.workspace.render_cache.sidebar_rects.clear();
+    for (leaf, rect) in &leaves {
+        match leaf {
+            LeafRef::Frame(id) => { app.workspace.render_cache.frame_rects.insert(*id, *rect); }
+            LeafRef::Sidebar(slot) => { app.workspace.render_cache.sidebar_rects.insert(*slot, *rect); }
+        }
+    }
+
+    // Single-frame phase: track the active frame's rect for legacy fields.
+    if let Some(active_id) = app.workspace.active_frame() {
+        if let Some(rect) = app.workspace.render_cache.frame_rects.get(active_id) {
+            app.last_editor_area = *rect;
+        }
+    }
+
+    // Render every leaf. (Sidebar painting comes in Task 10.)
+    for (leaf, rect) in &leaves {
+        match leaf {
+            LeafRef::Frame(id) => render_frame(*id, *rect, app, frame),
+            LeafRef::Sidebar(_) => { /* painted in Task 10 */ }
+        }
+    }
+
+    render_status(frame, status_area, app);
+}
+
+fn render_frame(id: devix_workspace::FrameId, area: Rect, app: &mut App, frame: &mut Frame<'_>) {
+    // Step 5: each frame has exactly one tab; a tab strip widget arrives in Task 6.
+    let view_id = app.workspace.frames[id].active_view();
+    let view = &app.workspace.views[view_id];
+    let doc = &app.workspace.documents[view.doc];
+
+    let visible = area.height as usize;
+    let mut scroll_top = view.scroll_top;
+    let head = view.primary().head;
+    if view.view_anchored && visible > 0 {
+        let cur_line = doc.buffer.line_of_char(head);
         if cur_line < scroll_top {
             scroll_top = cur_line;
         } else if cur_line >= scroll_top + visible {
             scroll_top = cur_line + 1 - visible;
         }
     }
-    app.workspace.views[vid].scroll_top = scroll_top;
+    app.workspace.views[view_id].scroll_top = scroll_top;
 
-    let view = &app.workspace.views[vid];
-    let doc = &app.workspace.documents[did];
+    let view = &app.workspace.views[view_id];
+    let doc = &app.workspace.documents[view.doc];
     let editor_view = EditorView {
         buffer: &doc.buffer,
         selection: &view.selection,
         scroll_top: view.scroll_top,
     };
-    let r = render_editor(editor_view, editor_area, frame);
+    let r = render_editor(editor_view, area, frame);
     app.last_gutter_width = r.gutter_width;
-    if let Some((x, y)) = r.cursor_screen { frame.set_cursor_position((x, y)); }
-
-    render_status(frame, status_area, app);
+    if app.workspace.active_frame() == Some(id) {
+        if let Some((x, y)) = r.cursor_screen { frame.set_cursor_position((x, y)); }
+    }
 }
 
 fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
