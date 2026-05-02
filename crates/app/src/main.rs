@@ -12,7 +12,6 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use notify::{RecursiveMode, Watcher};
 use ratatui::Terminal;
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -21,6 +20,10 @@ use teditor_buffer::{Buffer, Range};
 use teditor_config::{Keymap, chord_from_key, default_keymap};
 use teditor_ui::{EditorView, StatusInfo, render_editor, render_status as render_status_widget};
 use teditor_workspace::{Action, Context, EditorState, StatusLine, Viewport, dispatch};
+
+mod watcher;
+
+use watcher::spawn_watcher;
 
 struct App {
     editor: EditorState,
@@ -72,23 +75,6 @@ impl App {
     fn set_status(&mut self, s: impl Into<String>) {
         self.status.set(s);
     }
-}
-
-fn spawn_watcher(path: &std::path::Path) -> Result<(notify::RecommendedWatcher, mpsc::Receiver<()>)> {
-    let (tx, rx) = mpsc::channel::<()>();
-    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if let Ok(ev) = res {
-            use notify::EventKind::*;
-            if matches!(ev.kind, Modify(_) | Create(_) | Remove(_)) {
-                let _ = tx.send(());
-            }
-        }
-    })?;
-    // Watch the parent directory non-recursively — many editors atomic-rename
-    // the file on save, which a direct file watch would miss.
-    let watch_target = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    watcher.watch(watch_target, RecursiveMode::NonRecursive)?;
-    Ok((watcher, rx))
 }
 
 fn main() -> Result<()> {
