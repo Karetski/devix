@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+rust-version = "1.80"
+
+[workspace.dependencies]
+# external
+anyhow = "1"
+thiserror = "1"
+ropey = "1.6"
+unicode-segmentation = "1.12"
+ratatui = "0.29"
+crossterm = "0.28"
+
+# internal
+teditor-buffer = { path = "crates/buffer" }
+teditor-ui = { path = "crates/ui" }
+teditor-syntax = { path = "crates/syntax" }
+teditor-lsp = { path = "crates/lsp" }
+teditor-plugin = { path = "crates/plugin" }
+teditor-config = { path = "crates/config" }
+teditor-workspace = { path = "crates/workspace" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

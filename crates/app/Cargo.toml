@@ -1,0 +1,18 @@
+[package]
+name = "teditor"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "teditor"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
+teditor-buffer.workspace = true
+teditor-ui.workspace = true
+arboard = { version = "3.4", default-features = false }
+notify = "6"

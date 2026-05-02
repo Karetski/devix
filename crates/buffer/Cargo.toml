@@ -1,0 +1,10 @@
+[package]
+name = "teditor-buffer"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+ropey.workspace = true
+unicode-segmentation.workspace = true
