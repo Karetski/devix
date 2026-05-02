@@ -7,3 +7,6 @@ rust-version.workspace = true
 [dependencies]
 devix-buffer.workspace = true
 arboard = { version = "3.4", default-features = false }
+slotmap = "1"
+notify = "6"
+anyhow = { workspace = true }
