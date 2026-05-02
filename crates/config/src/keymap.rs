@@ -107,6 +107,13 @@ pub fn default_keymap() -> Keymap {
         k.bind(chord(KeyCode::End, C | sm), Action::MoveDocEnd { extend });
     }
 
+    // tabs
+    k.bind(chord(ch('t'), C | S), Action::NewTab);
+    k.bind(chord(ch('w'), C), Action::CloseTab);
+    k.bind(chord(ch('w'), C | S), Action::ForceCloseTab);
+    k.bind(chord(KeyCode::Char('['), C | S), Action::PrevTab);
+    k.bind(chord(KeyCode::Char(']'), C | S), Action::NextTab);
+
     // Fallback for terminals (e.g. macOS Terminal.app default) that emit
     // ESC b / ESC f for Option+Left/Right rather than the CSI Alt+arrow
     // sequence. The legacy meta encoding has no separate shift bit, so only

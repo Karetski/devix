@@ -1,5 +1,11 @@
 //! Closed enum of every editor command. The dispatcher's only input.
 
+#[allow(unused_imports)]
+use std::path::PathBuf;
+
+#[allow(unused_imports)]
+use crate::layout::{Direction, SidebarSlot};
+
 #[derive(Clone, Debug)]
 pub enum Action {
     // motion
@@ -39,6 +45,13 @@ pub enum Action {
     Save,
     ReloadFromDisk,
     KeepBufferIgnoreDisk,
+
+    // tabs
+    NewTab,
+    CloseTab,
+    ForceCloseTab,
+    NextTab,
+    PrevTab,
 
     // app
     Quit,

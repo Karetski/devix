@@ -76,13 +76,13 @@ impl Workspace {
 
     pub fn active_view(&self) -> Option<&View> {
         let frame_id = self.active_frame()?;
-        let view_id = self.frames[frame_id].active_view();
+        let view_id = self.frames[frame_id].active_view()?;
         self.views.get(view_id)
     }
 
     pub fn active_view_mut(&mut self) -> Option<&mut View> {
         let frame_id = self.active_frame()?;
-        let view_id = self.frames[frame_id].active_view();
+        let view_id = self.frames[frame_id].active_view()?;
         self.views.get_mut(view_id)
     }
 
@@ -111,9 +111,78 @@ impl Workspace {
     /// so callers can take disjoint &mut borrows on the underlying slot-maps.
     pub fn active_ids(&self) -> Option<(FrameId, ViewId, DocId)> {
         let frame_id = self.active_frame()?;
-        let view_id = self.frames[frame_id].active_view();
+        let view_id = self.frames[frame_id].active_view()?;
         let doc_id = self.views[view_id].doc;
         Some((frame_id, view_id, doc_id))
+    }
+}
+
+impl Workspace {
+    /// Open a fresh empty buffer in a new tab on the active frame.
+    pub fn new_tab(&mut self) {
+        let Some(fid) = self.active_frame() else { return };
+        let did = self.documents.insert(Document::empty());
+        let vid = self.views.insert(View::new(did));
+        let frame = &mut self.frames[fid];
+        frame.tabs.push(vid);
+        frame.active_tab = frame.tabs.len() - 1;
+    }
+
+    /// Returns false if the active doc is dirty; the caller should warn.
+    pub fn close_active_tab(&mut self, force: bool) -> bool {
+        let Some(fid) = self.active_frame() else { return false };
+        let frame = &self.frames[fid];
+        let Some(vid) = frame.active_view() else { return false };
+        let did = self.views[vid].doc;
+        if !force && self.documents[did].buffer.dirty() { return false; }
+
+        let frame = &mut self.frames[fid];
+        if frame.tabs.len() == 1 {
+            // Last tab in the frame: replace with a fresh scratch view.
+            let new_did = self.documents.insert(Document::empty());
+            let new_vid = self.views.insert(View::new(new_did));
+            frame.tabs[0] = new_vid;
+            frame.active_tab = 0;
+            self.views.remove(vid);
+            self.try_remove_orphan_doc(did);
+            return true;
+        }
+
+        let idx = frame.active_tab;
+        frame.tabs.remove(idx);
+        if frame.active_tab >= frame.tabs.len() {
+            frame.active_tab = frame.tabs.len() - 1;
+        }
+        self.views.remove(vid);
+        self.try_remove_orphan_doc(did);
+        true
+    }
+
+    pub fn next_tab(&mut self) {
+        let Some(fid) = self.active_frame() else { return };
+        let frame = &mut self.frames[fid];
+        if frame.tabs.is_empty() { return; }
+        frame.active_tab = (frame.active_tab + 1) % frame.tabs.len();
+    }
+
+    pub fn prev_tab(&mut self) {
+        let Some(fid) = self.active_frame() else { return };
+        let frame = &mut self.frames[fid];
+        if frame.tabs.is_empty() { return; }
+        frame.active_tab = (frame.active_tab + frame.tabs.len() - 1) % frame.tabs.len();
+    }
+
+    /// If no surviving view references `did`, drop the document and its
+    /// path index entry.
+    fn try_remove_orphan_doc(&mut self, did: DocId) {
+        let still_used = self.views.values().any(|v| v.doc == did);
+        if still_used { return; }
+        if let Some(d) = self.documents.remove(did) {
+            if let Some(p) = d.buffer.path() {
+                let key = canonicalize_or_keep(p);
+                self.doc_index.remove(&key);
+            }
+        }
     }
 }
 
@@ -132,6 +201,42 @@ mod tests {
         assert_eq!(ws.views.len(), 1);
         assert_eq!(ws.documents.len(), 1);
         assert!(ws.active_view().is_some());
+    }
+
+    #[test]
+    fn new_tab_then_close_returns_to_previous() {
+        let mut ws = Workspace::open(None).unwrap();
+        let original_view = ws.active_view().unwrap().doc;
+
+        ws.new_tab();
+        assert_eq!(ws.frames.values().next().unwrap().tabs.len(), 2);
+        assert_eq!(ws.frames.values().next().unwrap().active_tab, 1);
+
+        assert!(ws.close_active_tab(false));
+        let active = ws.active_view().unwrap();
+        assert_eq!(active.doc, original_view);
+    }
+
+    #[test]
+    fn close_last_tab_leaves_a_scratch_tab() {
+        let mut ws = Workspace::open(None).unwrap();
+        assert!(ws.close_active_tab(false));
+        let frame = ws.frames.values().next().unwrap();
+        assert_eq!(frame.tabs.len(), 1);
+        let v = ws.active_view().unwrap();
+        assert!(ws.documents[v.doc].buffer.path().is_none());
+    }
+
+    #[test]
+    fn dirty_close_refused_force_close_succeeds() {
+        use devix_buffer::{Selection, replace_selection_tx};
+        let mut ws = Workspace::open(None).unwrap();
+        // Mutate the active doc to make it dirty.
+        let did = ws.active_view().unwrap().doc;
+        let tx = replace_selection_tx(&ws.documents[did].buffer, &Selection::point(0), "hi");
+        ws.documents[did].buffer.apply(tx);
+        assert!(!ws.close_active_tab(false), "dirty close should refuse");
+        assert!(ws.close_active_tab(true), "force close should succeed");
     }
 
     #[test]

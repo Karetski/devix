@@ -46,12 +46,40 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 fn render_frame(id: devix_workspace::FrameId, area: Rect, app: &mut App, frame: &mut Frame<'_>) {
-    // Step 5: each frame has exactly one tab; a tab strip widget arrives in Task 6.
-    let view_id = app.workspace.frames[id].active_view();
+    let strip_area = Rect { height: 1, ..area };
+    let body_area = Rect {
+        y: area.y + 1,
+        height: area.height.saturating_sub(1),
+        ..area
+    };
+
+    // Build TabInfo for each tab in this frame.
+    let tabs: Vec<devix_ui::TabInfo> = app.workspace.frames[id]
+        .tabs
+        .iter()
+        .map(|vid| {
+            let v = &app.workspace.views[*vid];
+            let d = &app.workspace.documents[v.doc];
+            let label = d.buffer.path()
+                .and_then(|p| p.file_name())
+                .and_then(|f| f.to_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "[scratch]".to_string());
+            devix_ui::TabInfo { label, dirty: d.buffer.dirty() }
+        })
+        .collect();
+    let active_tab = app.workspace.frames[id].active_tab;
+    devix_ui::render_tabstrip(&tabs, active_tab, strip_area, frame);
+
+    // Editor body: anchor-pass + draw flow against body_area.
+    let view_id = match app.workspace.frames[id].active_view() {
+        Some(v) => v,
+        None => return, // empty frame — nothing to draw
+    };
     let view = &app.workspace.views[view_id];
     let doc = &app.workspace.documents[view.doc];
 
-    let visible = area.height as usize;
+    let visible = body_area.height as usize;
     let mut scroll_top = view.scroll_top;
     let head = view.primary().head;
     if view.view_anchored && visible > 0 {
@@ -71,11 +99,13 @@ fn render_frame(id: devix_workspace::FrameId, area: Rect, app: &mut App, frame: 
         selection: &view.selection,
         scroll_top: view.scroll_top,
     };
-    let r = render_editor(editor_view, area, frame);
+    let r = render_editor(editor_view, body_area, frame);
     app.last_gutter_width = r.gutter_width;
     if app.workspace.active_frame() == Some(id) {
         if let Some((x, y)) = r.cursor_screen { frame.set_cursor_position((x, y)); }
     }
+    // Cache the body rect (not strip) so hit-tests aim at the editor.
+    app.workspace.render_cache.frame_rects.insert(id, body_area);
 }
 
 fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App) {

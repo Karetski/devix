@@ -17,7 +17,10 @@ impl Frame {
         Self { tabs: vec![view], active_tab: 0 }
     }
 
-    pub fn active_view(&self) -> ViewId {
-        self.tabs[self.active_tab]
+    /// Returns None if `tabs` is empty or `active_tab` is out of bounds.
+    /// Construction via `with_view` guarantees a valid index, but tab-mutating
+    /// callers must restore the invariant after every change.
+    pub fn active_view(&self) -> Option<ViewId> {
+        self.tabs.get(self.active_tab).copied()
     }
 }

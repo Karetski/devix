@@ -146,6 +146,19 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
             cx.status.set("kept buffer; disk change ignored");
         }
 
+        // ---- tabs ----
+        NewTab => cx.workspace.new_tab(),
+        CloseTab => {
+            if !cx.workspace.close_active_tab(false) {
+                cx.status.set("unsaved changes — Ctrl+S to save, Ctrl+Shift+W to force close");
+            } else {
+                cx.status.clear();
+            }
+        }
+        ForceCloseTab => { cx.workspace.close_active_tab(true); cx.status.clear(); }
+        NextTab => cx.workspace.next_tab(),
+        PrevTab => cx.workspace.prev_tab(),
+
         // ---- app ----
         Quit => *cx.quit = true,
 
