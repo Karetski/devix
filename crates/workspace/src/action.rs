@@ -53,6 +53,11 @@ pub enum Action {
     PrevTab,
     OpenPath(PathBuf),
 
+    // splits / frames
+    SplitVertical,
+    SplitHorizontal,
+    CloseFrame,
+
     // app
     Quit,
 

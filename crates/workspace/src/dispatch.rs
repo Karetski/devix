@@ -163,6 +163,11 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
             Err(e) => cx.status.set(format!("open failed: {e}")),
         },
 
+        // ---- splits / frames ----
+        SplitVertical => cx.workspace.split_active(crate::layout::Axis::Horizontal),
+        SplitHorizontal => cx.workspace.split_active(crate::layout::Axis::Vertical),
+        CloseFrame => {} // wired in Task 9
+
         // ---- app ----
         Quit => *cx.quit = true,
 

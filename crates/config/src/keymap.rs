@@ -121,6 +121,10 @@ pub fn default_keymap() -> Keymap {
     k.bind(chord(ch('b'), A), Action::MoveWordLeft { extend: false });
     k.bind(chord(ch('f'), A), Action::MoveWordRight { extend: false });
 
+    // splits
+    k.bind(chord(ch('\\'), C), Action::SplitVertical);
+    k.bind(chord(ch('-'), C), Action::SplitHorizontal);
+
     // edits
     k.bind(chord(KeyCode::Backspace, NONE), Action::DeleteBack { word: false });
     k.bind(chord(KeyCode::Backspace, A), Action::DeleteBack { word: true });

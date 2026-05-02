@@ -11,7 +11,7 @@ use slotmap::{SecondaryMap, SlotMap};
 
 use crate::document::{DocId, Document};
 use crate::frame::{Frame, FrameId};
-use crate::layout::{Node, SidebarSlot};
+use crate::layout::{Axis, Node, SidebarSlot};
 use crate::view::{View, ViewId};
 use devix_buffer::Buffer;
 
@@ -222,6 +222,47 @@ impl Workspace {
     }
 }
 
+impl Workspace {
+    /// Replace the focused Frame leaf with a Split containing two frames:
+    /// the original frame, plus a new frame whose first tab clones the active view.
+    pub fn split_active(&mut self, axis: Axis) {
+        let Some(focus_path) = (if matches!(self.layout.leaf_at(&self.focus), Some(LeafRef::Frame(_))) {
+            Some(self.focus.clone())
+        } else { None }) else { return };
+
+        let Some(active_fid) = self.active_frame() else { return };
+
+        // Clone the active view: same DocId, copy of selection/scroll.
+        let cloned_view = {
+            let Some(active_view_id) = self.frames[active_fid].active_view() else { return };
+            let v = &self.views[active_view_id];
+            View {
+                doc: v.doc,
+                selection: v.selection.clone(),
+                target_col: v.target_col,
+                scroll_top: v.scroll_top,
+                view_anchored: true,
+            }
+        };
+        let new_view_id = self.views.insert(cloned_view);
+        let new_frame_id = self.frames.insert(Frame::with_view(new_view_id));
+
+        let new_node = Node::Split {
+            axis,
+            children: vec![
+                (Node::Frame(active_fid), 1),
+                (Node::Frame(new_frame_id), 1),
+            ],
+        };
+        self.layout.replace_leaf_at(&focus_path, new_node);
+        // Move focus to the new (right/bottom) frame at index 1 in the new Split.
+        let mut new_focus = focus_path;
+        new_focus.push(1);
+        self.focus = new_focus.clone();
+        self.last_editor_focus = new_focus;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,6 +328,23 @@ mod tests {
         let did2 = ws.views[v2].doc;
         assert_eq!(did1, did2, "same path should reuse DocId");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn split_creates_a_second_frame_and_focuses_it() {
+        let mut ws = Workspace::open(None).unwrap();
+        let original_fid = ws.active_frame().unwrap();
+        ws.split_active(crate::layout::Axis::Horizontal);
+        assert_eq!(ws.frames.len(), 2);
+        let new_fid = ws.active_frame().unwrap();
+        assert_ne!(original_fid, new_fid);
+
+        // Both views should reference the same DocId (shared buffer).
+        let Some(orig_view_id) = ws.frames[original_fid].active_view() else { panic!("original frame has no active view"); };
+        let Some(new_view_id) = ws.frames[new_fid].active_view() else { panic!("new frame has no active view"); };
+        let original_doc = ws.views[orig_view_id].doc;
+        let new_doc = ws.views[new_view_id].doc;
+        assert_eq!(original_doc, new_doc, "split clones view, shares document");
     }
 
     #[test]

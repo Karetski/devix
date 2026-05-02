@@ -73,4 +73,51 @@ impl Node {
             }
         }
     }
+
+    /// Walk to the leaf at `path` and replace it with `new`. Returns true if
+    /// the path resolved to a leaf and the replacement happened.
+    pub fn replace_leaf_at(&mut self, path: &[usize], new: Node) -> bool {
+        if path.is_empty() {
+            *self = new;
+            return true;
+        }
+        let mut node = self;
+        for (i, &idx) in path.iter().enumerate() {
+            match node {
+                Node::Split { children, .. } => {
+                    if idx >= children.len() { return false; }
+                    if i + 1 == path.len() {
+                        children[idx].0 = new;
+                        return true;
+                    }
+                    node = &mut children[idx].0;
+                }
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Take the leaf at `path` out, leaving a placeholder Frame with a null FrameId.
+    /// Caller is expected to replace the placeholder before next use.
+    /// Returns the original child if the path was valid.
+    pub fn take_leaf_at(&mut self, path: &[usize]) -> Option<Node> {
+        use slotmap::Key;
+        if path.is_empty() { return None; }
+        let mut node = self;
+        for (i, &idx) in path.iter().enumerate() {
+            match node {
+                Node::Split { children, .. } => {
+                    if idx >= children.len() { return None; }
+                    if i + 1 == path.len() {
+                        let placeholder = Node::Frame(crate::frame::FrameId::null());
+                        return Some(std::mem::replace(&mut children[idx].0, placeholder));
+                    }
+                    node = &mut children[idx].0;
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
 }
