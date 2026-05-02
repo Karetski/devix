@@ -12,7 +12,7 @@ pub struct TabInfo {
 }
 
 pub fn render_tabstrip(tabs: &[TabInfo], active: usize, area: Rect, frame: &mut Frame<'_>) {
-    let mut spans: Vec<Span<'static>> = Vec::with_capacity(tabs.len() * 2);
+    let mut spans: Vec<Span<'_>> = Vec::with_capacity(tabs.len() * 2);
     for (i, t) in tabs.iter().enumerate() {
         let label = format!(" {}{} ", t.label, if t.dirty { "*" } else { "" });
         let style = if i == active {

@@ -15,22 +15,15 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     let editor_area = chunks[0];
     let status_area = chunks[1];
 
-    // Compute every leaf's Rect from the layout tree. Cache for hit-testing
-    // and viewport-aware actions (scroll, focus traversal).
+    // Compute every leaf's Rect from the layout tree. Sidebar entries are
+    // cached up-front; frame entries are written by render_frame using the
+    // body rect (after carving out the 1-row tab strip).
     let leaves = app.workspace.layout.leaves_with_rects(editor_area);
     app.workspace.render_cache.frame_rects.clear();
     app.workspace.render_cache.sidebar_rects.clear();
     for (leaf, rect) in &leaves {
-        match leaf {
-            LeafRef::Frame(id) => { app.workspace.render_cache.frame_rects.insert(*id, *rect); }
-            LeafRef::Sidebar(slot) => { app.workspace.render_cache.sidebar_rects.insert(*slot, *rect); }
-        }
-    }
-
-    // Single-frame phase: track the active frame's rect for legacy fields.
-    if let Some(active_id) = app.workspace.active_frame() {
-        if let Some(rect) = app.workspace.render_cache.frame_rects.get(active_id) {
-            app.last_editor_area = *rect;
+        if let LeafRef::Sidebar(slot) = leaf {
+            app.workspace.render_cache.sidebar_rects.insert(*slot, *rect);
         }
     }
 
@@ -39,6 +32,15 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
         match leaf {
             LeafRef::Frame(id) => render_frame(*id, *rect, app, frame),
             LeafRef::Sidebar(_) => { /* painted in Task 10 */ }
+        }
+    }
+
+    // Track the active frame's body rect for legacy fields. render_frame
+    // wrote frame_rects[id] = body_area, so this picks up the correct rect
+    // for click hit-testing (without the tab strip row).
+    if let Some(active_id) = app.workspace.active_frame() {
+        if let Some(rect) = app.workspace.render_cache.frame_rects.get(active_id) {
+            app.last_editor_area = *rect;
         }
     }
 
