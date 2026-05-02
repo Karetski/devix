@@ -11,12 +11,12 @@ use ratatui::backend::Backend;
 use ratatui::layout::Rect;
 use teditor_buffer::{Buffer, Range};
 use teditor_config::{Keymap, default_keymap};
-use teditor_workspace::{Action, EditorState, StatusLine};
+use teditor_workspace::{EditorState, StatusLine};
 
 use crate::clipboard;
-use crate::events::{handle_event, run_action};
+use crate::events::handle_event;
 use crate::render::render;
-use crate::watcher::spawn_watcher;
+use crate::watcher::{drain_disk_events, spawn_watcher};
 
 pub struct App {
     pub editor: EditorState,
@@ -82,22 +82,3 @@ pub fn run<B: Backend>(terminal: &mut Terminal<B>, path: Option<PathBuf>) -> Res
     Ok(())
 }
 
-// Temporary home for drain_disk_events until sub-task 8f moves it to
-// `watcher.rs`. Identical body to today's main.rs version.
-fn drain_disk_events(app: &mut App) {
-    let Some(rx) = app.disk_rx.as_ref() else { return };
-    let mut got = false;
-    while rx.try_recv().is_ok() {
-        got = true;
-    }
-    if !got {
-        return;
-    }
-    if app.editor.buffer.dirty() {
-        app.disk_changed_pending = true;
-        app.status
-            .set("Disk changed (buffer modified) · Ctrl+R reload, Ctrl+K keep");
-    } else {
-        run_action(app, Action::ReloadFromDisk);
-    }
-}
