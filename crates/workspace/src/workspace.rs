@@ -327,6 +327,50 @@ impl Workspace {
     }
 }
 
+impl Workspace {
+    pub fn toggle_sidebar(&mut self, slot: SidebarSlot) {
+        // Lift the layout root into a horizontal Split if it isn't one.
+        if !matches!(&self.layout, Node::Split { axis: Axis::Horizontal, .. }) {
+            use slotmap::Key;
+            let inner = std::mem::replace(
+                &mut self.layout,
+                Node::Frame(crate::frame::FrameId::null()),
+            );
+            self.layout = Node::Split {
+                axis: Axis::Horizontal,
+                children: vec![(inner, 80)],
+            };
+            // The focus path now needs a leading 0 (the editor body is child 0).
+            let mut new_focus = vec![0];
+            new_focus.extend(self.focus.iter().copied());
+            self.focus = new_focus;
+            self.last_editor_focus = self.focus.clone();
+        }
+        let Node::Split { children, .. } = &mut self.layout else {
+            unreachable!("we just lifted the root into a horizontal Split")
+        };
+
+        // Find an existing sidebar of this slot.
+        let existing = children.iter().position(|(c, _)| matches!(c, Node::Sidebar(s) if *s == slot));
+        if let Some(i) = existing {
+            children.remove(i);
+            // If focus was on or past this index, fix it up.
+            if let Some(top) = self.focus.first_mut() {
+                if *top >= i && *top > 0 { *top -= 1; }
+            }
+        } else {
+            let insert_at = match slot {
+                SidebarSlot::Left => 0,
+                SidebarSlot::Right => children.len(),
+            };
+            children.insert(insert_at, (Node::Sidebar(slot), 20));
+            if let Some(top) = self.focus.first_mut() {
+                if *top >= insert_at { *top += 1; }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,6 +464,18 @@ mod tests {
         ws.close_active_frame();
         assert_eq!(ws.frames.len(), 1);
         assert!(matches!(ws.layout, Node::Frame(_)), "single frame at root");
+    }
+
+    #[test]
+    fn toggle_left_sidebar_adds_then_removes_it() {
+        let mut ws = Workspace::open(None).unwrap();
+        ws.toggle_sidebar(SidebarSlot::Left);
+        let n = match &ws.layout { Node::Split { children, .. } => children.len(), _ => 0 };
+        assert_eq!(n, 2, "split has editor + left sidebar");
+
+        ws.toggle_sidebar(SidebarSlot::Left);
+        let collapsed = matches!(&ws.layout, Node::Split { .. } | Node::Frame(_));
+        assert!(collapsed);
     }
 
     #[test]

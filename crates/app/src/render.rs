@@ -31,7 +31,21 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     for (leaf, rect) in &leaves {
         match leaf {
             LeafRef::Frame(id) => render_frame(*id, *rect, app, frame),
-            LeafRef::Sidebar(_) => { /* painted in Task 10 */ }
+            LeafRef::Sidebar(slot) => {
+                let title = match slot {
+                    devix_workspace::SidebarSlot::Left => "left",
+                    devix_workspace::SidebarSlot::Right => "right",
+                };
+                let focused = matches!(
+                    app.workspace.layout.leaf_at(&app.workspace.focus),
+                    Some(devix_workspace::LeafRef::Sidebar(s)) if s == *slot
+                );
+                devix_ui::render_sidebar(
+                    &devix_ui::SidebarInfo { title, focused },
+                    *rect,
+                    frame,
+                );
+            }
         }
     }
 
