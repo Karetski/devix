@@ -203,10 +203,17 @@ impl Workspace {
             self.doc_index.insert(key, id);
             id
         };
+        // Resolve the active frame and old view BEFORE allocating the new view,
+        // so a missing frame or empty tabs short-circuits without leaving a
+        // detached View in the slot-map.
+        let Some(fid) = self.active_frame() else {
+            return Err(anyhow::anyhow!("no active frame to open path into"));
+        };
+        let Some(old_view) = self.frames[fid].active_view() else {
+            return Err(anyhow::anyhow!("active frame has no tabs"));
+        };
         let new_view = self.views.insert(View::new(did));
-        let Some(fid) = self.active_frame() else { return Ok(new_view); };
         let frame = &mut self.frames[fid];
-        let old_view = frame.tabs[frame.active_tab];
         frame.tabs[frame.active_tab] = new_view;
         let old_doc = self.views[old_view].doc;
         self.views.remove(old_view);
