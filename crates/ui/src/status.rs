@@ -1,0 +1,41 @@
+//! Status line: pure render of a `StatusInfo` value.
+//!
+//! `StatusInfo` is built by the binary from its `App` state; this module knows
+//! nothing about `App`.
+
+use ratatui::Frame;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Style};
+use ratatui::widgets::Paragraph;
+
+pub struct StatusInfo<'a> {
+    pub path: Option<&'a str>,
+    pub dirty: bool,
+    pub line: usize,
+    pub col: usize,
+    pub sel_len: usize,
+    pub message: Option<&'a str>,
+}
+
+pub fn render_status(info: &StatusInfo<'_>, area: Rect, frame: &mut Frame<'_>) {
+    let path = info.path.unwrap_or("[scratch]");
+    let dirty = if info.dirty { " [+]" } else { "" };
+    let sel = if info.sel_len > 0 {
+        format!(" ({} sel)", info.sel_len)
+    } else {
+        String::new()
+    };
+
+    let left = format!(" {}{}  {}:{}{}", path, dirty, info.line, info.col, sel);
+    let right = info
+        .message
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "Ctrl+S save · Ctrl+Q quit".to_string());
+
+    let total = area.width as usize;
+    let pad = total.saturating_sub(left.chars().count() + right.chars().count() + 1);
+    let text = format!("{}{}{} ", left, " ".repeat(pad), right);
+
+    let para = Paragraph::new(text).style(Style::default().bg(Color::DarkGray).fg(Color::White));
+    frame.render_widget(para, area);
+}
