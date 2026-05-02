@@ -20,18 +20,15 @@ use ratatui::style::{Color, Style};
 use ratatui::widgets::Paragraph;
 
 use teditor_buffer::{
-    Buffer, Range, Selection, Transaction,
+    Buffer, Range, Selection,
     delete_range_tx, replace_selection_tx,
 };
 use teditor_ui::{EditorView, render_editor};
+use teditor_workspace::{EditorState, StatusLine};
 
 struct App {
-    buffer: Buffer,
-    selection: Selection,
-    /// Sticky column for vertical motion. Reset on horizontal motion or edit.
-    target_col: Option<usize>,
-    scroll_top: usize,
-    status: Option<String>,
+    editor: EditorState,
+    status: StatusLine,
     quit: bool,
     last_editor_area: Rect,
     last_gutter_width: u16,
@@ -52,16 +49,16 @@ impl App {
         let clipboard = arboard::Clipboard::new().ok();
 
         let (watcher, rx) = match path.as_deref() {
-            Some(p) if p.exists() => spawn_watcher(p).ok().map(|(w, r)| (Some(w), Some(r))).unwrap_or((None, None)),
+            Some(p) if p.exists() => spawn_watcher(p)
+                .ok()
+                .map(|(w, r)| (Some(w), Some(r)))
+                .unwrap_or((None, None)),
             _ => (None, None),
         };
 
         Ok(Self {
-            buffer,
-            selection: Selection::point(0),
-            target_col: None,
-            scroll_top: 0,
-            status: None,
+            editor: EditorState::new(buffer),
+            status: StatusLine::default(),
             quit: false,
             last_editor_area: Rect::default(),
             last_gutter_width: 0,
@@ -72,14 +69,14 @@ impl App {
         })
     }
 
-    fn primary(&self) -> Range { self.selection.primary() }
+    fn primary(&self) -> Range { self.editor.primary() }
 
     fn set_status(&mut self, s: impl Into<String>) {
-        self.status = Some(s.into());
+        self.status.set(s);
     }
 
     fn clear_status(&mut self) {
-        self.status = None;
+        self.status.clear();
     }
 }
 
@@ -139,14 +136,14 @@ fn drain_disk_events(app: &mut App) {
     }
     if !got { return; }
 
-    if app.buffer.dirty() {
+    if app.editor.buffer.dirty() {
         app.disk_changed_pending = true;
         app.set_status("Disk changed (buffer modified) · Ctrl+R reload, Ctrl+K keep");
     } else {
-        match app.buffer.reload_from_disk() {
+        match app.editor.buffer.reload_from_disk() {
             Ok(()) => {
-                let max = app.buffer.len_chars();
-                app.selection.clamp(max);
+                let max = app.editor.buffer.len_chars();
+                app.editor.selection.clamp(max);
                 app.disk_changed_pending = false;
                 app.set_status("reloaded from disk");
             }
@@ -166,20 +163,20 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &mut App) {
     let status_area = chunks[1];
     app.last_editor_area = editor_area;
 
-    let cur_line = app.buffer.line_of_char(app.primary().head);
+    let cur_line = app.editor.buffer.line_of_char(app.primary().head);
     let visible = editor_area.height as usize;
     if visible > 0 {
-        if cur_line < app.scroll_top {
-            app.scroll_top = cur_line;
-        } else if cur_line >= app.scroll_top + visible {
-            app.scroll_top = cur_line + 1 - visible;
+        if cur_line < app.editor.scroll_top {
+            app.editor.scroll_top = cur_line;
+        } else if cur_line >= app.editor.scroll_top + visible {
+            app.editor.scroll_top = cur_line + 1 - visible;
         }
     }
 
     let view = EditorView {
-        buffer: &app.buffer,
-        selection: &app.selection,
-        scroll_top: app.scroll_top,
+        buffer: &app.editor.buffer,
+        selection: &app.editor.selection,
+        scroll_top: app.editor.scroll_top,
     };
     let r = render_editor(view, editor_area, frame);
     app.last_gutter_width = r.gutter_width;
@@ -192,21 +189,23 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &mut App) {
 
 fn render_status(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     let path = app
+        .editor
         .buffer
         .path()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "[scratch]".into());
-    let dirty = if app.buffer.dirty() { " [+]" } else { "" };
+    let dirty = if app.editor.buffer.dirty() { " [+]" } else { "" };
     let head = app.primary().head;
-    let line = app.buffer.line_of_char(head) + 1;
-    let col = app.buffer.col_of_char(head) + 1;
+    let line = app.editor.buffer.line_of_char(head) + 1;
+    let col = app.editor.buffer.col_of_char(head) + 1;
     let sel_len = app.primary().len();
     let sel = if sel_len > 0 { format!(" ({sel_len} sel)") } else { String::new() };
 
     let left = format!(" {}{}  {}:{}{}", path, dirty, line, col, sel);
     let right = app
         .status
-        .clone()
+        .get()
+        .map(|s| s.to_string())
         .unwrap_or_else(|| "Ctrl+S save · Ctrl+Q quit".to_string());
 
     let total = area.width as usize;
@@ -232,56 +231,32 @@ fn handle_event(ev: Event, app: &mut App) {
 }
 
 // ---------------------------------------------------------------------------
-// Motion
-// ---------------------------------------------------------------------------
-
-fn move_to(app: &mut App, idx: usize, extend: bool, sticky_col: bool) {
-    let r = app.primary().put_head(idx, extend);
-    *app.selection.primary_mut() = r;
-    if !sticky_col {
-        app.target_col = None;
-    }
-}
-
-fn move_vertical(app: &mut App, down: bool, extend: bool) {
-    let head = app.primary().head;
-    let col = app.target_col.unwrap_or_else(|| app.buffer.col_of_char(head));
-    let new = if down {
-        app.buffer.move_down(head, Some(col))
-    } else {
-        app.buffer.move_up(head, Some(col))
-    };
-    app.target_col = Some(col);
-    move_to(app, new, extend, true);
-}
-
-// ---------------------------------------------------------------------------
-// Edits
+// Edits (motion now lives on EditorState in the workspace crate)
 // ---------------------------------------------------------------------------
 
 fn replace_selection(app: &mut App, text: &str) {
-    let tx = replace_selection_tx(&app.buffer, &app.selection, text);
-    apply_tx(app, tx);
+    let tx = replace_selection_tx(&app.editor.buffer, &app.editor.selection, text);
+    app.editor.apply_tx(tx);
+    app.clear_status();
 }
 
 fn delete_primary_or(app: &mut App, builder: impl FnOnce(&Buffer, usize) -> Option<(usize, usize)>) {
     let prim = app.primary();
     if !prim.is_empty() {
-        let tx = delete_range_tx(&app.buffer, &app.selection, prim.start(), prim.end());
-        apply_tx(app, tx);
+        let tx = delete_range_tx(
+            &app.editor.buffer,
+            &app.editor.selection,
+            prim.start(),
+            prim.end(),
+        );
+        app.editor.apply_tx(tx);
+        app.clear_status();
         return;
     }
-    let Some((start, end)) = builder(&app.buffer, prim.head) else { return };
+    let Some((start, end)) = builder(&app.editor.buffer, prim.head) else { return };
     if start == end { return; }
-    let tx = delete_range_tx(&app.buffer, &app.selection, start, end);
-    apply_tx(app, tx);
-}
-
-fn apply_tx(app: &mut App, tx: Transaction) {
-    let after = tx.selection_after.clone();
-    app.buffer.apply(tx);
-    app.selection = after;
-    app.target_col = None;
+    let tx = delete_range_tx(&app.editor.buffer, &app.editor.selection, start, end);
+    app.editor.apply_tx(tx);
     app.clear_status();
 }
 
@@ -298,10 +273,10 @@ fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
     if app.disk_changed_pending && ctrl {
         match code {
             KeyCode::Char('r') | KeyCode::Char('R') => {
-                match app.buffer.reload_from_disk() {
+                match app.editor.buffer.reload_from_disk() {
                     Ok(()) => {
-                        let max = app.buffer.len_chars();
-                        app.selection.clamp(max);
+                        let max = app.editor.buffer.len_chars();
+                        app.editor.selection.clamp(max);
                         app.disk_changed_pending = false;
                         app.set_status("reloaded from disk");
                     }
@@ -326,7 +301,7 @@ fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
                 return;
             }
             KeyCode::Char('s') | KeyCode::Char('S') => {
-                let msg = match app.buffer.save() {
+                let msg = match app.editor.buffer.save() {
                     Ok(()) => "saved".into(),
                     Err(e) => format!("save failed: {e}"),
                 };
@@ -334,9 +309,9 @@ fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
                 return;
             }
             KeyCode::Char('z') | KeyCode::Char('Z') if !shift => {
-                if let Some(sel) = app.buffer.undo() {
-                    app.selection = sel;
-                    app.target_col = None;
+                if let Some(sel) = app.editor.buffer.undo() {
+                    app.editor.selection = sel;
+                    app.editor.target_col = None;
                     app.clear_status();
                 } else {
                     app.set_status("nothing to undo");
@@ -344,9 +319,9 @@ fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
                 return;
             }
             KeyCode::Char('z') | KeyCode::Char('Z') if shift => {
-                if let Some(sel) = app.buffer.redo() {
-                    app.selection = sel;
-                    app.target_col = None;
+                if let Some(sel) = app.editor.buffer.redo() {
+                    app.editor.selection = sel;
+                    app.editor.target_col = None;
                     app.clear_status();
                 } else {
                     app.set_status("nothing to redo");
@@ -354,9 +329,9 @@ fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
                 return;
             }
             KeyCode::Char('y') | KeyCode::Char('Y') => {
-                if let Some(sel) = app.buffer.redo() {
-                    app.selection = sel;
-                    app.target_col = None;
+                if let Some(sel) = app.editor.buffer.redo() {
+                    app.editor.selection = sel;
+                    app.editor.target_col = None;
                     app.clear_status();
                 } else {
                     app.set_status("nothing to redo");
@@ -364,9 +339,9 @@ fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
                 return;
             }
             KeyCode::Char('a') | KeyCode::Char('A') => {
-                let end = app.buffer.len_chars();
-                app.selection = Selection::single(Range::new(0, end));
-                app.target_col = None;
+                let end = app.editor.buffer.len_chars();
+                app.editor.selection = Selection::single(Range::new(0, end));
+                app.editor.target_col = None;
                 return;
             }
             KeyCode::Char('c') | KeyCode::Char('C') => { do_copy(app); return; }
@@ -380,65 +355,65 @@ fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
     let extend = shift;
     match (code, ctrl, alt) {
         (KeyCode::Left, true, false) => {
-            let to = app.buffer.line_start_of(app.primary().head);
-            move_to(app, to, extend, false);
+            let to = app.editor.buffer.line_start_of(app.primary().head);
+            app.editor.move_to( to, extend, false);
             return;
         }
         (KeyCode::Right, true, false) => {
-            let to = app.buffer.line_end_of(app.primary().head);
-            move_to(app, to, extend, false);
+            let to = app.editor.buffer.line_end_of(app.primary().head);
+            app.editor.move_to( to, extend, false);
             return;
         }
         (KeyCode::Up, true, false) => {
-            let to = app.buffer.doc_start();
-            move_to(app, to, extend, false);
+            let to = app.editor.buffer.doc_start();
+            app.editor.move_to( to, extend, false);
             return;
         }
         (KeyCode::Down, true, false) => {
-            let to = app.buffer.doc_end();
-            move_to(app, to, extend, false);
+            let to = app.editor.buffer.doc_end();
+            app.editor.move_to( to, extend, false);
             return;
         }
         (KeyCode::Left, false, true) => {
-            let to = app.buffer.word_left(app.primary().head);
-            move_to(app, to, extend, false);
+            let to = app.editor.buffer.word_left(app.primary().head);
+            app.editor.move_to( to, extend, false);
             return;
         }
         (KeyCode::Right, false, true) => {
-            let to = app.buffer.word_right(app.primary().head);
-            move_to(app, to, extend, false);
+            let to = app.editor.buffer.word_right(app.primary().head);
+            app.editor.move_to( to, extend, false);
             return;
         }
         (KeyCode::Left, false, false) => {
-            let to = app.buffer.move_left(app.primary().head);
-            move_to(app, to, extend, false);
+            let to = app.editor.buffer.move_left(app.primary().head);
+            app.editor.move_to( to, extend, false);
             return;
         }
         (KeyCode::Right, false, false) => {
-            let to = app.buffer.move_right(app.primary().head);
-            move_to(app, to, extend, false);
+            let to = app.editor.buffer.move_right(app.primary().head);
+            app.editor.move_to( to, extend, false);
             return;
         }
-        (KeyCode::Up, false, false) => { move_vertical(app, false, extend); return; }
-        (KeyCode::Down, false, false) => { move_vertical(app, true, extend); return; }
+        (KeyCode::Up, false, false) => { app.editor.move_vertical( false, extend); return; }
+        (KeyCode::Down, false, false) => { app.editor.move_vertical( true, extend); return; }
         (KeyCode::Home, _, _) => {
-            let to = app.buffer.line_start_of(app.primary().head);
-            move_to(app, to, extend, false);
+            let to = app.editor.buffer.line_start_of(app.primary().head);
+            app.editor.move_to( to, extend, false);
             return;
         }
         (KeyCode::End, _, _) => {
-            let to = app.buffer.line_end_of(app.primary().head);
-            move_to(app, to, extend, false);
+            let to = app.editor.buffer.line_end_of(app.primary().head);
+            app.editor.move_to( to, extend, false);
             return;
         }
         (KeyCode::PageUp, _, _) => {
             let step = page_step(app);
-            for _ in 0..step { move_vertical(app, false, extend); }
+            for _ in 0..step { app.editor.move_vertical( false, extend); }
             return;
         }
         (KeyCode::PageDown, _, _) => {
             let step = page_step(app);
-            for _ in 0..step { move_vertical(app, true, extend); }
+            for _ in 0..step { app.editor.move_vertical( true, extend); }
             return;
         }
         _ => {}
@@ -494,13 +469,13 @@ fn current_line_span(buf: &Buffer, head: usize) -> (usize, usize) {
 fn do_copy(app: &mut App) {
     let prim = app.primary();
     let (start, end, msg) = if prim.is_empty() {
-        let (s, e) = current_line_span(&app.buffer, prim.head);
+        let (s, e) = current_line_span(&app.editor.buffer, prim.head);
         (s, e, "copied line")
     } else {
         (prim.start(), prim.end(), "copied")
     };
     if start == end { return; }
-    let text = app.buffer.slice_to_string(start, end);
+    let text = app.editor.buffer.slice_to_string(start, end);
     if let Some(cb) = app.clipboard.as_mut() {
         if cb.set_text(text).is_err() {
             app.set_status("clipboard error");
@@ -516,13 +491,13 @@ fn do_copy(app: &mut App) {
 fn do_cut(app: &mut App) {
     let prim = app.primary();
     let (start, end, line_cut) = if prim.is_empty() {
-        let (s, e) = current_line_span(&app.buffer, prim.head);
+        let (s, e) = current_line_span(&app.editor.buffer, prim.head);
         (s, e, true)
     } else {
         (prim.start(), prim.end(), false)
     };
     if start == end { return; }
-    let text = app.buffer.slice_to_string(start, end);
+    let text = app.editor.buffer.slice_to_string(start, end);
     if let Some(cb) = app.clipboard.as_mut() {
         if cb.set_text(text).is_err() {
             app.set_status("clipboard error");
@@ -532,8 +507,8 @@ fn do_cut(app: &mut App) {
         app.set_status("no system clipboard");
         return;
     }
-    let tx = delete_range_tx(&app.buffer, &app.selection, start, end);
-    apply_tx(app, tx);
+    let tx = delete_range_tx(&app.editor.buffer, &app.editor.selection, start, end);
+    app.editor.apply_tx(tx);
     if line_cut { app.set_status("cut line"); } else { app.set_status("cut"); }
 }
 
@@ -558,9 +533,9 @@ fn click_to_char_idx(app: &App, col: u16, row: u16) -> Option<usize> {
     let text_x = area.x + gutter;
     let click_col = col.saturating_sub(text_x) as usize;
     let row_in_view = (row - area.y) as usize;
-    let line = (app.scroll_top + row_in_view).min(app.buffer.line_count().saturating_sub(1));
-    let col = click_col.min(app.buffer.line_len_chars(line));
-    Some(app.buffer.line_start(line) + col)
+    let line = (app.editor.scroll_top + row_in_view).min(app.editor.buffer.line_count().saturating_sub(1));
+    let col = click_col.min(app.editor.buffer.line_len_chars(line));
+    Some(app.editor.buffer.line_start(line) + col)
 }
 
 fn handle_mouse(me: MouseEvent, app: &mut App) {
@@ -568,20 +543,20 @@ fn handle_mouse(me: MouseEvent, app: &mut App) {
         MouseEventKind::Down(MouseButton::Left) => {
             if let Some(idx) = click_to_char_idx(app, me.column, me.row) {
                 let extend = me.modifiers.contains(KeyModifiers::SHIFT);
-                move_to(app, idx, extend, false);
+                app.editor.move_to( idx, extend, false);
             }
         }
         MouseEventKind::Drag(MouseButton::Left) => {
             if let Some(idx) = click_to_char_idx(app, me.column, me.row) {
-                move_to(app, idx, true, false);
+                app.editor.move_to( idx, true, false);
             }
         }
         MouseEventKind::ScrollUp => {
-            app.scroll_top = app.scroll_top.saturating_sub(3);
+            app.editor.scroll_top = app.editor.scroll_top.saturating_sub(3);
         }
         MouseEventKind::ScrollDown => {
-            let max = app.buffer.line_count().saturating_sub(1);
-            app.scroll_top = (app.scroll_top + 3).min(max);
+            let max = app.editor.buffer.line_count().saturating_sub(1);
+            app.editor.scroll_top = (app.editor.scroll_top + 3).min(max);
         }
         _ => {}
     }
