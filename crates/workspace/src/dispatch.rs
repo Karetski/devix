@@ -168,6 +168,7 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
         SplitHorizontal => cx.workspace.split_active(crate::layout::Axis::Vertical),
         CloseFrame => cx.workspace.close_active_frame(),
         ToggleSidebar(slot) => cx.workspace.toggle_sidebar(slot),
+        FocusDir(d) => cx.workspace.focus_dir(d),
 
         // ---- app ----
         Quit => *cx.quit = true,

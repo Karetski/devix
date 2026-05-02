@@ -125,6 +125,12 @@ pub fn default_keymap() -> Keymap {
     k.bind(chord(ch('\\'), C), Action::SplitVertical);
     k.bind(chord(ch('-'), C), Action::SplitHorizontal);
 
+    // directional focus traversal
+    k.bind(chord(KeyCode::Left,  C | A), Action::FocusDir(devix_workspace::Direction::Left));
+    k.bind(chord(KeyCode::Right, C | A), Action::FocusDir(devix_workspace::Direction::Right));
+    k.bind(chord(KeyCode::Up,    C | A), Action::FocusDir(devix_workspace::Direction::Up));
+    k.bind(chord(KeyCode::Down,  C | A), Action::FocusDir(devix_workspace::Direction::Down));
+
     // edits
     k.bind(chord(KeyCode::Backspace, NONE), Action::DeleteBack { word: false });
     k.bind(chord(KeyCode::Backspace, A), Action::DeleteBack { word: true });

@@ -2,7 +2,6 @@
 
 use std::path::PathBuf;
 
-#[allow(unused_imports)]
 use crate::layout::Direction;
 use crate::layout::SidebarSlot;
 
@@ -59,6 +58,7 @@ pub enum Action {
     SplitHorizontal,
     CloseFrame,
     ToggleSidebar(SidebarSlot),
+    FocusDir(Direction),
 
     // app
     Quit,
