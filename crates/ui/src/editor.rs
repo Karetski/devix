@@ -33,12 +33,18 @@ pub fn render_editor(view: EditorView<'_>, area: Rect, frame: &mut Frame<'_>) ->
 
     let gutter_style = Style::default().add_modifier(Modifier::DIM);
 
+    // Cap per-line work to what the viewport can show. Without this, files
+    // with long lines (minified code, JSON, logs) allocate the full line as a
+    // String per visible row per frame — easily megabytes of churn on every
+    // navigation key, which makes input feel ignored because the render
+    // thread is busy copying.
+    let max_text = (area.width as usize).saturating_sub(gutter_width as usize + 1);
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(visible_rows);
     for row in 0..visible_rows {
         let line_idx = scroll_top + row;
         if line_idx >= line_count { break; }
         let gutter = format!("{:>width$} ", line_idx + 1, width = num_width as usize);
-        let text = view.buffer.line_string(line_idx);
+        let text = view.buffer.line_string_truncated(line_idx, max_text);
         lines.push(Line::from(vec![
             Span::styled(gutter, gutter_style),
             Span::raw(" "),

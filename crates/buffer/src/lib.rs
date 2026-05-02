@@ -91,6 +91,27 @@ impl Buffer {
         s
     }
 
+    /// Allocate at most `max_chars` of `line`, excluding the trailing newline.
+    /// Use this in render paths instead of `line_string` to bound per-frame
+    /// work to the viewport width — `line_string` would copy the full line
+    /// even when only a few hundred cells will be drawn, which on minified
+    /// files (megabyte-long lines) makes every frame allocate megabytes and
+    /// stalls the input loop.
+    pub fn line_string_truncated(&self, idx: usize, max_chars: usize) -> String {
+        if max_chars == 0 {
+            return String::new();
+        }
+        let line = self.rope.line(idx);
+        let mut out = String::with_capacity(max_chars);
+        for c in line.chars().take(max_chars) {
+            if c == '\n' || c == '\r' {
+                break;
+            }
+            out.push(c);
+        }
+        out
+    }
+
     pub fn line_start(&self, line: usize) -> usize {
         self.rope.line_to_char(line)
     }

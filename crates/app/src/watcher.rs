@@ -38,6 +38,7 @@ pub fn drain_disk_events(app: &mut App) {
         app.disk_changed_pending = true;
         app.status
             .set("Disk changed (buffer modified) · Ctrl+R reload, Ctrl+K keep");
+        app.dirty = true;
     } else {
         run_action(app, Action::ReloadFromDisk);
     }

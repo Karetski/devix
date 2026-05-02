@@ -46,6 +46,8 @@ pub enum Action {
     // mouse
     ClickAt { col: u16, row: u16, extend: bool },
     DragAt { col: u16, row: u16 },
-    ScrollUp,
-    ScrollDown,
+    /// Move the viewport by `delta` lines (negative = up, positive = down).
+    /// Scroll events from the input layer are coalesced into a single
+    /// `ScrollBy` per drain so a 200-event inertia burst becomes one dispatch.
+    ScrollBy(isize),
 }

@@ -99,6 +99,12 @@ pub fn default_keymap() -> Keymap {
         k.bind(chord(KeyCode::End, sm), Action::MoveLineEnd { extend });
         k.bind(chord(KeyCode::PageUp, sm), Action::PageUp { extend });
         k.bind(chord(KeyCode::PageDown, sm), Action::PageDown { extend });
+
+        // Ctrl+Home / Ctrl+End → doc top/bottom. Conflict-free fallback for
+        // Ctrl+Up / Ctrl+Down, which macOS swallows for Mission Control unless
+        // the user has disabled those system shortcuts.
+        k.bind(chord(KeyCode::Home, C | sm), Action::MoveDocStart { extend });
+        k.bind(chord(KeyCode::End, C | sm), Action::MoveDocEnd { extend });
     }
 
     // Fallback for terminals (e.g. macOS Terminal.app default) that emit

@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event;
@@ -11,10 +11,10 @@ use ratatui::backend::Backend;
 use ratatui::layout::Rect;
 use devix_buffer::{Buffer, Range};
 use devix_config::{Keymap, default_keymap};
-use devix_workspace::{EditorState, StatusLine};
+use devix_workspace::{Action, EditorState, StatusLine};
 
 use crate::clipboard;
-use crate::events::handle_event;
+use crate::events::{handle_event, run_action};
 use crate::render::render;
 use crate::watcher::{drain_disk_events, spawn_watcher};
 
@@ -32,19 +32,27 @@ pub struct App {
     /// True when an external change has been signaled but we haven't reconciled.
     pub disk_changed_pending: bool,
     /// Viewport-follow mode. `true` (anchored) → the renderer keeps the cursor
-    /// in view; `false` (detached) → scroll_top floats independently. The mode
-    /// flips on two well-defined events: any cursor move re-anchors, a fresh
-    /// scroll gesture (gap > threshold from last scroll) detaches.
+    /// in view; `false` (detached) → scroll_top floats independently. A scroll
+    /// detaches; any other action re-anchors.
     pub view_anchored: bool,
-    /// Wall-clock time of the most recently received scroll event. Used to
-    /// distinguish a fresh user scroll from a trackpad-inertia continuation.
-    pub last_scroll_at: Option<Instant>,
+    /// Set when state has changed and the screen needs repainting. Render
+    /// clears it. Without this we'd burn CPU rebuilding the frame on every
+    /// idle 100ms tick of the event loop.
+    pub dirty: bool,
+    /// Coalesced scroll delta accumulated across one drain pass. Flushed once
+    /// after the drain so a 200-event inertia burst maps to a single
+    /// `ScrollBy` dispatch + one render — instead of 200 of each.
+    pub pending_scroll: isize,
 }
 
-/// Maximum gap between two scroll events that still counts as the same
-/// trackpad-inertia stream. macOS emits inertia at ~60Hz; 150ms is well above
-/// that but well below any plausible new-gesture cadence.
-pub const SCROLL_STREAM_GAP: Duration = Duration::from_millis(150);
+/// Cap on events drained per outer loop iteration. With unbounded drain a
+/// pathological event flood (e.g. paste, terminal misbehaving) would starve
+/// the renderer; this guarantees a frame at least every N events.
+const MAX_DRAIN_PER_TICK: usize = 256;
+
+/// How long to wait for input before looping back. Idle CPU is dominated by
+/// this — but only when `dirty` is set we actually pay render cost.
+const POLL_TIMEOUT: Duration = Duration::from_millis(100);
 
 impl App {
     pub fn new(path: Option<PathBuf>) -> Result<Self> {
@@ -74,7 +82,8 @@ impl App {
             disk_rx: rx,
             disk_changed_pending: false,
             view_anchored: true,
-            last_scroll_at: None,
+            dirty: true,
+            pending_scroll: 0,
         })
     }
 
@@ -88,20 +97,36 @@ pub fn run<B: Backend>(terminal: &mut Terminal<B>, path: Option<PathBuf>) -> Res
 
     while !app.quit {
         drain_disk_events(&mut app);
-        terminal.draw(|frame| render(frame, &mut app))?;
 
-        if event::poll(Duration::from_millis(100))? {
+        if app.dirty {
+            terminal.draw(|frame| render(frame, &mut app))?;
+            app.dirty = false;
+        }
+
+        if !event::poll(POLL_TIMEOUT)? {
+            continue;
+        }
+        handle_event(event::read()?, &mut app);
+
+        // Drain any further events already queued (e.g. a burst of
+        // trackpad-inertia scroll or autorepeat key events). Capped so a
+        // pathological flood can't starve the renderer of its next frame.
+        let mut drained = 1;
+        while drained < MAX_DRAIN_PER_TICK
+            && !app.quit
+            && event::poll(Duration::ZERO)?
+        {
             handle_event(event::read()?, &mut app);
-            // Drain any further events already queued (e.g. a burst of
-            // trackpad-inertia scroll events) before drawing the next frame.
-            // Otherwise each event waits a full render cycle, which on large
-            // buffers turns a fast swipe into seconds of catch-up scroll.
-            while event::poll(Duration::from_millis(0))? {
-                handle_event(event::read()?, &mut app);
-                if app.quit { break; }
-            }
+            drained += 1;
+        }
+
+        // Flush the coalesced scroll delta as a single dispatch. Doing this
+        // here (after drain) instead of per-event means hundreds of inertia
+        // ticks collapse to one viewport update — and one render.
+        if app.pending_scroll != 0 {
+            let delta = std::mem::take(&mut app.pending_scroll);
+            run_action(&mut app, Action::ScrollBy(delta));
         }
     }
     Ok(())
 }
-
