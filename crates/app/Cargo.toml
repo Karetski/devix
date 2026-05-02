@@ -14,5 +14,7 @@ crossterm.workspace = true
 ratatui.workspace = true
 teditor-buffer.workspace = true
 teditor-ui.workspace = true
+teditor-workspace.workspace = true
+teditor-config.workspace = true
 arboard = { version = "3.4", default-features = false }
 notify = "6"

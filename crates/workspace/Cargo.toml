@@ -5,3 +5,5 @@ version.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+teditor-buffer.workspace = true
+arboard = { version = "3.4", default-features = false }

@@ -5,3 +5,5 @@ version.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+teditor-workspace.workspace = true
+crossterm.workspace = true
