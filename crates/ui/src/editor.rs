@@ -81,6 +81,7 @@ fn paint_selection(
     let highlight = Style::default().bg(Color::Rgb(60, 80, 130));
     let visible_rows = area.height as usize;
 
+    let view_end = scroll_top.saturating_add(visible_rows);
     for range in selection.ranges() {
         if range.is_empty() {
             continue;
@@ -90,10 +91,15 @@ fn paint_selection(
         let start_line = buffer.line_of_char(start);
         let end_line = buffer.line_of_char(end);
 
-        for line_idx in start_line..=end_line {
-            if line_idx < scroll_top || line_idx >= scroll_top + visible_rows {
-                continue;
-            }
+        // Iterate only the slice of selected lines that intersects the
+        // viewport. With huge selections (e.g. Ctrl+A on a 1.3M-line file),
+        // looping over every selected line per frame stalls the render.
+        let first = start_line.max(scroll_top);
+        let last = end_line.min(view_end.saturating_sub(1));
+        if first > last {
+            continue;
+        }
+        for line_idx in first..=last {
             let line_start = buffer.line_start(line_idx);
             let line_len = buffer.line_len_chars(line_idx);
             let local_start = if line_idx == start_line {

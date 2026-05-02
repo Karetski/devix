@@ -152,12 +152,15 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
                 cx.editor.move_to(idx, true, false);
             }
         }
+        // One line per event matches macOS trackpad behavior: the OS already
+        // emits one event per line of intended scroll distance (including the
+        // inertia tail). Multiplying here would overshoot.
         ScrollUp => {
-            cx.editor.scroll_top = cx.editor.scroll_top.saturating_sub(3);
+            cx.editor.scroll_top = cx.editor.scroll_top.saturating_sub(1);
         }
         ScrollDown => {
             let max = cx.editor.buffer.line_count().saturating_sub(1);
-            cx.editor.scroll_top = (cx.editor.scroll_top + 3).min(max);
+            cx.editor.scroll_top = (cx.editor.scroll_top + 1).min(max);
         }
     }
 }

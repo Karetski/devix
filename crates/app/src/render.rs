@@ -16,9 +16,12 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     let status_area = chunks[1];
     app.last_editor_area = editor_area;
 
-    let cur_line = app.editor.buffer.line_of_char(app.primary().head);
     let visible = editor_area.height as usize;
-    if visible > 0 {
+    // In anchored mode the view tracks the cursor; in detached mode the user
+    // is exploring and scroll_top is theirs. The mode bit is the single source
+    // of truth — set when the cursor moves, cleared on a fresh scroll gesture.
+    if app.view_anchored && visible > 0 {
+        let cur_line = app.editor.buffer.line_of_char(app.primary().head);
         if cur_line < app.editor.scroll_top {
             app.editor.scroll_top = cur_line;
         } else if cur_line >= app.editor.scroll_top + visible {

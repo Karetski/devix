@@ -101,6 +101,13 @@ pub fn default_keymap() -> Keymap {
         k.bind(chord(KeyCode::PageDown, sm), Action::PageDown { extend });
     }
 
+    // Fallback for terminals (e.g. macOS Terminal.app default) that emit
+    // ESC b / ESC f for Option+Left/Right rather than the CSI Alt+arrow
+    // sequence. The legacy meta encoding has no separate shift bit, so only
+    // the non-extending variant is reachable here.
+    k.bind(chord(ch('b'), A), Action::MoveWordLeft { extend: false });
+    k.bind(chord(ch('f'), A), Action::MoveWordRight { extend: false });
+
     // edits
     k.bind(chord(KeyCode::Backspace, NONE), Action::DeleteBack { word: false });
     k.bind(chord(KeyCode::Backspace, A), Action::DeleteBack { word: true });
