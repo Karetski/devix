@@ -14,3 +14,8 @@ pub use action::Action;
 pub use context::{Context, StatusLine, Viewport};
 pub use dispatch::dispatch;
 pub use state::EditorState;
+pub use document::{DocId, Document};
+pub use frame::{Frame, FrameId};
+pub use layout::{Axis, Direction, Node, SidebarSlot};
+pub use view::{View, ViewId};
+pub use workspace::{LeafRef, RenderCache, Workspace};
