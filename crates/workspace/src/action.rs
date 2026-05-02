@@ -1,6 +1,5 @@
 //! Closed enum of every editor command. The dispatcher's only input.
 
-#[allow(unused_imports)]
 use std::path::PathBuf;
 
 #[allow(unused_imports)]
@@ -52,6 +51,7 @@ pub enum Action {
     ForceCloseTab,
     NextTab,
     PrevTab,
+    OpenPath(PathBuf),
 
     // app
     Quit,

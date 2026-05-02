@@ -158,6 +158,10 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
         ForceCloseTab => { cx.workspace.close_active_tab(true); cx.status.clear(); }
         NextTab => cx.workspace.next_tab(),
         PrevTab => cx.workspace.prev_tab(),
+        OpenPath(p) => match cx.workspace.open_path_replace_current(p) {
+            Ok(_) => cx.status.clear(),
+            Err(e) => cx.status.set(format!("open failed: {e}")),
+        },
 
         // ---- app ----
         Quit => *cx.quit = true,

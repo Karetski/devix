@@ -190,6 +190,31 @@ fn canonicalize_or_keep(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
+impl Workspace {
+    /// Open `path` in the active frame's current tab (replace-current semantics).
+    /// If a Document already exists for the canonicalized path, reuse it.
+    /// Returns the new ViewId.
+    pub fn open_path_replace_current(&mut self, path: PathBuf) -> Result<ViewId> {
+        let key = canonicalize_or_keep(&path);
+        let did = if let Some(&existing) = self.doc_index.get(&key) {
+            existing
+        } else {
+            let id = self.documents.insert(Document::from_path(path)?);
+            self.doc_index.insert(key, id);
+            id
+        };
+        let new_view = self.views.insert(View::new(did));
+        let Some(fid) = self.active_frame() else { return Ok(new_view); };
+        let frame = &mut self.frames[fid];
+        let old_view = frame.tabs[frame.active_tab];
+        frame.tabs[frame.active_tab] = new_view;
+        let old_doc = self.views[old_view].doc;
+        self.views.remove(old_view);
+        self.try_remove_orphan_doc(old_doc);
+        Ok(new_view)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,6 +262,24 @@ mod tests {
         ws.documents[did].buffer.apply(tx);
         assert!(!ws.close_active_tab(false), "dirty close should refuse");
         assert!(ws.close_active_tab(true), "force close should succeed");
+    }
+
+    #[test]
+    fn opening_same_path_twice_reuses_document() {
+        let dir = std::env::temp_dir().join(format!("devix-open-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("a.txt");
+        std::fs::write(&p, "abc").unwrap();
+
+        let mut ws = Workspace::open(None).unwrap();
+        let v1 = ws.open_path_replace_current(p.clone()).unwrap();
+        let did1 = ws.views[v1].doc;
+        // Open another tab and re-open the same path there.
+        ws.new_tab();
+        let v2 = ws.open_path_replace_current(p.clone()).unwrap();
+        let did2 = ws.views[v2].doc;
+        assert_eq!(did1, did2, "same path should reuse DocId");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
