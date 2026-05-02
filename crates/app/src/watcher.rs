@@ -28,16 +28,12 @@ pub fn spawn_watcher(path: &Path) -> Result<(notify::RecommendedWatcher, mpsc::R
 pub fn drain_disk_events(app: &mut App) {
     let Some(rx) = app.disk_rx.as_ref() else { return };
     let mut got = false;
-    while rx.try_recv().is_ok() {
-        got = true;
-    }
-    if !got {
-        return;
-    }
-    if app.editor.buffer.dirty() {
-        app.disk_changed_pending = true;
-        app.status
-            .set("Disk changed (buffer modified) · Ctrl+R reload, Ctrl+K keep");
+    while rx.try_recv().is_ok() { got = true; }
+    if !got { return; }
+    let dirty = app.workspace.active_doc().map(|d| d.buffer.dirty()).unwrap_or(false);
+    if dirty {
+        if let Some(d) = app.workspace.active_doc_mut() { d.disk_changed_pending = true; }
+        app.status.set("Disk changed (buffer modified) · Ctrl+R reload, Ctrl+K keep");
         app.dirty = true;
     } else {
         run_action(app, Action::ReloadFromDisk);

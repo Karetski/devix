@@ -16,28 +16,21 @@ pub fn handle_event(ev: Event, app: &mut App) {
             handle_key(code, modifiers, app);
         }
         Event::Mouse(me) => handle_mouse(me, app),
-        // Force a repaint so layout-dependent state (gutter width, viewport
-        // recentering) is recomputed at the new size.
         Event::Resize(_, _) => app.dirty = true,
         _ => {}
     }
 }
 
 pub fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
-    if app.disk_changed_pending && mods.contains(KeyModifiers::CONTROL) {
+    let pending = app.workspace.active_doc().map(|d| d.disk_changed_pending).unwrap_or(false);
+    if pending && mods.contains(KeyModifiers::CONTROL) {
         let lower = match code {
             KeyCode::Char(c) => Some(c.to_ascii_lowercase()),
             _ => None,
         };
         match lower {
-            Some('r') => {
-                run_action(app, Action::ReloadFromDisk);
-                return;
-            }
-            Some('k') => {
-                run_action(app, Action::KeepBufferIgnoreDisk);
-                return;
-            }
+            Some('r') => { run_action(app, Action::ReloadFromDisk); return; }
+            Some('k') => { run_action(app, Action::KeepBufferIgnoreDisk); return; }
             _ => {}
         }
     }
@@ -60,29 +53,16 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
         MouseEventKind::Down(MouseButton::Left) => {
             let extend = me.modifiers.contains(KeyModifiers::SHIFT);
             run_action(app, Action::ClickAt {
-                col: me.column,
-                row: me.row,
-                extend,
+                col: me.column, row: me.row, extend,
             });
         }
         MouseEventKind::Drag(MouseButton::Left) => {
             run_action(app, Action::DragAt {
-                col: me.column,
-                row: me.row,
+                col: me.column, row: me.row,
             });
         }
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-            // Coalesce: just bump the pending delta. The outer loop dispatches
-            // one `ScrollBy(delta)` after draining the whole event burst.
-            // A single render then reflects the entire swipe. Inertia tail
-            // events from macOS trackpads are not filtered — they may briefly
-            // drift the view between keypresses, but the next keypress
-            // re-anchors via the branch in `run_action`.
-            let delta: isize = if matches!(me.kind, MouseEventKind::ScrollUp) {
-                -1
-            } else {
-                1
-            };
+            let delta: isize = if matches!(me.kind, MouseEventKind::ScrollUp) { -1 } else { 1 };
             app.pending_scroll = app.pending_scroll.saturating_add(delta);
         }
         _ => {}
@@ -100,21 +80,16 @@ pub fn run_action(app: &mut App, action: Action) {
     let is_scroll = matches!(action, Action::ScrollBy(_));
 
     let mut cx = Context {
-        editor: &mut app.editor,
+        workspace: &mut app.workspace,
         clipboard: &mut app.clipboard,
         status: &mut app.status,
         quit: &mut app.quit,
-        disk_changed_pending: &mut app.disk_changed_pending,
         viewport,
     };
     dispatch(action, &mut cx);
 
-    // A scroll detaches the view; any other action re-anchors it, even if
-    // the cursor didn't move (e.g. Ctrl+Up when already at the top): the
-    // keypress expresses intent to navigate, so the view should follow the
-    // cursor again. This is the same bet micro makes — no inertia debounce,
-    // we just trust the next keystroke to re-anchor.
-    app.view_anchored = !is_scroll;
-
+    if let Some(v) = app.workspace.active_view_mut() {
+        v.view_anchored = !is_scroll;
+    }
     app.dirty = true;
 }

@@ -106,6 +106,15 @@ impl Workspace {
     pub fn insert_buffer(&mut self, buf: Buffer) -> DocId {
         self.documents.insert(Document::from_buffer(buf))
     }
+
+    /// Resolve focus to (frame, view, doc) IDs in one immutable borrow,
+    /// so callers can take disjoint &mut borrows on the underlying slot-maps.
+    pub fn active_ids(&self) -> Option<(FrameId, ViewId, DocId)> {
+        let frame_id = self.active_frame()?;
+        let view_id = self.frames[frame_id].active_view();
+        let doc_id = self.views[view_id].doc;
+        Some((frame_id, view_id, doc_id))
+    }
 }
 
 fn canonicalize_or_keep(p: &Path) -> PathBuf {
@@ -123,5 +132,29 @@ mod tests {
         assert_eq!(ws.views.len(), 1);
         assert_eq!(ws.documents.len(), 1);
         assert!(ws.active_view().is_some());
+    }
+
+    #[test]
+    fn scroll_clamps_at_zero_and_at_end() {
+        use devix_buffer::{Selection, replace_selection_tx};
+
+        let mut ws = Workspace::open(None).unwrap();
+        let did = ws.active_view().unwrap().doc;
+        // 100 lines total.
+        let txt = "x\n".repeat(100);
+        let tx = replace_selection_tx(&ws.documents[did].buffer, &Selection::point(0), &txt);
+        ws.documents[did].buffer.apply(tx);
+
+        // Underflow clamps to 0.
+        let v = ws.active_view_mut().unwrap();
+        let next: isize = (v.scroll_top as isize).saturating_add(-1);
+        v.scroll_top = next.clamp(0, 99) as usize;
+        assert_eq!(v.scroll_top, 0);
+
+        // Overflow clamps to last visible line index.
+        let v = ws.active_view_mut().unwrap();
+        let next: isize = (v.scroll_top as isize).saturating_add(1_000_000);
+        v.scroll_top = next.clamp(0, 99) as usize;
+        assert_eq!(v.scroll_top, 99);
     }
 }
