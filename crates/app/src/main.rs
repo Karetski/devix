@@ -19,15 +19,14 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::widgets::Paragraph;
 
-use teditor_buffer::{
-    Buffer, Range, Selection,
-    delete_range_tx, replace_selection_tx,
-};
+use teditor_buffer::{Buffer, Range};
+use teditor_config::{Keymap, chord_from_key, default_keymap};
 use teditor_ui::{EditorView, render_editor};
-use teditor_workspace::{EditorState, StatusLine};
+use teditor_workspace::{Action, Context, EditorState, StatusLine, Viewport, dispatch};
 
 struct App {
     editor: EditorState,
+    keymap: Keymap,
     status: StatusLine,
     quit: bool,
     last_editor_area: Rect,
@@ -58,6 +57,7 @@ impl App {
 
         Ok(Self {
             editor: EditorState::new(buffer),
+            keymap: default_keymap(),
             status: StatusLine::default(),
             quit: false,
             last_editor_area: Rect::default(),
@@ -73,10 +73,6 @@ impl App {
 
     fn set_status(&mut self, s: impl Into<String>) {
         self.status.set(s);
-    }
-
-    fn clear_status(&mut self) {
-        self.status.clear();
     }
 }
 
@@ -140,17 +136,7 @@ fn drain_disk_events(app: &mut App) {
         app.disk_changed_pending = true;
         app.set_status("Disk changed (buffer modified) · Ctrl+R reload, Ctrl+K keep");
     } else {
-        match app.editor.buffer.reload_from_disk() {
-            Ok(()) => {
-                let max = app.editor.buffer.len_chars();
-                app.editor.selection.clamp(max);
-                app.disk_changed_pending = false;
-                app.set_status("reloaded from disk");
-            }
-            Err(e) => {
-                app.set_status(format!("reload failed: {e}"));
-            }
-        }
+        run_action(app, Action::ReloadFromDisk);
     }
 }
 
@@ -231,333 +217,81 @@ fn handle_event(ev: Event, app: &mut App) {
 }
 
 // ---------------------------------------------------------------------------
-// Edits (motion now lives on EditorState in the workspace crate)
-// ---------------------------------------------------------------------------
-
-fn replace_selection(app: &mut App, text: &str) {
-    let tx = replace_selection_tx(&app.editor.buffer, &app.editor.selection, text);
-    app.editor.apply_tx(tx);
-    app.clear_status();
-}
-
-fn delete_primary_or(app: &mut App, builder: impl FnOnce(&Buffer, usize) -> Option<(usize, usize)>) {
-    let prim = app.primary();
-    if !prim.is_empty() {
-        let tx = delete_range_tx(
-            &app.editor.buffer,
-            &app.editor.selection,
-            prim.start(),
-            prim.end(),
-        );
-        app.editor.apply_tx(tx);
-        app.clear_status();
-        return;
-    }
-    let Some((start, end)) = builder(&app.editor.buffer, prim.head) else { return };
-    if start == end { return; }
-    let tx = delete_range_tx(&app.editor.buffer, &app.editor.selection, start, end);
-    app.editor.apply_tx(tx);
-    app.clear_status();
-}
-
-// ---------------------------------------------------------------------------
-// Key handling
+// Input dispatch
 // ---------------------------------------------------------------------------
 
 fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
-    let ctrl = mods.contains(KeyModifiers::CONTROL);
-    let shift = mods.contains(KeyModifiers::SHIFT);
-    let alt = mods.contains(KeyModifiers::ALT);
-
-    // External-change reconciliation prompt.
-    if app.disk_changed_pending && ctrl {
-        match code {
-            KeyCode::Char('r') | KeyCode::Char('R') => {
-                match app.editor.buffer.reload_from_disk() {
-                    Ok(()) => {
-                        let max = app.editor.buffer.len_chars();
-                        app.editor.selection.clamp(max);
-                        app.disk_changed_pending = false;
-                        app.set_status("reloaded from disk");
-                    }
-                    Err(e) => app.set_status(format!("reload failed: {e}")),
-                }
+    // Disk-pending input gate: special-case Ctrl+R / Ctrl+K. Other chords
+    // pass through to the keymap normally (typing while pending is allowed).
+    if app.disk_changed_pending && mods.contains(KeyModifiers::CONTROL) {
+        let lower = match code {
+            KeyCode::Char(c) => Some(c.to_ascii_lowercase()),
+            _ => None,
+        };
+        match lower {
+            Some('r') => {
+                run_action(app, Action::ReloadFromDisk);
                 return;
             }
-            KeyCode::Char('k') | KeyCode::Char('K') => {
-                app.disk_changed_pending = false;
-                app.set_status("kept buffer; disk change ignored");
+            Some('k') => {
+                run_action(app, Action::KeepBufferIgnoreDisk);
                 return;
             }
             _ => {}
         }
     }
 
-    // Ctrl shortcuts that do not also use Alt.
-    if ctrl && !alt {
-        match code {
-            KeyCode::Char('q') | KeyCode::Char('Q') => {
-                app.quit = true;
-                return;
-            }
-            KeyCode::Char('s') | KeyCode::Char('S') => {
-                let msg = match app.editor.buffer.save() {
-                    Ok(()) => "saved".into(),
-                    Err(e) => format!("save failed: {e}"),
-                };
-                app.set_status(msg);
-                return;
-            }
-            KeyCode::Char('z') | KeyCode::Char('Z') if !shift => {
-                if let Some(sel) = app.editor.buffer.undo() {
-                    app.editor.selection = sel;
-                    app.editor.target_col = None;
-                    app.clear_status();
-                } else {
-                    app.set_status("nothing to undo");
-                }
-                return;
-            }
-            KeyCode::Char('z') | KeyCode::Char('Z') if shift => {
-                if let Some(sel) = app.editor.buffer.redo() {
-                    app.editor.selection = sel;
-                    app.editor.target_col = None;
-                    app.clear_status();
-                } else {
-                    app.set_status("nothing to redo");
-                }
-                return;
-            }
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                if let Some(sel) = app.editor.buffer.redo() {
-                    app.editor.selection = sel;
-                    app.editor.target_col = None;
-                    app.clear_status();
-                } else {
-                    app.set_status("nothing to redo");
-                }
-                return;
-            }
-            KeyCode::Char('a') | KeyCode::Char('A') => {
-                let end = app.editor.buffer.len_chars();
-                app.editor.selection = Selection::single(Range::new(0, end));
-                app.editor.target_col = None;
-                return;
-            }
-            KeyCode::Char('c') | KeyCode::Char('C') => { do_copy(app); return; }
-            KeyCode::Char('x') | KeyCode::Char('X') => { do_cut(app); return; }
-            KeyCode::Char('v') | KeyCode::Char('V') => { do_paste(app); return; }
-            _ => {}
-        }
-    }
-
-    // Motion. Shift extends selection; without Shift collapses+moves.
-    let extend = shift;
-    match (code, ctrl, alt) {
-        (KeyCode::Left, true, false) => {
-            let to = app.editor.buffer.line_start_of(app.primary().head);
-            app.editor.move_to( to, extend, false);
-            return;
-        }
-        (KeyCode::Right, true, false) => {
-            let to = app.editor.buffer.line_end_of(app.primary().head);
-            app.editor.move_to( to, extend, false);
-            return;
-        }
-        (KeyCode::Up, true, false) => {
-            let to = app.editor.buffer.doc_start();
-            app.editor.move_to( to, extend, false);
-            return;
-        }
-        (KeyCode::Down, true, false) => {
-            let to = app.editor.buffer.doc_end();
-            app.editor.move_to( to, extend, false);
-            return;
-        }
-        (KeyCode::Left, false, true) => {
-            let to = app.editor.buffer.word_left(app.primary().head);
-            app.editor.move_to( to, extend, false);
-            return;
-        }
-        (KeyCode::Right, false, true) => {
-            let to = app.editor.buffer.word_right(app.primary().head);
-            app.editor.move_to( to, extend, false);
-            return;
-        }
-        (KeyCode::Left, false, false) => {
-            let to = app.editor.buffer.move_left(app.primary().head);
-            app.editor.move_to( to, extend, false);
-            return;
-        }
-        (KeyCode::Right, false, false) => {
-            let to = app.editor.buffer.move_right(app.primary().head);
-            app.editor.move_to( to, extend, false);
-            return;
-        }
-        (KeyCode::Up, false, false) => { app.editor.move_vertical( false, extend); return; }
-        (KeyCode::Down, false, false) => { app.editor.move_vertical( true, extend); return; }
-        (KeyCode::Home, _, _) => {
-            let to = app.editor.buffer.line_start_of(app.primary().head);
-            app.editor.move_to( to, extend, false);
-            return;
-        }
-        (KeyCode::End, _, _) => {
-            let to = app.editor.buffer.line_end_of(app.primary().head);
-            app.editor.move_to( to, extend, false);
-            return;
-        }
-        (KeyCode::PageUp, _, _) => {
-            let step = page_step(app);
-            for _ in 0..step { app.editor.move_vertical( false, extend); }
-            return;
-        }
-        (KeyCode::PageDown, _, _) => {
-            let step = page_step(app);
-            for _ in 0..step { app.editor.move_vertical( true, extend); }
-            return;
-        }
-        _ => {}
-    }
-
-    // Edits.
-    match code {
-        KeyCode::Backspace => {
-            delete_primary_or(app, |buf, head| {
-                if head == 0 { return None; }
-                let start = if alt { buf.word_left(head) } else { head - 1 };
-                Some((start, head))
-            });
-        }
-        KeyCode::Delete => {
-            delete_primary_or(app, |buf, head| {
-                let len = buf.len_chars();
-                if head >= len { return None; }
-                let end = if alt { buf.word_right(head) } else { head + 1 };
-                Some((head, end))
-            });
-        }
-        KeyCode::Enter => replace_selection(app, "\n"),
-        KeyCode::Tab => replace_selection(app, "    "),
-        KeyCode::Char(c) if !ctrl => {
-            let mut s = [0u8; 4];
-            replace_selection(app, c.encode_utf8(&mut s));
-        }
-        _ => {}
-    }
-}
-
-fn page_step(app: &App) -> usize {
-    app.last_editor_area.height.saturating_sub(1).max(1) as usize
-}
-
-// ---------------------------------------------------------------------------
-// Clipboard
-// ---------------------------------------------------------------------------
-
-fn current_line_span(buf: &Buffer, head: usize) -> (usize, usize) {
-    let line = buf.line_of_char(head);
-    let start = buf.line_start(line);
-    let end_no_nl = start + buf.line_len_chars(line);
-    let end = if line + 1 < buf.line_count() {
-        buf.line_start(line + 1)
-    } else {
-        end_no_nl
-    };
-    (start, end)
-}
-
-fn do_copy(app: &mut App) {
-    let prim = app.primary();
-    let (start, end, msg) = if prim.is_empty() {
-        let (s, e) = current_line_span(&app.editor.buffer, prim.head);
-        (s, e, "copied line")
-    } else {
-        (prim.start(), prim.end(), "copied")
-    };
-    if start == end { return; }
-    let text = app.editor.buffer.slice_to_string(start, end);
-    if let Some(cb) = app.clipboard.as_mut() {
-        if cb.set_text(text).is_err() {
-            app.set_status("clipboard error");
-            return;
-        }
-    } else {
-        app.set_status("no system clipboard");
+    let chord = chord_from_key(code, mods);
+    if let Some(action) = app.keymap.lookup(chord) {
+        run_action(app, action);
         return;
     }
-    app.set_status(msg);
-}
 
-fn do_cut(app: &mut App) {
-    let prim = app.primary();
-    let (start, end, line_cut) = if prim.is_empty() {
-        let (s, e) = current_line_span(&app.editor.buffer, prim.head);
-        (s, e, true)
-    } else {
-        (prim.start(), prim.end(), false)
-    };
-    if start == end { return; }
-    let text = app.editor.buffer.slice_to_string(start, end);
-    if let Some(cb) = app.clipboard.as_mut() {
-        if cb.set_text(text).is_err() {
-            app.set_status("clipboard error");
-            return;
+    // Fallback: plain typing.
+    if let KeyCode::Char(c) = code {
+        if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::ALT) {
+            run_action(app, Action::InsertChar(c));
         }
-    } else {
-        app.set_status("no system clipboard");
-        return;
     }
-    let tx = delete_range_tx(&app.editor.buffer, &app.editor.selection, start, end);
-    app.editor.apply_tx(tx);
-    if line_cut { app.set_status("cut line"); } else { app.set_status("cut"); }
-}
-
-fn do_paste(app: &mut App) {
-    let text = match app.clipboard.as_mut().and_then(|cb| cb.get_text().ok()) {
-        Some(t) => t,
-        None => { app.set_status("clipboard empty"); return; }
-    };
-    if text.is_empty() { return; }
-    replace_selection(app, &text);
-    app.set_status("pasted");
-}
-
-// ---------------------------------------------------------------------------
-// Mouse
-// ---------------------------------------------------------------------------
-
-fn click_to_char_idx(app: &App, col: u16, row: u16) -> Option<usize> {
-    let area = app.last_editor_area;
-    let gutter = app.last_gutter_width;
-    if row < area.y || row >= area.y + area.height { return None; }
-    let text_x = area.x + gutter;
-    let click_col = col.saturating_sub(text_x) as usize;
-    let row_in_view = (row - area.y) as usize;
-    let line = (app.editor.scroll_top + row_in_view).min(app.editor.buffer.line_count().saturating_sub(1));
-    let col = click_col.min(app.editor.buffer.line_len_chars(line));
-    Some(app.editor.buffer.line_start(line) + col)
 }
 
 fn handle_mouse(me: MouseEvent, app: &mut App) {
     match me.kind {
         MouseEventKind::Down(MouseButton::Left) => {
-            if let Some(idx) = click_to_char_idx(app, me.column, me.row) {
-                let extend = me.modifiers.contains(KeyModifiers::SHIFT);
-                app.editor.move_to( idx, extend, false);
-            }
+            let extend = me.modifiers.contains(KeyModifiers::SHIFT);
+            run_action(app, Action::ClickAt {
+                col: me.column,
+                row: me.row,
+                extend,
+            });
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            if let Some(idx) = click_to_char_idx(app, me.column, me.row) {
-                app.editor.move_to( idx, true, false);
-            }
+            run_action(app, Action::DragAt {
+                col: me.column,
+                row: me.row,
+            });
         }
-        MouseEventKind::ScrollUp => {
-            app.editor.scroll_top = app.editor.scroll_top.saturating_sub(3);
-        }
-        MouseEventKind::ScrollDown => {
-            let max = app.editor.buffer.line_count().saturating_sub(1);
-            app.editor.scroll_top = (app.editor.scroll_top + 3).min(max);
-        }
+        MouseEventKind::ScrollUp => run_action(app, Action::ScrollUp),
+        MouseEventKind::ScrollDown => run_action(app, Action::ScrollDown),
         _ => {}
     }
+}
+
+fn run_action(app: &mut App, action: Action) {
+    let viewport = Viewport {
+        x: app.last_editor_area.x,
+        y: app.last_editor_area.y,
+        width: app.last_editor_area.width,
+        height: app.last_editor_area.height,
+        gutter_width: app.last_gutter_width,
+    };
+    let mut cx = Context {
+        editor: &mut app.editor,
+        clipboard: &mut app.clipboard,
+        status: &mut app.status,
+        quit: &mut app.quit,
+        disk_changed_pending: &mut app.disk_changed_pending,
+        viewport,
+    };
+    dispatch(action, &mut cx);
 }
