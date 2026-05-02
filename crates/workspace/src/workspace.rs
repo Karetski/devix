@@ -759,4 +759,66 @@ mod tests {
         v.scroll_top = next.clamp(0, 99) as usize;
         assert_eq!(v.scroll_top, 99);
     }
+
+    #[test]
+    fn closing_focused_sidebar_lands_focus_on_a_frame() {
+        use crate::layout::Direction;
+        let mut ws = Workspace::open(None).unwrap();
+        ws.toggle_sidebar(SidebarSlot::Left);
+        // Focus moves into the sidebar via the universal-focus rule.
+        ws.focus_dir(Direction::Left);
+        assert!(matches!(
+            ws.layout.leaf_at(&ws.focus),
+            Some(LeafRef::Sidebar(SidebarSlot::Left))
+        ));
+        // Toggle off the very sidebar that's focused.
+        ws.toggle_sidebar(SidebarSlot::Left);
+        // Focus must now point at a Frame leaf — never at a removed sidebar slot.
+        assert!(
+            matches!(ws.layout.leaf_at(&ws.focus), Some(LeafRef::Frame(_))),
+            "after sidebar removal, focus should resolve to a Frame leaf"
+        );
+    }
+
+    #[test]
+    fn closing_one_of_three_split_children_keeps_two_remaining() {
+        use crate::layout::{Axis, Node};
+        let mut ws = Workspace::open(None).unwrap();
+        ws.split_active(Axis::Horizontal); // 2 frames
+        // Split again from the focused (right) frame to get 3 frames in a tree.
+        // Note: split_active replaces the focused leaf with a Split, so this
+        // produces a nested tree rather than a flat 3-child Split. We accept
+        // that — the test still exercises CloseFrame on a tree with 3 frames.
+        ws.split_active(Axis::Horizontal);
+        assert_eq!(ws.frames.len(), 3);
+
+        ws.close_active_frame();
+        assert_eq!(ws.frames.len(), 2);
+        // Layout should have at least one Split node remaining (since 2 frames).
+        let has_split = matches!(&ws.layout, Node::Split { .. });
+        assert!(has_split, "two frames should be in a Split, not a flat Frame leaf");
+        // Focus must resolve to a Frame leaf.
+        assert!(matches!(ws.layout.leaf_at(&ws.focus), Some(LeafRef::Frame(_))));
+    }
+
+    #[test]
+    fn opening_same_path_in_two_frames_shares_document() {
+        use crate::layout::Axis;
+        let dir = std::env::temp_dir().join(format!("devix-dedup-cross-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("a.txt");
+        std::fs::write(&p, "abc").unwrap();
+
+        let mut ws = Workspace::open(None).unwrap();
+        let v1 = ws.open_path_replace_current(p.clone()).unwrap();
+        let did1 = ws.views[v1].doc;
+
+        // Split, focus moves to new frame at child 1, open same path there.
+        ws.split_active(Axis::Horizontal);
+        let v2 = ws.open_path_replace_current(p.clone()).unwrap();
+        let did2 = ws.views[v2].doc;
+
+        assert_eq!(did1, did2, "same path opened in different frames should share DocId");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
