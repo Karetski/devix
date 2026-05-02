@@ -3,7 +3,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use teditor_ui::{EditorView, StatusInfo, render_editor, render_status as render_status_widget};
+use devix_ui::{EditorView, StatusInfo, render_editor, render_status as render_status_widget};
 
 use crate::app::App;
 

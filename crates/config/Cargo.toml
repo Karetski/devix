@@ -1,9 +1,9 @@
 [package]
-name = "teditor-config"
+name = "devix-config"
 edition.workspace = true
 version.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-teditor-workspace.workspace = true
+devix-workspace.workspace = true
 crossterm.workspace = true

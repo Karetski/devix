@@ -9,9 +9,9 @@ use crossterm::event;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use ratatui::layout::Rect;
-use teditor_buffer::{Buffer, Range};
-use teditor_config::{Keymap, default_keymap};
-use teditor_workspace::{EditorState, StatusLine};
+use devix_buffer::{Buffer, Range};
+use devix_config::{Keymap, default_keymap};
+use devix_workspace::{EditorState, StatusLine};
 
 use crate::clipboard;
 use crate::events::handle_event;

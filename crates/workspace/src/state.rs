@@ -3,7 +3,7 @@
 //! Methods migrate the motion/edit helpers that previously lived as free
 //! functions in `crates/app/src/main.rs`. No logic change.
 
-use teditor_buffer::{Buffer, Range, Selection, Transaction};
+use devix_buffer::{Buffer, Range, Selection, Transaction};
 
 pub struct EditorState {
     pub buffer: Buffer,

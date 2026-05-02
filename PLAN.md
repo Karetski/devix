@@ -1,4 +1,4 @@
-# teditor — TUI Coding IDE Plan
+# devix — TUI Coding IDE Plan
 
 ## Goal
 
@@ -147,7 +147,7 @@ Non-negotiable UX rules. The whole point of building this is to not be slow.
 ## Workspace skeleton
 
 ```
-teditor/
+devix/
 ├── Cargo.toml                 # workspace
 ├── crates/
 │   ├── app/                   # binary, event loop, wires everything

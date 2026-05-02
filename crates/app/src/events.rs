@@ -3,8 +3,8 @@
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind};
-use teditor_config::chord_from_key;
-use teditor_workspace::{Action, Context, Viewport, dispatch};
+use devix_config::chord_from_key;
+use devix_workspace::{Action, Context, Viewport, dispatch};
 
 use crate::app::App;
 

@@ -1,9 +1,9 @@
 [package]
-name = "teditor-ui"
+name = "devix-ui"
 edition.workspace = true
 version.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 ratatui.workspace = true
-teditor-buffer.workspace = true
+devix-buffer.workspace = true

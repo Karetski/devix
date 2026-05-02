@@ -1,7 +1,7 @@
 //! Action dispatcher. Single flat match; the only place that mutates Context
 //! state in response to commands.
 
-use teditor_buffer::{Buffer, Range, Selection, delete_range_tx, replace_selection_tx};
+use devix_buffer::{Buffer, Range, Selection, delete_range_tx, replace_selection_tx};
 
 use crate::action::Action;
 use crate::context::{Context, Viewport};

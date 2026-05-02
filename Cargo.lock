@@ -162,6 +162,66 @@ dependencies = [
 ]
 
 [[package]]
+name = "devix"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "crossterm",
+ "devix-buffer",
+ "devix-config",
+ "devix-ui",
+ "devix-workspace",
+ "notify",
+ "ratatui",
+]
+
+[[package]]
+name = "devix-buffer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ropey",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "devix-config"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "devix-workspace",
+]
+
+[[package]]
+name = "devix-lsp"
+version = "0.1.0"
+
+[[package]]
+name = "devix-plugin"
+version = "0.1.0"
+
+[[package]]
+name = "devix-syntax"
+version = "0.1.0"
+
+[[package]]
+name = "devix-ui"
+version = "0.1.0"
+dependencies = [
+ "devix-buffer",
+ "ratatui",
+]
+
+[[package]]
+name = "devix-workspace"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "devix-buffer",
+]
+
+[[package]]
 name = "dispatch2"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -752,66 +812,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
-]
-
-[[package]]
-name = "teditor"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arboard",
- "crossterm",
- "notify",
- "ratatui",
- "teditor-buffer",
- "teditor-config",
- "teditor-ui",
- "teditor-workspace",
-]
-
-[[package]]
-name = "teditor-buffer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ropey",
- "unicode-segmentation",
-]
-
-[[package]]
-name = "teditor-config"
-version = "0.1.0"
-dependencies = [
- "crossterm",
- "teditor-workspace",
-]
-
-[[package]]
-name = "teditor-lsp"
-version = "0.1.0"
-
-[[package]]
-name = "teditor-plugin"
-version = "0.1.0"
-
-[[package]]
-name = "teditor-syntax"
-version = "0.1.0"
-
-[[package]]
-name = "teditor-ui"
-version = "0.1.0"
-dependencies = [
- "ratatui",
- "teditor-buffer",
-]
-
-[[package]]
-name = "teditor-workspace"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "teditor-buffer",
 ]
 
 [[package]]

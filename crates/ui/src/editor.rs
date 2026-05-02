@@ -8,7 +8,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
-use teditor_buffer::{Buffer, Range, Selection};
+use devix_buffer::{Buffer, Range, Selection};
 
 pub struct EditorView<'a> {
     pub buffer: &'a Buffer,

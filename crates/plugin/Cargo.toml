@@ -1,5 +1,5 @@
 [package]
-name = "teditor-plugin"
+name = "devix-plugin"
 edition.workspace = true
 version.workspace = true
 rust-version.workspace = true

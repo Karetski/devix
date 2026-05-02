@@ -1,20 +1,20 @@
 [package]
-name = "teditor"
+name = "devix"
 edition.workspace = true
 version.workspace = true
 rust-version.workspace = true
 
 [[bin]]
-name = "teditor"
+name = "devix"
 path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true
 crossterm.workspace = true
 ratatui.workspace = true
-teditor-buffer.workspace = true
-teditor-ui.workspace = true
-teditor-workspace.workspace = true
-teditor-config.workspace = true
+devix-buffer.workspace = true
+devix-ui.workspace = true
+devix-workspace.workspace = true
+devix-config.workspace = true
 arboard = { version = "3.4", default-features = false }
 notify = "6"

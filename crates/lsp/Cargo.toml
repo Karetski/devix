@@ -1,5 +1,5 @@
 [package]
-name = "teditor-lsp"
+name = "devix-lsp"
 edition.workspace = true
 version.workspace = true
 rust-version.workspace = true

@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn dirty_flag_clears_on_save_and_reload() {
-        let dir = std::env::temp_dir().join(format!("teditor-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("devix-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("a.txt");
         std::fs::write(&path, "abc").unwrap();

@@ -17,13 +17,13 @@ ratatui = "0.29"
 crossterm = "0.28"
 
 # internal
-teditor-buffer = { path = "crates/buffer" }
-teditor-ui = { path = "crates/ui" }
-teditor-syntax = { path = "crates/syntax" }
-teditor-lsp = { path = "crates/lsp" }
-teditor-plugin = { path = "crates/plugin" }
-teditor-config = { path = "crates/config" }
-teditor-workspace = { path = "crates/workspace" }
+devix-buffer = { path = "crates/buffer" }
+devix-ui = { path = "crates/ui" }
+devix-syntax = { path = "crates/syntax" }
+devix-lsp = { path = "crates/lsp" }
+devix-plugin = { path = "crates/plugin" }
+devix-config = { path = "crates/config" }
+devix-workspace = { path = "crates/workspace" }
 
 [profile.release]
 lto = "thin"

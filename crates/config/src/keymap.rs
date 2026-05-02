@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use teditor_workspace::Action;
+use devix_workspace::Action;
 
 #[derive(Copy, Clone, Hash, Eq, PartialEq)]
 pub struct Chord {

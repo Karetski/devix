@@ -5,7 +5,7 @@ use std::sync::mpsc;
 
 use anyhow::Result;
 use notify::{RecursiveMode, Watcher};
-use teditor_workspace::Action;
+use devix_workspace::Action;
 
 use crate::app::App;
 use crate::events::run_action;
