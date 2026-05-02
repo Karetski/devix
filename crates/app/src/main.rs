@@ -21,6 +21,7 @@ use teditor_config::{Keymap, chord_from_key, default_keymap};
 use teditor_ui::{EditorView, StatusInfo, render_editor, render_status as render_status_widget};
 use teditor_workspace::{Action, Context, EditorState, StatusLine, Viewport, dispatch};
 
+mod clipboard;
 mod watcher;
 
 use watcher::spawn_watcher;
@@ -46,7 +47,7 @@ impl App {
             Some(p) => Buffer::from_path(p)?,
             None => Buffer::empty(),
         };
-        let clipboard = arboard::Clipboard::new().ok();
+        let clipboard = clipboard::init();
 
         let (watcher, rx) = match path.as_deref() {
             Some(p) if p.exists() => spawn_watcher(p)
