@@ -223,6 +223,70 @@ impl Workspace {
 }
 
 impl Workspace {
+    /// Close the active frame if there are 2+ frames in the tree.
+    /// The resulting Split with a single child collapses to that child.
+    /// No-op when only one frame remains anywhere in the tree.
+    pub fn close_active_frame(&mut self) {
+        if self.frames.len() <= 1 { return; }
+        let Some(fid) = self.active_frame() else { return };
+        let path = self.focus.clone();
+        if path.is_empty() { return; } // root is a single Frame; same as len==1
+
+        // Remove the leaf from its parent split.
+        let (parent_path, leaf_idx) = path.split_at(path.len() - 1);
+        let leaf_idx = leaf_idx[0];
+        let Some(parent) = node_at_mut(&mut self.layout, parent_path) else { return };
+        if let Node::Split { children, .. } = parent {
+            children.remove(leaf_idx);
+        }
+        // Collapse one-child splits up the chain.
+        self.layout.collapse_singleton_splits();
+        // Drop the views/frames the closed frame held.
+        let frame = self.frames.remove(fid).expect("frame existed");
+        for vid in frame.tabs {
+            let did = self.views[vid].doc;
+            self.views.remove(vid);
+            self.try_remove_orphan_doc(did);
+        }
+        // Re-anchor focus to the first remaining frame, deepest path.
+        self.focus = first_frame_path(&self.layout);
+        self.last_editor_focus = self.focus.clone();
+    }
+}
+
+fn node_at_mut<'a>(node: &'a mut Node, path: &[usize]) -> Option<&'a mut Node> {
+    let mut n = node;
+    for &i in path {
+        match n {
+            Node::Split { children, .. } => {
+                n = &mut children.get_mut(i)?.0;
+            }
+            _ => return None,
+        }
+    }
+    Some(n)
+}
+
+fn first_frame_path(node: &Node) -> Vec<usize> {
+    fn go(node: &Node, path: &mut Vec<usize>) -> bool {
+        match node {
+            Node::Frame(_) => true,
+            Node::Sidebar(_) => false, // skip sidebars when picking a default
+            Node::Split { children, .. } => {
+                for (i, (child, _)) in children.iter().enumerate() {
+                    path.push(i);
+                    if go(child, path) { return true; }
+                    path.pop();
+                }
+                false
+            }
+        }
+    }
+    let mut p = Vec::new();
+    if go(node, &mut p) { p } else { Vec::new() }
+}
+
+impl Workspace {
     /// Replace the focused Frame leaf with a Split containing two frames:
     /// the original frame, plus a new frame whose first tab clones the active view.
     pub fn split_active(&mut self, axis: Axis) {
@@ -345,6 +409,17 @@ mod tests {
         let original_doc = ws.views[orig_view_id].doc;
         let new_doc = ws.views[new_view_id].doc;
         assert_eq!(original_doc, new_doc, "split clones view, shares document");
+    }
+
+    #[test]
+    fn closing_one_split_child_collapses_back_to_single_frame() {
+        use crate::layout::Axis;
+        let mut ws = Workspace::open(None).unwrap();
+        ws.split_active(Axis::Horizontal);
+        assert_eq!(ws.frames.len(), 2);
+        ws.close_active_frame();
+        assert_eq!(ws.frames.len(), 1);
+        assert!(matches!(ws.layout, Node::Frame(_)), "single frame at root");
     }
 
     #[test]

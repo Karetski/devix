@@ -120,4 +120,17 @@ impl Node {
         }
         None
     }
+
+    /// Recursively collapse any Split with one child into that child.
+    pub fn collapse_singleton_splits(&mut self) {
+        if let Node::Split { children, .. } = self {
+            for (child, _) in children.iter_mut() {
+                child.collapse_singleton_splits();
+            }
+            if children.len() == 1 {
+                let (only, _) = children.remove(0);
+                *self = only;
+            }
+        }
+    }
 }
