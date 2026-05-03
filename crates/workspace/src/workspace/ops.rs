@@ -149,6 +149,7 @@ impl Workspace {
                 scroll: v.scroll,
                 scroll_mode: ScrollMode::Anchored,
                 hover: None,
+                completion: None,
             }
         };
         let new_view_id = self.views.insert(cloned_view);

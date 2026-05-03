@@ -124,6 +124,7 @@ pub fn default_keymap() -> Keymap {
     // Language server
     k.bind_command(chord(ch('i'), C),                       cmd::LSP_HOVER);
     k.bind_command(chord(KeyCode::F(12), NONE),             cmd::LSP_GOTO_DEFINITION);
+    k.bind_command(chord(ch(' '), C),                       cmd::LSP_COMPLETION_TRIGGER);
 
     // ---- direct actions (continuous; not registry commands) ----
     // Motion — both extend variants per chord

@@ -73,6 +73,18 @@ pub enum Action {
     // language server
     Hover,
     GotoDefinition,
+    /// Manual / trigger-character invocation of completion. Sends a
+    /// `LspCommand::Completion` and parks `CompletionState::Pending` on
+    /// the active view.
+    TriggerCompletion,
+    /// Adjust the highlighted completion item by `delta`. No-op when the
+    /// popup is closed.
+    CompletionMove(isize),
+    /// Accept the highlighted completion item: apply its text edit (or
+    /// fallback ident replacement), then close the popup.
+    CompletionAccept,
+    /// Dismiss the completion popup without inserting anything.
+    CompletionDismiss,
 
     // mouse
     ClickAt { col: u16, row: u16, extend: bool },

@@ -3,6 +3,7 @@
 
 use devix_buffer::{Range, Selection, Transaction};
 use devix_collection::CollectionState;
+use lsp_types::CompletionItem;
 use slotmap::new_key_type;
 
 use crate::document::DocId;
@@ -36,6 +37,12 @@ pub struct View {
     /// being shown. Cleared on cursor motion / edit (the dispatcher resets
     /// this anywhere `target_col` is reset).
     pub hover: Option<HoverState>,
+    /// Active completion popup, or `None` when no popup is in flight or
+    /// shown. Survives prefix-extending insertions (the popup re-filters
+    /// against the typed prefix); dismissed on cursor motion outside the
+    /// query span, on Esc, on accept, or on edits that aren't simple
+    /// trailing inserts/backspaces.
+    pub completion: Option<CompletionState>,
 }
 
 /// Per-view hover popup state. Hover is request-driven: dispatch records
@@ -55,6 +62,37 @@ pub enum HoverStatus {
     Empty,
 }
 
+/// Per-view completion popup state. The dispatcher records `Pending` on
+/// trigger; the App-side drain swaps in items as the response lands. As
+/// the user types, `query_start..cursor` slices the rope to form the
+/// filter prefix; `filtered` ranks `items` by match score against that
+/// prefix.
+#[derive(Clone, Debug)]
+pub struct CompletionState {
+    /// Char offset at request time. Stale-response guard.
+    pub anchor_char: usize,
+    /// Char offset at which the user-typed query begins. Updated only on
+    /// `TriggerCompletion`; subsequent typing extends the query rightward
+    /// (the cursor) without moving its left edge.
+    pub query_start: usize,
+    /// All items the server returned. Owned to avoid lifetime soup.
+    pub items: Vec<CompletionItem>,
+    /// Indices into `items`, in current match order. Empty until response
+    /// arrives or while the typed prefix matches nothing.
+    pub filtered: Vec<usize>,
+    /// Index into `filtered` of the highlighted row.
+    pub selected: usize,
+    pub status: CompletionStatus,
+}
+
+#[derive(Clone, Debug)]
+pub enum CompletionStatus {
+    /// Request in flight; popup shows a placeholder row.
+    Pending,
+    /// Items received and filtered; popup renders normally.
+    Ready,
+}
+
 impl View {
     pub fn new(doc: DocId) -> Self {
         Self {
@@ -64,6 +102,7 @@ impl View {
             scroll: CollectionState::default(),
             scroll_mode: ScrollMode::Anchored,
             hover: None,
+            completion: None,
         }
     }
 
@@ -90,6 +129,9 @@ impl View {
         // logical position, the user's intent on pressing a motion key is
         // "move on", and an anchored popup would feel sticky.
         self.hover = None;
+        // Cursor-key motion also dismisses completion. Typing-driven motion
+        // (InsertChar / DeleteBack) bypasses move_to and refilters instead.
+        self.completion = None;
     }
 
     /// Apply a transaction's selection_after; the buffer mutation happens on
@@ -98,6 +140,7 @@ impl View {
         self.selection = tx.selection_after.clone();
         self.target_col = None;
         self.hover = None;
+        self.completion = None;
     }
 }
 

@@ -14,10 +14,12 @@ pub mod workspace;
 pub use action::Action;
 pub use command::{Command, CommandId, CommandRegistry};
 pub use context::{Context, StatusLine, Viewport};
-pub use dispatch::dispatch;
+pub use dispatch::{dispatch, refilter_completion};
 pub use document::{DocDiagnostic, DocId, Document};
 pub use frame::{Frame, FrameId};
 pub use layout::{Axis, Direction, Node, SidebarSlot};
 pub use overlay::{Overlay, PaletteState};
-pub use view::{HoverState, HoverStatus, ScrollMode, View, ViewId};
+pub use view::{
+    CompletionState, CompletionStatus, HoverState, HoverStatus, ScrollMode, View, ViewId,
+};
 pub use workspace::{LeafRef, RenderCache, TabStripCache, TabStripHit, Workspace};

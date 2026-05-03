@@ -11,8 +11,8 @@ use devix_lsp::{
     Coordinator, CoordinatorConfig, LanguageConfig, LspCommand, LspEvent, SubprocessSpawner,
     uri_to_path,
 };
-use devix_workspace::HoverStatus;
-use lsp_types::{Location, PositionEncodingKind};
+use devix_workspace::{CompletionStatus, HoverStatus, refilter_completion};
+use lsp_types::{CompletionItem, Location, PositionEncodingKind};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
@@ -112,11 +112,46 @@ pub fn drain_lsp_events(app: &mut App) {
             LspEvent::DefinitionResponse { uri, anchor_char, locations } => {
                 apply_definition_response(app, &uri, anchor_char, locations);
             }
-            // Completion response: applied with the UI commit.
-            LspEvent::CompletionResponse { .. } => {}
+            LspEvent::CompletionResponse { uri, anchor_char, items, is_incomplete } => {
+                let _ = is_incomplete; // slice 3 ignores
+                apply_completion_response(app, &uri, anchor_char, items);
+            }
         }
     }
     app.dirty = true;
+}
+
+/// Match the response to a view whose `completion.anchor_char` equals the
+/// originating cursor offset. Stale answers (the trigger was superseded
+/// or dismissed) are dropped.
+fn apply_completion_response(app: &mut App, uri: &lsp_types::Uri, anchor_char: usize, items: Vec<CompletionItem>) {
+    let Ok(target_path) = uri_to_path(uri) else { return };
+    let mut target_did: Option<devix_workspace::DocId> = None;
+    for (id, doc) in app.workspace.documents.iter() {
+        let Some(doc_uri) = doc.lsp_uri() else { continue };
+        let Ok(doc_path) = uri_to_path(doc_uri) else { continue };
+        if same_path(&doc_path, &target_path) {
+            target_did = Some(id);
+            break;
+        }
+    }
+    let Some(did) = target_did else { return };
+    let mut hit_vid: Option<devix_workspace::ViewId> = None;
+    for (vid, view) in app.workspace.views.iter() {
+        if view.doc != did { continue; }
+        let Some(state) = view.completion.as_ref() else { continue };
+        if state.anchor_char == anchor_char {
+            hit_vid = Some(vid);
+            break;
+        }
+    }
+    let Some(vid) = hit_vid else { return };
+    {
+        let state = app.workspace.views[vid].completion.as_mut().unwrap();
+        state.items = items;
+        state.status = CompletionStatus::Ready;
+    }
+    refilter_completion(&mut app.workspace, vid);
 }
 
 /// Match the response against an open view of `uri` whose `hover.anchor_char`

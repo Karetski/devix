@@ -38,8 +38,9 @@ pub const SIDEBAR_RIGHT:       CommandId = CommandId("sidebar.toggle_right");
 
 pub const APP_QUIT:            CommandId = CommandId("app.quit");
 
-pub const LSP_HOVER:           CommandId = CommandId("lsp.hover");
-pub const LSP_GOTO_DEFINITION: CommandId = CommandId("lsp.goto_definition");
+pub const LSP_HOVER:               CommandId = CommandId("lsp.hover");
+pub const LSP_GOTO_DEFINITION:     CommandId = CommandId("lsp.goto_definition");
+pub const LSP_COMPLETION_TRIGGER:  CommandId = CommandId("lsp.completion.trigger");
 
 pub fn register_builtins(reg: &mut CommandRegistry) {
     let r = |reg: &mut CommandRegistry, id, label, category, action| {
@@ -78,8 +79,9 @@ pub fn register_builtins(reg: &mut CommandRegistry) {
 
     r(reg, APP_QUIT,          "Quit",                     "App",     Action::Quit);
 
-    r(reg, LSP_HOVER,             "Show Hover Info",        "Language", Action::Hover);
-    r(reg, LSP_GOTO_DEFINITION,   "Go to Definition",       "Language", Action::GotoDefinition);
+    r(reg, LSP_HOVER,                "Show Hover Info",        "Language", Action::Hover);
+    r(reg, LSP_GOTO_DEFINITION,      "Go to Definition",       "Language", Action::GotoDefinition);
+    r(reg, LSP_COMPLETION_TRIGGER,   "Trigger Completion",     "Language", Action::TriggerCompletion);
 }
 
 pub fn build_registry() -> CommandRegistry {

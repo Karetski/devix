@@ -18,11 +18,12 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use devix_collection::VRect;
 use devix_ui::{
-    EditorView, Popup, PopupAnchor, PopupContent, StatusInfo, render_editor, render_palette,
-    render_popup, render_status as render_status_widget, render_tabstrip,
+    CompletionLine, EditorView, Popup, PopupAnchor, PopupContent, StatusInfo, render_editor,
+    render_palette, render_popup, render_status as render_status_widget, render_tabstrip,
 };
 use devix_workspace::{
-    Document, FrameId, HoverStatus, LeafRef, Overlay, ScrollMode, SidebarSlot, View, Workspace,
+    CompletionStatus, Document, FrameId, HoverStatus, LeafRef, Overlay, ScrollMode, SidebarSlot,
+    View, Workspace,
 };
 
 use crate::app::App;
@@ -181,6 +182,42 @@ fn paint_frame(id: FrameId, area: Rect, app: &mut App, frame: &mut Frame<'_>) {
                     PopupContent::Text(&lines),
                 );
                 let _ = render_popup(&popup, &app.theme, body_area, frame);
+            }
+        }
+    }
+    // Completion popup: list of items below the cursor. Painted after hover
+    // so completion sits on top when both are open (rare — typing dismisses
+    // hover before the request can land).
+    if let Some(state) = view.completion.as_ref() {
+        if let Some((cx, cy)) = r.cursor_screen {
+            match &state.status {
+                CompletionStatus::Pending => {
+                    let lines = vec!["…".to_string()];
+                    let popup = Popup::with_default_size(
+                        PopupAnchor { col: cx, row: cy },
+                        PopupContent::Text(&lines),
+                    );
+                    let _ = render_popup(&popup, &app.theme, body_area, frame);
+                }
+                CompletionStatus::Ready if !state.filtered.is_empty() => {
+                    let lines: Vec<CompletionLine<'_>> = state
+                        .filtered
+                        .iter()
+                        .map(|&i| CompletionLine {
+                            label: state.items[i].label.as_str(),
+                            detail: state.items[i].detail.as_deref(),
+                        })
+                        .collect();
+                    let popup = Popup::with_default_size(
+                        PopupAnchor { col: cx, row: cy },
+                        PopupContent::CompletionList {
+                            items: &lines,
+                            selected: state.selected,
+                        },
+                    );
+                    let _ = render_popup(&popup, &app.theme, body_area, frame);
+                }
+                _ => {}
             }
         }
     }

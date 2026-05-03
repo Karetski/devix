@@ -45,6 +45,23 @@ pub fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
         }
     }
 
+    // Completion popup intercepts navigation/accept keys before the
+    // keymap. Esc dismisses; Tab/Enter accept; Up/Down navigate. Other
+    // keys (printable chars, Backspace) fall through to the editor and
+    // re-filter the popup post-dispatch.
+    if completion_open(app) {
+        match (code, mods) {
+            (KeyCode::Esc, _) => { run_action(app, Action::CompletionDismiss); return; }
+            (KeyCode::Tab, _) | (KeyCode::Enter, _) => {
+                run_action(app, Action::CompletionAccept);
+                return;
+            }
+            (KeyCode::Up, _) => { run_action(app, Action::CompletionMove(-1)); return; }
+            (KeyCode::Down, _) => { run_action(app, Action::CompletionMove(1)); return; }
+            _ => {}
+        }
+    }
+
     let chord = chord_from_key(code, mods);
     if let Some(action) = app.keymap.lookup(chord, &app.commands) {
         run_action(app, action);
@@ -56,6 +73,13 @@ pub fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
             run_action(app, Action::InsertChar(c));
         }
     }
+}
+
+fn completion_open(app: &App) -> bool {
+    app.workspace
+        .active_view()
+        .map(|v| v.completion.is_some())
+        .unwrap_or(false)
 }
 
 fn handle_palette_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
