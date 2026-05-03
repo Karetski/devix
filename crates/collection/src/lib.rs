@@ -26,6 +26,19 @@
 
 use ratatui::layout::Rect;
 
+// -- Hit --------------------------------------------------------------------
+
+/// One clickable region produced by a render pass — the screen rect a given
+/// item painted into. UIKit calls the equivalent value `UICollectionView`
+/// layout attributes; here we keep just `idx + rect` because that is all the
+/// hit-test path needs. Renderers stash `Hit`s in their output; input handlers
+/// search them at click time.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Hit {
+    pub idx: usize,
+    pub rect: Rect,
+}
+
 // -- Geometry ---------------------------------------------------------------
 
 /// Rect in a layout's virtual content coordinate space (cells, top-left origin).

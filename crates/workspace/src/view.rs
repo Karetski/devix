@@ -9,6 +9,19 @@ use crate::document::DocId;
 
 new_key_type! { pub struct ViewId; }
 
+/// What the next render pass should do with the view's scroll offset.
+///
+/// * `Anchored` — bump scroll the minimum amount needed to keep the cursor
+///   visible (the editor "follows the cursor"). The default for keyboard
+///   navigation and edits.
+/// * `Free` — leave scroll alone. Set by `Action::ScrollBy` so a wheel scroll
+///   past the cursor doesn't snap back on the next frame.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ScrollMode {
+    Anchored,
+    Free,
+}
+
 pub struct View {
     pub doc: DocId,
     pub selection: Selection,
@@ -18,10 +31,7 @@ pub struct View {
     /// visible line (one cell per line for now); `scroll_x` is reserved for
     /// horizontal scrolling within long lines.
     pub scroll: CollectionState,
-    /// Anchored: render keeps the cursor in view. Detached: the scroll state
-    /// floats — set by `Action::ScrollBy` so wheel scroll past the cursor
-    /// doesn't snap back.
-    pub view_anchored: bool,
+    pub scroll_mode: ScrollMode,
 }
 
 impl View {
@@ -31,7 +41,7 @@ impl View {
             selection: Selection::point(0),
             target_col: None,
             scroll: CollectionState::default(),
-            view_anchored: true,
+            scroll_mode: ScrollMode::Anchored,
         }
     }
 
@@ -75,7 +85,7 @@ mod tests {
         let id = docs.insert(());
         let v = View::new(id);
         assert_eq!(v.primary().head, 0);
-        assert!(v.view_anchored);
+        assert_eq!(v.scroll_mode, ScrollMode::Anchored);
         assert!(v.target_col.is_none());
         assert_eq!(v.scroll_top(), 0);
     }

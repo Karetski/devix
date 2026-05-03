@@ -14,7 +14,7 @@
 //!    partially-visible tab.
 
 use devix_collection::{
-    Axis, CollectionLayout, CollectionPass, CollectionState, LinearLayout,
+    Axis, CollectionLayout, CollectionPass, CollectionState, Hit, LinearLayout,
 };
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -27,18 +27,11 @@ pub struct TabInfo {
     pub dirty: bool,
 }
 
-/// One clickable hit-test region produced by [`render_tabstrip`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TabHit {
-    pub idx: usize,
-    pub rect: Rect,
-}
-
 /// Result of a tab-strip render. Owners cache `content_width` to drive
 /// scroll-clamp math from input handlers.
 #[derive(Default, Clone, Debug)]
 pub struct TabStripRender {
-    pub hits: Vec<TabHit>,
+    pub hits: Vec<Hit>,
     pub content_width: u32,
 }
 
@@ -109,7 +102,7 @@ pub fn render_tabstrip(
             Paragraph::new(Line::from(Span::styled(visible, style))).style(style),
             geom.screen,
         );
-        hits.push(TabHit { idx, rect: geom.screen });
+        hits.push(Hit { idx, rect: geom.screen });
     }
 
     for (_id, geom) in pass.visible_decorations() {

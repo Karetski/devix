@@ -15,5 +15,5 @@ pub use dispatch::dispatch;
 pub use document::{DocId, Document};
 pub use frame::{Frame, FrameId};
 pub use layout::{Axis, Direction, Node, SidebarSlot};
-pub use view::{View, ViewId};
-pub use workspace::{LeafRef, RenderCache, TabHit, TabStripCache, TabStripHit, Workspace};
+pub use view::{ScrollMode, View, ViewId};
+pub use workspace::{LeafRef, RenderCache, TabStripCache, TabStripHit, Workspace};

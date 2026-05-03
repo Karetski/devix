@@ -8,4 +8,4 @@ pub mod tabstrip;
 pub use editor::{EditorRenderResult, EditorView, render_editor};
 pub use sidebar::{SidebarInfo, render_sidebar};
 pub use status::{StatusInfo, render_status};
-pub use tabstrip::{MIN_TAB_WIDTH, TabHit, TabInfo, TabStripRender, render_tabstrip};
+pub use tabstrip::{MIN_TAB_WIDTH, TabInfo, TabStripRender, render_tabstrip};

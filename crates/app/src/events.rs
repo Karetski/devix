@@ -4,7 +4,7 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind};
 use devix_config::chord_from_key;
-use devix_workspace::{Action, Context, TabStripHit, Viewport, dispatch};
+use devix_workspace::{Action, Context, ScrollMode, TabStripHit, Viewport, dispatch};
 
 use crate::app::App;
 
@@ -104,7 +104,7 @@ fn handle_tab_strip_click(app: &mut App, hit: TabStripHit) {
     app.workspace.focus_frame(frame);
     app.workspace.activate_tab(frame, idx);
     if let Some(v) = app.workspace.active_view_mut() {
-        v.view_anchored = true;
+        v.scroll_mode = ScrollMode::Anchored;
     }
     app.dirty = true;
 }
@@ -144,7 +144,7 @@ pub fn run_action(app: &mut App, action: Action) {
     dispatch(action, &mut cx);
 
     if let Some(v) = app.workspace.active_view_mut() {
-        v.view_anchored = !is_scroll;
+        v.scroll_mode = if is_scroll { ScrollMode::Free } else { ScrollMode::Anchored };
     }
     app.dirty = true;
 }
