@@ -63,6 +63,13 @@ pub enum Action {
     // app
     Quit,
 
+    // command palette overlay
+    OpenPalette,
+    ClosePalette,
+    PaletteMove(isize),
+    PaletteSetQuery(String),
+    PaletteAccept,
+
     // mouse
     ClickAt { col: u16, row: u16, extend: bool },
     DragAt { col: u16, row: u16 },

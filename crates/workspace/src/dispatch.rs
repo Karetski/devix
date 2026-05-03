@@ -4,6 +4,7 @@ use devix_buffer::{Buffer, Range, Selection, delete_range_tx, replace_selection_
 
 use crate::action::Action;
 use crate::context::{Context, Viewport};
+use crate::overlay::{Overlay, PaletteState};
 
 pub fn dispatch(action: Action, cx: &mut Context<'_>) {
     use Action::*;
@@ -176,6 +177,40 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
 
         // ---- app ----
         Quit => *cx.quit = true,
+
+        // ---- palette overlay ----
+        OpenPalette => {
+            *cx.overlay = Some(Overlay::Palette(PaletteState::from_registry(cx.commands)));
+        }
+        ClosePalette => {
+            if matches!(cx.overlay, Some(Overlay::Palette(_))) {
+                *cx.overlay = None;
+            }
+        }
+        PaletteMove(delta) => {
+            if let Some(Overlay::Palette(p)) = cx.overlay.as_mut() {
+                p.move_selection(delta);
+            }
+        }
+        PaletteSetQuery(q) => {
+            if let Some(Overlay::Palette(p)) = cx.overlay.as_mut() {
+                p.set_query(q);
+            }
+        }
+        PaletteAccept => {
+            // Snapshot the selection, drop the overlay, then dispatch the
+            // chosen command. Recursive dispatch is fine: ClosePalette already
+            // ran (overlay = None) so re-entering can't loop.
+            let chosen = if let Some(Overlay::Palette(p)) = cx.overlay.as_ref() {
+                p.selected_command_id().and_then(|id| cx.commands.resolve(id))
+            } else {
+                None
+            };
+            *cx.overlay = None;
+            if let Some(action) = chosen {
+                dispatch(action, cx);
+            }
+        }
 
         // ---- mouse ----
         ClickAt { col, row, extend } => {

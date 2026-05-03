@@ -4,7 +4,7 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind};
 use devix_config::chord_from_key;
-use devix_workspace::{Action, Context, ScrollMode, TabStripHit, Viewport, dispatch};
+use devix_workspace::{Action, Context, Overlay, ScrollMode, TabStripHit, Viewport, dispatch};
 
 use crate::app::App;
 
@@ -22,6 +22,16 @@ pub fn handle_event(ev: Event, app: &mut App) {
 }
 
 pub fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
+    // Overlay takes input first. The palette consumes its navigation keys
+    // (arrows / Enter / Esc / Backspace / printable chars) and only falls
+    // through for chords it doesn't care about — letting Ctrl+S still save
+    // even with the palette open would be surprising, so palette mode is
+    // input-modal: any unhandled key is silently ignored.
+    if matches!(app.overlay, Some(Overlay::Palette(_))) {
+        handle_palette_key(code, mods, app);
+        return;
+    }
+
     let pending = app.workspace.active_doc().map(|d| d.disk_changed_pending).unwrap_or(false);
     if pending && mods.contains(KeyModifiers::CONTROL) {
         let lower = match code {
@@ -36,7 +46,7 @@ pub fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
     }
 
     let chord = chord_from_key(code, mods);
-    if let Some(action) = app.keymap.lookup(chord) {
+    if let Some(action) = app.keymap.lookup(chord, &app.commands) {
         run_action(app, action);
         return;
     }
@@ -48,7 +58,46 @@ pub fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
     }
 }
 
+fn handle_palette_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
+    match (code, mods) {
+        (KeyCode::Esc, _) => run_action(app, Action::ClosePalette),
+        (KeyCode::Enter, _) => run_action(app, Action::PaletteAccept),
+        (KeyCode::Up, _) => run_action(app, Action::PaletteMove(-1)),
+        (KeyCode::Down, _) => run_action(app, Action::PaletteMove(1)),
+        (KeyCode::Backspace, _) => {
+            let mut q = current_palette_query(app).to_string();
+            q.pop();
+            run_action(app, Action::PaletteSetQuery(q));
+        }
+        (KeyCode::Char(c), m)
+            if !m.contains(KeyModifiers::CONTROL) && !m.contains(KeyModifiers::ALT) =>
+        {
+            let mut q = current_palette_query(app).to_string();
+            q.push(c);
+            run_action(app, Action::PaletteSetQuery(q));
+        }
+        _ => {}
+    }
+}
+
+fn current_palette_query(app: &App) -> &str {
+    match &app.overlay {
+        Some(Overlay::Palette(p)) => p.query(),
+        _ => "",
+    }
+}
+
 pub fn handle_mouse(me: MouseEvent, app: &mut App) {
+    // Overlay swallows mouse so clicks never reach the editor or tab strip.
+    // Left-click dismisses the palette (matches most editors' click-out UX);
+    // mouse-driven row selection is a future polish item.
+    if matches!(app.overlay, Some(Overlay::Palette(_))) {
+        if matches!(me.kind, MouseEventKind::Down(MouseButton::Left)) {
+            run_action(app, Action::ClosePalette);
+        }
+        return;
+    }
+
     match me.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             // Tab-strip clicks are not editor clicks: don't fall through to
@@ -140,6 +189,8 @@ pub fn run_action(app: &mut App, action: Action) {
         status: &mut app.status,
         quit: &mut app.quit,
         viewport,
+        commands: &app.commands,
+        overlay: &mut app.overlay,
     };
     dispatch(action, &mut cx);
 

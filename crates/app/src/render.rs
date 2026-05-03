@@ -18,10 +18,10 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use devix_collection::VRect;
 use devix_ui::{
-    EditorView, StatusInfo, render_editor, render_status as render_status_widget,
+    EditorView, StatusInfo, render_editor, render_palette, render_status as render_status_widget,
     render_tabstrip,
 };
-use devix_workspace::{Document, FrameId, LeafRef, ScrollMode, SidebarSlot, View, Workspace};
+use devix_workspace::{Document, FrameId, LeafRef, Overlay, ScrollMode, SidebarSlot, View, Workspace};
 
 use crate::app::App;
 
@@ -42,6 +42,12 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     paint(&leaves, app, frame);
 
     render_status(frame, status_area, app);
+
+    // Overlays paint last (z-order is paint order in ratatui). Today only
+    // the palette uses this; completion / hover join later.
+    if let Some(Overlay::Palette(state)) = &app.overlay {
+        render_palette(state, &app.commands, &app.keymap, &app.theme, editor_area, frame);
+    }
 }
 
 /// Mutate every `Frame`'s active `View.scroll` so the next paint pass renders
