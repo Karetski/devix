@@ -86,6 +86,22 @@ pub enum Action {
     /// Dismiss the completion popup without inserting anything.
     CompletionDismiss,
 
+    // symbol picker overlay
+    /// Open the document symbol picker (Ctrl+O).
+    ShowDocumentSymbols,
+    /// Open the workspace symbol picker (Ctrl+Shift+O).
+    ShowWorkspaceSymbols,
+    /// Close the symbol picker.
+    CloseSymbols,
+    /// Move highlight in the symbol picker.
+    SymbolsMove(isize),
+    /// Replace the symbol picker's typed query. Workspace mode also fires
+    /// a fresh `workspace/symbol` request at the new query.
+    SymbolsSetQuery(String),
+    /// Accept the highlighted symbol: jump to its location and close the
+    /// picker.
+    SymbolsAccept,
+
     // mouse
     ClickAt { col: u16, row: u16, extend: bool },
     DragAt { col: u16, row: u16 },

@@ -19,7 +19,8 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use devix_collection::VRect;
 use devix_ui::{
     CompletionLine, EditorView, Popup, PopupAnchor, PopupContent, StatusInfo, render_editor,
-    render_palette, render_popup, render_status as render_status_widget, render_tabstrip,
+    render_palette, render_popup, render_status as render_status_widget, render_symbols,
+    render_tabstrip,
 };
 use devix_workspace::{
     CompletionStatus, Document, FrameId, HoverStatus, LeafRef, Overlay, ScrollMode, SidebarSlot,
@@ -46,10 +47,15 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
 
     render_status(frame, status_area, app);
 
-    // Overlays paint last (z-order is paint order in ratatui). Today only
-    // the palette uses this; completion / hover join later.
-    if let Some(Overlay::Palette(state)) = &app.overlay {
-        render_palette(state, &app.commands, &app.keymap, &app.theme, editor_area, frame);
+    // Overlays paint last (z-order is paint order in ratatui).
+    match &app.overlay {
+        Some(Overlay::Palette(state)) => {
+            render_palette(state, &app.commands, &app.keymap, &app.theme, editor_area, frame);
+        }
+        Some(Overlay::Symbols(state)) => {
+            render_symbols(state, &app.theme, editor_area, frame);
+        }
+        None => {}
     }
 }
 

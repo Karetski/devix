@@ -31,6 +31,10 @@ pub fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
         handle_palette_key(code, mods, app);
         return;
     }
+    if matches!(app.overlay, Some(Overlay::Symbols(_))) {
+        handle_symbols_key(code, mods, app);
+        return;
+    }
 
     let pending = app.workspace.active_doc().map(|d| d.disk_changed_pending).unwrap_or(false);
     if pending && mods.contains(KeyModifiers::CONTROL) {
@@ -80,6 +84,35 @@ fn completion_open(app: &App) -> bool {
         .active_view()
         .map(|v| v.completion.is_some())
         .unwrap_or(false)
+}
+
+fn handle_symbols_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
+    match (code, mods) {
+        (KeyCode::Esc, _) => run_action(app, Action::CloseSymbols),
+        (KeyCode::Enter, _) => run_action(app, Action::SymbolsAccept),
+        (KeyCode::Up, _) => run_action(app, Action::SymbolsMove(-1)),
+        (KeyCode::Down, _) => run_action(app, Action::SymbolsMove(1)),
+        (KeyCode::Backspace, _) => {
+            let mut q = current_symbols_query(app).to_string();
+            q.pop();
+            run_action(app, Action::SymbolsSetQuery(q));
+        }
+        (KeyCode::Char(c), m)
+            if !m.contains(KeyModifiers::CONTROL) && !m.contains(KeyModifiers::ALT) =>
+        {
+            let mut q = current_symbols_query(app).to_string();
+            q.push(c);
+            run_action(app, Action::SymbolsSetQuery(q));
+        }
+        _ => {}
+    }
+}
+
+fn current_symbols_query(app: &App) -> &str {
+    match &app.overlay {
+        Some(Overlay::Symbols(s)) => &s.query,
+        _ => "",
+    }
 }
 
 fn handle_palette_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {

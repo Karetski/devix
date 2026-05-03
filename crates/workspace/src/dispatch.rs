@@ -6,7 +6,7 @@ use lsp_types::CompletionTextEdit;
 
 use crate::action::Action;
 use crate::context::{Context, Viewport};
-use crate::overlay::{Overlay, PaletteState};
+use crate::overlay::{Overlay, PaletteState, SymbolsKind, SymbolsState};
 use crate::view::{CompletionState, CompletionStatus, HoverState, HoverStatus, ViewId};
 use crate::workspace::Workspace;
 
@@ -348,6 +348,74 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
         }
         CompletionDismiss => {
             dismiss_completion(cx);
+        }
+
+        // ---- symbol picker overlay ----
+        ShowDocumentSymbols => {
+            let Some((_, _vid, did)) = cx.workspace.active_ids() else { return };
+            let Some(wiring) = cx.workspace.lsp_wiring() else {
+                cx.status.set("LSP not attached for this document");
+                return;
+            };
+            let Some(uri) = cx.workspace.documents[did].lsp_uri().cloned() else {
+                cx.status.set("no symbols: doc not attached to a language server");
+                return;
+            };
+            let state = SymbolsState::new(SymbolsKind::Document, Some(uri.clone()));
+            let _ = wiring.sink.send(LspCommand::DocumentSymbols {
+                uri,
+                epoch: state.epoch,
+            });
+            *cx.overlay = Some(Overlay::Symbols(state));
+        }
+        ShowWorkspaceSymbols => {
+            let Some(wiring) = cx.workspace.lsp_wiring() else {
+                cx.status.set("LSP not attached");
+                return;
+            };
+            let state = SymbolsState::new(SymbolsKind::Workspace, None);
+            let _ = wiring.sink.send(LspCommand::WorkspaceSymbols {
+                query: state.query.clone(),
+                epoch: state.epoch,
+            });
+            *cx.overlay = Some(Overlay::Symbols(state));
+        }
+        CloseSymbols => {
+            if matches!(cx.overlay, Some(Overlay::Symbols(_))) {
+                *cx.overlay = None;
+            }
+        }
+        SymbolsMove(delta) => {
+            if let Some(Overlay::Symbols(s)) = cx.overlay.as_mut() {
+                s.move_selection(delta);
+            }
+        }
+        SymbolsSetQuery(q) => {
+            // Workspace mode re-fetches on every query change; document
+            // mode just client-filters. set_query bumps the epoch either
+            // way so any in-flight workspace response can be discarded.
+            if let Some(Overlay::Symbols(s)) = cx.overlay.as_mut() {
+                let needs_refetch = s.kind == SymbolsKind::Workspace;
+                s.set_query(q);
+                if needs_refetch {
+                    let epoch = s.epoch;
+                    let query = s.query.clone();
+                    if let Some(wiring) = cx.workspace.lsp_wiring() {
+                        let _ = wiring.sink.send(LspCommand::WorkspaceSymbols { query, epoch });
+                    }
+                }
+            }
+        }
+        SymbolsAccept => {
+            let location = if let Some(Overlay::Symbols(s)) = cx.overlay.as_ref() {
+                s.selected_symbol().map(|sym| sym.location.clone())
+            } else {
+                None
+            };
+            *cx.overlay = None;
+            if let Some(loc) = location {
+                jump_to_location(cx, loc);
+            }
         }
 
         // ---- mouse ----
@@ -692,6 +760,74 @@ fn lsp_pos_to_char(
         idx.min(line_chars)
     };
     line_start + char_in_line
+}
+
+/// Open the file at `loc.uri` (reusing an open view if any) and place the
+/// cursor at the LSP range start. Used by the symbol picker on accept;
+/// the goto-def path applies the same logic in app/lsp.rs but we need a
+/// dispatch-side variant because symbol-accept fires sync from a key
+/// press rather than waiting on a server response.
+fn jump_to_location(cx: &mut Context<'_>, loc: lsp_types::Location) {
+    use devix_lsp::uri_to_path;
+    let Ok(target_path) = uri_to_path(&loc.uri) else { return };
+    let encoding = cx
+        .workspace
+        .lsp_wiring()
+        .map(|w| w.encoding)
+        .unwrap_or(lsp_types::PositionEncodingKind::UTF16);
+
+    // Prefer an already-open view of the target file.
+    let mut hit: Option<crate::view::ViewId> = None;
+    for (vid, view) in cx.workspace.views.iter() {
+        let doc = &cx.workspace.documents[view.doc];
+        let Some(p) = doc.buffer.path() else { continue };
+        if p == target_path
+            || std::fs::canonicalize(p).ok() == std::fs::canonicalize(&target_path).ok()
+        {
+            hit = Some(vid);
+            break;
+        }
+    }
+    if let Some(vid) = hit {
+        // Find the frame owning this view and focus + activate.
+        let mut owner_fid: Option<crate::frame::FrameId> = None;
+        for (fid, frame) in cx.workspace.frames.iter() {
+            if frame.tabs.contains(&vid) {
+                owner_fid = Some(fid);
+                break;
+            }
+        }
+        if let Some(fid) = owner_fid {
+            cx.workspace.focus_frame(fid);
+            if let Some(idx) = cx.workspace.frames[fid].tabs.iter().position(|&v| v == vid) {
+                cx.workspace.activate_tab(fid, idx);
+            }
+        }
+        place_cursor_at_pos(cx, vid, &loc, &encoding);
+        return;
+    }
+
+    if let Err(e) = cx.workspace.open_path_replace_current(target_path) {
+        cx.status.set(format!("symbol open failed: {e}"));
+        return;
+    }
+    if let Some((_, vid, _)) = cx.workspace.active_ids() {
+        place_cursor_at_pos(cx, vid, &loc, &encoding);
+    }
+}
+
+fn place_cursor_at_pos(
+    cx: &mut Context<'_>,
+    vid: crate::view::ViewId,
+    loc: &lsp_types::Location,
+    encoding: &lsp_types::PositionEncodingKind,
+) {
+    let did = cx.workspace.views[vid].doc;
+    let rope = cx.workspace.documents[did].buffer.rope();
+    let idx = lsp_pos_to_char(rope, loc.range.start.line, loc.range.start.character, encoding);
+    let v = &mut cx.workspace.views[vid];
+    v.move_to(idx, false, false);
+    v.scroll_mode = crate::view::ScrollMode::Anchored;
 }
 
 fn click_to_char_idx(cx: &Context<'_>, col: u16, row: u16) -> Option<usize> {

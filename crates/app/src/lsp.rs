@@ -11,7 +11,7 @@ use devix_lsp::{
     Coordinator, CoordinatorConfig, LanguageConfig, LspCommand, LspEvent, SubprocessSpawner,
     uri_to_path,
 };
-use devix_workspace::{CompletionStatus, HoverStatus, refilter_completion};
+use devix_workspace::{CompletionStatus, HoverStatus, Overlay, refilter_completion};
 use lsp_types::{CompletionItem, Location, PositionEncodingKind};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
@@ -116,12 +116,33 @@ pub fn drain_lsp_events(app: &mut App) {
                 let _ = is_incomplete; // slice 3 ignores
                 apply_completion_response(app, &uri, anchor_char, items);
             }
-            // Symbol responses: applied with the UI commit.
-            LspEvent::DocumentSymbolsResponse { .. }
-            | LspEvent::WorkspaceSymbolsResponse { .. } => {}
+            LspEvent::DocumentSymbolsResponse { uri, epoch, symbols } => {
+                apply_symbols_response(app, Some(uri), epoch, symbols);
+            }
+            LspEvent::WorkspaceSymbolsResponse { epoch, symbols } => {
+                apply_symbols_response(app, None, epoch, symbols);
+            }
         }
     }
     app.dirty = true;
+}
+
+/// Match the response against the open `Overlay::Symbols` if its epoch is
+/// still current. Document-mode responses also verify `origin_uri` so a
+/// closed-then-reopened picker on a different doc doesn't accidentally
+/// adopt a stale list.
+fn apply_symbols_response(
+    app: &mut App,
+    response_uri: Option<lsp_types::Uri>,
+    epoch: u64,
+    symbols: Vec<devix_lsp::FlatSymbol>,
+) {
+    let Some(Overlay::Symbols(state)) = app.overlay.as_mut() else { return };
+    if state.epoch != epoch { return; }
+    if let Some(uri) = response_uri {
+        if state.origin_uri.as_ref() != Some(&uri) { return; }
+    }
+    state.set_items(symbols);
 }
 
 /// Match the response to a view whose `completion.anchor_char` equals the
