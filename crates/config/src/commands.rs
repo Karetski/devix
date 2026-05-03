@@ -38,6 +38,9 @@ pub const SIDEBAR_RIGHT:       CommandId = CommandId("sidebar.toggle_right");
 
 pub const APP_QUIT:            CommandId = CommandId("app.quit");
 
+pub const LSP_HOVER:           CommandId = CommandId("lsp.hover");
+pub const LSP_GOTO_DEFINITION: CommandId = CommandId("lsp.goto_definition");
+
 pub fn register_builtins(reg: &mut CommandRegistry) {
     let r = |reg: &mut CommandRegistry, id, label, category, action| {
         reg.register(Command { id, label, category: Some(category), action });
@@ -74,6 +77,9 @@ pub fn register_builtins(reg: &mut CommandRegistry) {
     r(reg, SIDEBAR_RIGHT,     "Toggle Right Sidebar",     "View",    Action::ToggleSidebar(SidebarSlot::Right));
 
     r(reg, APP_QUIT,          "Quit",                     "App",     Action::Quit);
+
+    r(reg, LSP_HOVER,             "Show Hover Info",        "Language", Action::Hover);
+    r(reg, LSP_GOTO_DEFINITION,   "Go to Definition",       "Language", Action::GotoDefinition);
 }
 
 pub fn build_registry() -> CommandRegistry {

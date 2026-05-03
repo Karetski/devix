@@ -2,18 +2,17 @@
 //! `LspEvent`s into Document/StatusLine state each tick, mirroring
 //! [`crate::watcher::drain_disk_events`].
 //!
-//! Slice 1 surfaced `publishDiagnostics` (→ Document::set_diagnostics) and
-//! window/show|logMessage (→ status line). Slice 2 plumbs hover and
-//! goto-definition responses end-to-end at the wire level; the App-side
-//! application of those responses (popup paint, cursor jump) lands in the
-//! UI commit.
+//! Slice 1 surfaces `publishDiagnostics` (→ Document::set_diagnostics) and
+//! window/show|logMessage (→ status line). Hover, completion, and the
+//! request-shaped LSP traffic land on later slices.
 
 use anyhow::Result;
 use devix_lsp::{
     Coordinator, CoordinatorConfig, LanguageConfig, LspCommand, LspEvent, SubprocessSpawner,
     uri_to_path,
 };
-use lsp_types::PositionEncodingKind;
+use devix_workspace::HoverStatus;
+use lsp_types::{Location, PositionEncodingKind};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
@@ -67,10 +66,19 @@ fn default_config() -> CoordinatorConfig {
 /// (diagnostics) mutate Document directly; ShowMessage / LogMessage feed
 /// the status line. Marks `app.dirty` if anything changed visible state.
 pub fn drain_lsp_events(app: &mut App) {
-    let Some(wiring) = app.lsp.as_mut() else { return };
-    let mut any = false;
-    while let Ok(ev) = wiring.events_rx.try_recv() {
-        any = true;
+    // Drain into a local buffer first so the mutable borrow on `app.lsp`
+    // ends before per-event handlers re-borrow `app` for hover/goto-def
+    // application.
+    let mut pending: Vec<LspEvent> = Vec::new();
+    if let Some(wiring) = app.lsp.as_mut() {
+        while let Ok(ev) = wiring.events_rx.try_recv() {
+            pending.push(ev);
+        }
+    }
+    if pending.is_empty() {
+        return;
+    }
+    for ev in pending {
         match ev {
             LspEvent::Diagnostics(p) => {
                 let Ok(target_path) = uri_to_path(&p.uri) else { continue };
@@ -98,16 +106,129 @@ pub fn drain_lsp_events(app: &mut App) {
                     app.status.set(format!("LSP error: {text}"));
                 }
             }
-            // Hover / goto-def responses arrive here. The App-side
-            // application (popup paint, cursor jump) lands with the UI
-            // commit; for now they're produced by coord but consumed
-            // nowhere — drop them on the floor.
-            LspEvent::HoverResponse { .. } | LspEvent::DefinitionResponse { .. } => {}
+            LspEvent::HoverResponse { uri, anchor_char, contents } => {
+                apply_hover_response(app, &uri, anchor_char, contents);
+            }
+            LspEvent::DefinitionResponse { uri, anchor_char, locations } => {
+                apply_definition_response(app, &uri, anchor_char, locations);
+            }
         }
     }
-    if any {
-        app.dirty = true;
+    app.dirty = true;
+}
+
+/// Match the response against an open view of `uri` whose `hover.anchor_char`
+/// equals `anchor_char`. Stale responses (cursor moved, popup dismissed) are
+/// dropped silently — the request was already work the server performed,
+/// nothing to undo.
+fn apply_hover_response(app: &mut App, uri: &lsp_types::Uri, anchor_char: usize, contents: Vec<String>) {
+    let Ok(target_path) = uri_to_path(uri) else { return };
+    let mut target_did: Option<devix_workspace::DocId> = None;
+    for (id, doc) in app.workspace.documents.iter() {
+        let Some(doc_uri) = doc.lsp_uri() else { continue };
+        let Ok(doc_path) = uri_to_path(doc_uri) else { continue };
+        if same_path(&doc_path, &target_path) {
+            target_did = Some(id);
+            break;
+        }
     }
+    let Some(did) = target_did else { return };
+    for view in app.workspace.views.values_mut() {
+        if view.doc != did {
+            continue;
+        }
+        let Some(hover) = view.hover.as_mut() else { continue };
+        if hover.anchor_char != anchor_char {
+            continue;
+        }
+        hover.status = if contents.is_empty() {
+            HoverStatus::Empty
+        } else {
+            HoverStatus::Ready(contents.clone())
+        };
+    }
+}
+
+/// Jump to the first location returned by goto-definition. If the file is
+/// already open in any view, switch to it; otherwise replace the current
+/// tab. Locations beyond the first are ignored for slice 2 — the
+/// "implementations" list UX lands later.
+fn apply_definition_response(
+    app: &mut App,
+    _uri: &lsp_types::Uri,
+    anchor_char: usize,
+    locations: Vec<Location>,
+) {
+    // anchor_char here is the originating cursor position. We don't need it
+    // to dispatch goto-def — the user pressed F12 once and moved to wait;
+    // unlike hover there's no per-position state to invalidate. Kept on the
+    // event for symmetry and so future "ignore if user already navigated"
+    // gates can plug in without a wire change.
+    let _ = anchor_char;
+    let Some(loc) = locations.into_iter().next() else {
+        app.status.set("no definition found");
+        return;
+    };
+    let Ok(target_path) = uri_to_path(&loc.uri) else { return };
+
+    // Convert the LSP Position to a char index against the (eventually) open
+    // document so we can position the cursor. For an already-open doc, use
+    // its rope; for a fresh open, the call falls through after open_path_*.
+    let want_line = loc.range.start.line as usize;
+    let want_char_in_line = loc.range.start.character as usize;
+
+    // If `target_path` is open in any view of any frame, prefer that — it
+    // avoids replacing the user's current tab.
+    let mut hit: Option<devix_workspace::ViewId> = None;
+    'outer: for (vid, view) in app.workspace.views.iter() {
+        let doc = &app.workspace.documents[view.doc];
+        let Some(doc_path) = doc.buffer.path() else { continue };
+        if same_path(doc_path, &target_path) {
+            hit = Some(vid);
+            break 'outer;
+        }
+    }
+    if let Some(vid) = hit {
+        if let Some(fid) = frame_owning_view(&app.workspace, vid) {
+            app.workspace.focus_frame(fid);
+            // Best-effort: select the matching tab so the focused view is
+            // the one we hit.
+            if let Some(idx) = app.workspace.frames[fid].tabs.iter().position(|&v| v == vid) {
+                app.workspace.activate_tab(fid, idx);
+            }
+        }
+        position_cursor_at(app, vid, want_line, want_char_in_line);
+        return;
+    }
+
+    if let Err(e) = app.workspace.open_path_replace_current(target_path) {
+        app.status.set(format!("goto-def open failed: {e}"));
+        return;
+    }
+    if let Some((_, vid, _)) = app.workspace.active_ids() {
+        position_cursor_at(app, vid, want_line, want_char_in_line);
+    }
+}
+
+fn frame_owning_view(ws: &devix_workspace::Workspace, vid: devix_workspace::ViewId) -> Option<devix_workspace::FrameId> {
+    for (fid, frame) in ws.frames.iter() {
+        if frame.tabs.contains(&vid) {
+            return Some(fid);
+        }
+    }
+    None
+}
+
+fn position_cursor_at(app: &mut App, vid: devix_workspace::ViewId, line: usize, char_in_line: usize) {
+    let did = app.workspace.views[vid].doc;
+    let buf = &app.workspace.documents[did].buffer;
+    let line = line.min(buf.line_count().saturating_sub(1));
+    let line_len = buf.line_len_chars(line);
+    let col = char_in_line.min(line_len);
+    let idx = buf.line_start(line) + col;
+    let v = &mut app.workspace.views[vid];
+    v.move_to(idx, false, false);
+    v.scroll_mode = devix_workspace::ScrollMode::Anchored;
 }
 
 fn message_prefix(t: lsp_types::MessageType) -> &'static str {

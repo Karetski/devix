@@ -32,6 +32,27 @@ pub struct View {
     /// horizontal scrolling within long lines.
     pub scroll: CollectionState,
     pub scroll_mode: ScrollMode,
+    /// Active hover popup state, or `None` when no hover is in flight or
+    /// being shown. Cleared on cursor motion / edit (the dispatcher resets
+    /// this anywhere `target_col` is reset).
+    pub hover: Option<HoverState>,
+}
+
+/// Per-view hover popup state. Hover is request-driven: dispatch records
+/// `Pending` with the cursor's char index, the LSP coordinator pumps back
+/// a response, and the App-side drain matches it against `anchor_char` —
+/// stale answers (cursor moved) are dropped on the floor.
+#[derive(Clone, Debug)]
+pub struct HoverState {
+    pub anchor_char: usize,
+    pub status: HoverStatus,
+}
+
+#[derive(Clone, Debug)]
+pub enum HoverStatus {
+    Pending,
+    Ready(Vec<String>),
+    Empty,
 }
 
 impl View {
@@ -42,6 +63,7 @@ impl View {
             target_col: None,
             scroll: CollectionState::default(),
             scroll_mode: ScrollMode::Anchored,
+            hover: None,
         }
     }
 
@@ -64,6 +86,10 @@ impl View {
         if !sticky_col {
             self.target_col = None;
         }
+        // Any motion dismisses an open hover popup. Even within the same
+        // logical position, the user's intent on pressing a motion key is
+        // "move on", and an anchored popup would feel sticky.
+        self.hover = None;
     }
 
     /// Apply a transaction's selection_after; the buffer mutation happens on
@@ -71,6 +97,7 @@ impl View {
     pub fn adopt_selection_after(&mut self, tx: &Transaction) {
         self.selection = tx.selection_after.clone();
         self.target_col = None;
+        self.hover = None;
     }
 }
 

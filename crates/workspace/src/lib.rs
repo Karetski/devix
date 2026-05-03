@@ -19,5 +19,5 @@ pub use document::{DocDiagnostic, DocId, Document};
 pub use frame::{Frame, FrameId};
 pub use layout::{Axis, Direction, Node, SidebarSlot};
 pub use overlay::{Overlay, PaletteState};
-pub use view::{ScrollMode, View, ViewId};
+pub use view::{HoverState, HoverStatus, ScrollMode, View, ViewId};
 pub use workspace::{LeafRef, RenderCache, TabStripCache, TabStripHit, Workspace};

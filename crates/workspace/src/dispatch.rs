@@ -1,10 +1,12 @@
 //! Action dispatcher.
 
 use devix_buffer::{Buffer, Range, Selection, delete_range_tx, replace_selection_tx};
+use devix_lsp::{LspCommand, position_in_rope};
 
 use crate::action::Action;
 use crate::context::{Context, Viewport};
 use crate::overlay::{Overlay, PaletteState};
+use crate::view::{HoverState, HoverStatus};
 
 pub fn dispatch(action: Action, cx: &mut Context<'_>) {
     use Action::*;
@@ -87,6 +89,7 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
                 let v = &mut cx.workspace.views[vid];
                 v.selection = sel;
                 v.target_col = None;
+                v.hover = None;
                 cx.status.clear();
             } else {
                 cx.status.set("nothing to undo");
@@ -98,6 +101,7 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
                 let v = &mut cx.workspace.views[vid];
                 v.selection = sel;
                 v.target_col = None;
+                v.hover = None;
                 cx.status.clear();
             } else {
                 cx.status.set("nothing to redo");
@@ -111,6 +115,7 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
             let v = &mut cx.workspace.views[vid];
             v.selection = Selection::single(Range::new(0, end));
             v.target_col = None;
+            v.hover = None;
         }
 
         // ---- clipboard ----
@@ -212,6 +217,38 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
             }
         }
 
+        // ---- language server ----
+        Hover => {
+            let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
+            let Some(wiring) = cx.workspace.lsp_wiring() else { return };
+            let doc = &cx.workspace.documents[did];
+            let Some(uri) = doc.lsp_uri().cloned() else { return };
+            let head = cx.workspace.views[vid].primary().head;
+            let position = position_in_rope(doc.buffer.rope(), head, &wiring.encoding);
+            let _ = wiring.sink.send(LspCommand::Hover {
+                uri,
+                position,
+                anchor_char: head,
+            });
+            cx.workspace.views[vid].hover = Some(HoverState {
+                anchor_char: head,
+                status: HoverStatus::Pending,
+            });
+        }
+        GotoDefinition => {
+            let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
+            let Some(wiring) = cx.workspace.lsp_wiring() else { return };
+            let doc = &cx.workspace.documents[did];
+            let Some(uri) = doc.lsp_uri().cloned() else { return };
+            let head = cx.workspace.views[vid].primary().head;
+            let position = position_in_rope(doc.buffer.rope(), head, &wiring.encoding);
+            let _ = wiring.sink.send(LspCommand::GotoDefinition {
+                uri,
+                position,
+                anchor_char: head,
+            });
+        }
+
         // ---- mouse ----
         ClickAt { col, row, extend } => {
             let Some(idx) = click_to_char_idx(cx, col, row) else { return };
@@ -272,6 +309,7 @@ fn replace_selection(cx: &mut Context<'_>, text: &str) {
     let v = &mut cx.workspace.views[vid];
     v.selection = after;
     v.target_col = None;
+    v.hover = None;
     cx.status.clear();
 }
 
@@ -298,6 +336,7 @@ fn delete_primary_or(
     let v = &mut cx.workspace.views[vid];
     v.selection = after;
     v.target_col = None;
+    v.hover = None;
     cx.status.clear();
 }
 
@@ -356,6 +395,7 @@ fn do_cut(cx: &mut Context<'_>) {
     let v = &mut cx.workspace.views[vid];
     v.selection = after;
     v.target_col = None;
+    v.hover = None;
     cx.status.set(if line_cut { "cut line" } else { "cut" });
 }
 

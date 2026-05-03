@@ -70,6 +70,10 @@ pub enum Action {
     PaletteSetQuery(String),
     PaletteAccept,
 
+    // language server
+    Hover,
+    GotoDefinition,
+
     // mouse
     ClickAt { col: u16, row: u16, extend: bool },
     DragAt { col: u16, row: u16 },

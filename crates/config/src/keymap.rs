@@ -121,6 +121,10 @@ pub fn default_keymap() -> Keymap {
     // Command palette
     k.bind_command(chord(ch('p'), C | S),                   cmd::PALETTE_OPEN);
 
+    // Language server
+    k.bind_command(chord(ch('i'), C),                       cmd::LSP_HOVER);
+    k.bind_command(chord(KeyCode::F(12), NONE),             cmd::LSP_GOTO_DEFINITION);
+
     // ---- direct actions (continuous; not registry commands) ----
     // Motion — both extend variants per chord
     for &(extend, sm) in &[(false, NONE), (true, S)] {

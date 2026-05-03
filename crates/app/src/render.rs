@@ -18,10 +18,12 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use devix_collection::VRect;
 use devix_ui::{
-    EditorView, StatusInfo, render_editor, render_palette, render_status as render_status_widget,
-    render_tabstrip,
+    EditorView, Popup, PopupAnchor, PopupContent, StatusInfo, render_editor, render_palette,
+    render_popup, render_status as render_status_widget, render_tabstrip,
 };
-use devix_workspace::{Document, FrameId, LeafRef, Overlay, ScrollMode, SidebarSlot, View, Workspace};
+use devix_workspace::{
+    Document, FrameId, HoverStatus, LeafRef, Overlay, ScrollMode, SidebarSlot, View, Workspace,
+};
 
 use crate::app::App;
 
@@ -161,6 +163,26 @@ fn paint_frame(id: FrameId, area: Rect, app: &mut App, frame: &mut Frame<'_>) {
     let r = render_editor(editor_view, body_area, frame);
     if app.workspace.active_frame() == Some(id) {
         if let Some((x, y)) = r.cursor_screen { frame.set_cursor_position((x, y)); }
+    }
+    // Hover popup: anchored to the cursor's screen cell, painted last so it
+    // sits over text and selection. Pending state shows a "loading" line; an
+    // Empty result renders nothing so the popup vanishes silently when the
+    // server has nothing to say.
+    if let Some(hover) = view.hover.as_ref() {
+        if let Some((cx, cy)) = r.cursor_screen {
+            let lines: Vec<String> = match &hover.status {
+                HoverStatus::Pending => vec!["…".to_string()],
+                HoverStatus::Ready(text) if !text.is_empty() => text.clone(),
+                _ => Vec::new(),
+            };
+            if !lines.is_empty() {
+                let popup = Popup::with_default_size(
+                    PopupAnchor { col: cx, row: cy },
+                    PopupContent::Text(&lines),
+                );
+                let _ = render_popup(&popup, &app.theme, body_area, frame);
+            }
+        }
     }
     // Cache the body rect (not strip) so hit-tests aim at the editor.
     app.workspace.render_cache.frame_rects.insert(id, body_area);
