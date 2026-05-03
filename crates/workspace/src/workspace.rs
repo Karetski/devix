@@ -73,11 +73,11 @@ pub struct Workspace {
     /// `attach_lsp` after the App spawns the coordinator. New documents
     /// created with a recognized language auto-attach; on `None` the
     /// workspace runs without LSP integration.
-    pub(crate) lsp: Option<LspWiring>,
+    pub(crate) lsp: Option<LspChannel>,
 }
 
 #[derive(Clone)]
-pub(crate) struct LspWiring {
+pub(crate) struct LspChannel {
     pub sink: mpsc::UnboundedSender<LspCommand>,
     pub encoding: PositionEncodingKind,
 }
@@ -129,14 +129,22 @@ impl Workspace {
         sink: mpsc::UnboundedSender<LspCommand>,
         encoding: PositionEncodingKind,
     ) {
-        self.lsp = Some(LspWiring { sink: sink.clone(), encoding: encoding.clone() });
+        self.lsp = Some(LspChannel { sink: sink.clone(), encoding: encoding.clone() });
         for (_, doc) in self.documents.iter_mut() {
             doc.attach_lsp(sink.clone(), encoding.clone());
         }
     }
 
-    pub(crate) fn lsp_wiring(&self) -> Option<LspWiring> {
+    pub(crate) fn lsp_channel(&self) -> Option<LspChannel> {
         self.lsp.clone()
+    }
+
+    /// Negotiated LSP position encoding, when the workspace is attached.
+    /// Exposed so callers outside the workspace crate (the App-side event
+    /// drain) can resolve LSP positions against ropes without having to
+    /// pull the private `LspChannel` shape.
+    pub fn lsp_encoding(&self) -> Option<PositionEncodingKind> {
+        self.lsp.as_ref().map(|w| w.encoding.clone())
     }
 
     pub fn active_view(&self) -> Option<&View> {

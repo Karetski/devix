@@ -79,7 +79,7 @@ impl Workspace {
             existing
         } else {
             let mut doc = Document::from_path(path)?;
-            if let Some(wiring) = self.lsp_wiring() {
+            if let Some(wiring) = self.lsp_channel() {
                 doc.attach_lsp(wiring.sink, wiring.encoding);
             }
             let id = self.documents.insert(doc);

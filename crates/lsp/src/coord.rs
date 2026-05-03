@@ -34,6 +34,7 @@ use lsp_types::{
 use tokio::sync::mpsc;
 
 use crate::client::{ClientNotification, LspClient};
+use crate::uri::{path_to_uri, uri_key, uri_to_path};
 
 #[derive(Clone, Debug)]
 pub struct LanguageConfig {
@@ -353,13 +354,10 @@ impl<S: Spawner> Coordinator<S> {
                 )?;
             }
             LspCommand::Hover { uri, position, anchor_char } => {
-                let client = Arc::clone(self.client_for_uri(&uri)?);
-                let events = events.clone();
-                let uri_resp = uri.clone();
-                tokio::spawn(async move {
+                self.spawn_uri_request(&uri, events, move |client, uri| async move {
                     let params = HoverParams {
                         text_document_position_params: TextDocumentPositionParams {
-                            text_document: TextDocumentIdentifier { uri },
+                            text_document: TextDocumentIdentifier { uri: uri.clone() },
                             position,
                         },
                         work_done_progress_params: Default::default(),
@@ -371,21 +369,14 @@ impl<S: Spawner> Coordinator<S> {
                         Ok(Some(h)) => hover_contents_to_lines(h.contents),
                         _ => Vec::new(),
                     };
-                    let _ = events.send(LspEvent::HoverResponse {
-                        uri: uri_resp,
-                        anchor_char,
-                        contents,
-                    });
-                });
+                    LspEvent::HoverResponse { uri, anchor_char, contents }
+                })?;
             }
             LspCommand::GotoDefinition { uri, position, anchor_char } => {
-                let client = Arc::clone(self.client_for_uri(&uri)?);
-                let events = events.clone();
-                let uri_resp = uri.clone();
-                tokio::spawn(async move {
+                self.spawn_uri_request(&uri, events, move |client, uri| async move {
                     let params = GotoDefinitionParams {
                         text_document_position_params: TextDocumentPositionParams {
-                            text_document: TextDocumentIdentifier { uri },
+                            text_document: TextDocumentIdentifier { uri: uri.clone() },
                             position,
                         },
                         work_done_progress_params: Default::default(),
@@ -398,18 +389,11 @@ impl<S: Spawner> Coordinator<S> {
                         Ok(Some(resp)) => goto_definition_to_locations(resp),
                         _ => Vec::new(),
                     };
-                    let _ = events.send(LspEvent::DefinitionResponse {
-                        uri: uri_resp,
-                        anchor_char,
-                        locations,
-                    });
-                });
+                    LspEvent::DefinitionResponse { uri, anchor_char, locations }
+                })?;
             }
             LspCommand::Completion { uri, position, anchor_char, trigger } => {
-                let client = Arc::clone(self.client_for_uri(&uri)?);
-                let events = events.clone();
-                let uri_resp = uri.clone();
-                tokio::spawn(async move {
+                self.spawn_uri_request(&uri, events, move |client, uri| async move {
                     let context = match trigger {
                         CompletionTrigger::Manual => CompletionContext {
                             trigger_kind: CompletionTriggerKind::INVOKED,
@@ -422,7 +406,7 @@ impl<S: Spawner> Coordinator<S> {
                     };
                     let params = CompletionParams {
                         text_document_position: TextDocumentPositionParams {
-                            text_document: TextDocumentIdentifier { uri },
+                            text_document: TextDocumentIdentifier { uri: uri.clone() },
                             position,
                         },
                         work_done_progress_params: Default::default(),
@@ -436,19 +420,11 @@ impl<S: Spawner> Coordinator<S> {
                         Ok(Some(resp)) => completion_response_flatten(resp),
                         _ => (Vec::new(), false),
                     };
-                    let _ = events.send(LspEvent::CompletionResponse {
-                        uri: uri_resp,
-                        anchor_char,
-                        items,
-                        is_incomplete,
-                    });
-                });
+                    LspEvent::CompletionResponse { uri, anchor_char, items, is_incomplete }
+                })?;
             }
             LspCommand::DocumentSymbols { uri, epoch } => {
-                let client = Arc::clone(self.client_for_uri(&uri)?);
-                let events = events.clone();
-                let uri_resp = uri.clone();
-                tokio::spawn(async move {
+                self.spawn_uri_request(&uri, events, move |client, uri| async move {
                     let params = DocumentSymbolParams {
                         text_document: TextDocumentIdentifier { uri: uri.clone() },
                         work_done_progress_params: Default::default(),
@@ -461,12 +437,8 @@ impl<S: Spawner> Coordinator<S> {
                         Ok(Some(r)) => document_symbol_response_flatten(r, &uri),
                         _ => Vec::new(),
                     };
-                    let _ = events.send(LspEvent::DocumentSymbolsResponse {
-                        uri: uri_resp,
-                        epoch,
-                        symbols,
-                    });
-                });
+                    LspEvent::DocumentSymbolsResponse { uri, epoch, symbols }
+                })?;
             }
             LspCommand::WorkspaceSymbols { query, epoch } => {
                 // workspace/symbol may be answered by *any* of the spawned
@@ -514,6 +486,33 @@ impl<S: Spawner> Coordinator<S> {
         self.clients
             .get(&key)
             .ok_or_else(|| anyhow!("no client for {key:?}"))
+    }
+
+    /// Spawn a fire-and-forget LSP request keyed off `uri`. Resolves the
+    /// client up front (so a missing-client error surfaces synchronously)
+    /// then runs `f(client, uri)` on the executor; whatever `LspEvent` it
+    /// returns is forwarded to the App-side drain. Used by every position-
+    /// anchored request (Hover, GotoDefinition, Completion,
+    /// DocumentSymbols) — they only differ in params, the request type
+    /// they call, and how they shape the response into an event.
+    fn spawn_uri_request<F, Fut>(
+        &self,
+        uri: &Uri,
+        events: &mpsc::UnboundedSender<LspEvent>,
+        f: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(Arc<LspClient>, Uri) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = LspEvent> + Send + 'static,
+    {
+        let client = Arc::clone(self.client_for_uri(uri)?);
+        let events_tx = events.clone();
+        let uri_for_task = uri.clone();
+        tokio::spawn(async move {
+            let event = f(client, uri_for_task).await;
+            let _ = events_tx.send(event);
+        });
+        Ok(())
     }
 }
 
@@ -670,43 +669,6 @@ fn goto_definition_to_locations(r: GotoDefinitionResponse) -> Vec<Location> {
                 range: l.target_selection_range,
             })
             .collect(),
-    }
-}
-
-/// `file://` percent-encoding is fiddly; for slice 1 we use the URI's
-/// `to_string()` as a HashMap key. This is round-trip stable for paths we
-/// produced ourselves via `path_to_uri`. Not normalized against arbitrary
-/// inputs — sufficient because every URI in the coordinator's docs map was
-/// produced by us.
-fn uri_key(uri: &Uri) -> String {
-    uri.as_str().to_string()
-}
-
-pub fn path_to_uri(path: &Path) -> Result<Uri> {
-    use std::str::FromStr;
-    let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let s = abs.to_string_lossy();
-    let normalized = if s.starts_with('/') {
-        format!("file://{s}")
-    } else {
-        format!("file:///{}", s.replace('\\', "/"))
-    };
-    Uri::from_str(&normalized).with_context(|| format!("building Uri from {normalized:?}"))
-}
-
-pub fn uri_to_path(uri: &Uri) -> Result<PathBuf> {
-    let s = uri.as_str();
-    let stripped = s
-        .strip_prefix("file://")
-        .ok_or_else(|| anyhow!("non-file URI: {s}"))?;
-    // POSIX: file:///foo → /foo. Windows: file:///C:/foo → C:/foo.
-    let stripped = stripped.strip_prefix('/').unwrap_or(stripped);
-    if stripped.starts_with(|c: char| c.is_ascii_alphabetic())
-        && stripped.chars().nth(1) == Some(':')
-    {
-        Ok(PathBuf::from(stripped))
-    } else {
-        Ok(PathBuf::from(format!("/{stripped}")))
     }
 }
 

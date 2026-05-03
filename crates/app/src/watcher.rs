@@ -39,8 +39,17 @@ pub fn drain_disk_events(app: &mut App) {
             run_action(app, Action::ReloadFromDisk);
         } else {
             // Background, clean: silently reload now (no prompt to show).
-            let res = app.workspace.documents[*did].buffer.reload_from_disk();
-            if let Ok(()) = res { /* ok */ }
+            // Routes through Document so tree-sitter reparses and LSP gets a
+            // full-text resync — bypassing this and touching the buffer
+            // directly leaves stale highlight spans and a desynced server.
+            if app.workspace.documents[*did].reload_from_disk().is_ok() {
+                let max = app.workspace.documents[*did].buffer.len_chars();
+                for view in app.workspace.views.values_mut() {
+                    if view.doc == *did {
+                        view.selection.clamp(max);
+                    }
+                }
+            }
             // On error, leave the buffer alone; nothing to surface.
         }
     }

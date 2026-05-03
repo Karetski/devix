@@ -9,8 +9,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
-use devix_config::{Chord, Keymap, Theme};
-use devix_workspace::{CommandRegistry, PaletteState};
+use devix_config::Theme;
+use devix_workspace::{Chord, CommandRegistry, Keymap, PaletteState};
 
 /// Compute the centered area the palette occupies inside `parent`. ~60% of
 /// width, capped to a usable height range so it never dominates a tall window

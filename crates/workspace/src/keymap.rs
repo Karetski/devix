@@ -14,9 +14,11 @@
 use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use devix_workspace::{Action, CommandId, CommandRegistry};
 
-use crate::commands as cmd;
+use crate::action::Action;
+use crate::builtins as cmd;
+use crate::command::{CommandId, CommandRegistry};
+use crate::layout::Direction;
 
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
 pub struct Chord {
@@ -161,10 +163,10 @@ pub fn default_keymap() -> Keymap {
     k.bind_action(chord(ch('f'), A), Action::MoveWordRight { extend: false });
 
     // Directional focus traversal
-    k.bind_action(chord(KeyCode::Left,  C | A), Action::FocusDir(devix_workspace::Direction::Left));
-    k.bind_action(chord(KeyCode::Right, C | A), Action::FocusDir(devix_workspace::Direction::Right));
-    k.bind_action(chord(KeyCode::Up,    C | A), Action::FocusDir(devix_workspace::Direction::Up));
-    k.bind_action(chord(KeyCode::Down,  C | A), Action::FocusDir(devix_workspace::Direction::Down));
+    k.bind_action(chord(KeyCode::Left,  C | A), Action::FocusDir(Direction::Left));
+    k.bind_action(chord(KeyCode::Right, C | A), Action::FocusDir(Direction::Right));
+    k.bind_action(chord(KeyCode::Up,    C | A), Action::FocusDir(Direction::Up));
+    k.bind_action(chord(KeyCode::Down,  C | A), Action::FocusDir(Direction::Down));
 
     // Edits
     k.bind_action(chord(KeyCode::Backspace, NONE), Action::DeleteBack    { word: false });

@@ -53,6 +53,72 @@ pub fn translate_changes(
         .collect()
 }
 
+/// Inverse of [`position_in_rope`]: resolve an LSP `(line, character)` to a
+/// char offset in `rope` under the negotiated encoding. Returns `None` when
+/// `line` is past the end of the rope; otherwise the result is clamped to
+/// the line's char length (so a `character` value past EOL lands at EOL
+/// rather than overrunning into the next line).
+///
+/// Call sites: diagnostic positioning, hover/goto-def cursor placement, and
+/// completion edit application. Centralizing the math here keeps line-clamp
+/// behaviour, trailing-newline stripping, and per-encoding walking
+/// consistent — three near-identical inline copies were the prior state.
+pub fn char_in_rope(
+    rope: &Rope,
+    line: u32,
+    character: u32,
+    encoding: &PositionEncodingKind,
+) -> Option<usize> {
+    let line = line as usize;
+    if line >= rope.len_lines() {
+        return None;
+    }
+    let line_start = rope.line_to_char(line);
+    let line_slice = rope.line(line);
+
+    // Strip the line terminator so a `character` value past visible EOL
+    // clamps to EOL rather than the next line. Both \n and the optional
+    // \r in CRLF have to come off — servers don't agree on which they
+    // count as line-end.
+    let mut line_chars = line_slice.len_chars();
+    if line_chars > 0 && line_slice.char(line_chars - 1) == '\n' {
+        line_chars -= 1;
+    }
+    if line_chars > 0 && line_slice.char(line_chars - 1) == '\r' {
+        line_chars -= 1;
+    }
+
+    let char_in_line = if encoding == &PositionEncodingKind::UTF8 {
+        let mut remaining = character as usize;
+        let mut idx = 0;
+        for c in line_slice.chars().take(line_chars) {
+            let b = char::len_utf8(c);
+            if remaining < b {
+                break;
+            }
+            remaining -= b;
+            idx += 1;
+        }
+        idx.min(line_chars)
+    } else if encoding == &PositionEncodingKind::UTF32 {
+        (character as usize).min(line_chars)
+    } else {
+        // utf-16 (LSP default): walk surrogate-aware code units.
+        let mut remaining = character as usize;
+        let mut idx = 0;
+        for c in line_slice.chars().take(line_chars) {
+            let u = char::len_utf16(c);
+            if remaining < u {
+                break;
+            }
+            remaining -= u;
+            idx += 1;
+        }
+        idx.min(line_chars)
+    };
+    Some(line_start + char_in_line)
+}
+
 /// Build an LSP `Position` from a char offset into `rope`, using the
 /// negotiated encoding.
 pub fn position_in_rope(
@@ -179,5 +245,43 @@ mod tests {
         let r = rope("hi");
         let p = position_in_rope(&r, 99, &PositionEncodingKind::UTF8);
         assert_eq!(p, Position { line: 0, character: 2 });
+    }
+
+    #[test]
+    fn char_in_rope_round_trips_utf8() {
+        let r = rope("héllo\nwörld");
+        for i in 0..=r.len_chars() {
+            let p = position_in_rope(&r, i, &PositionEncodingKind::UTF8);
+            assert_eq!(char_in_rope(&r, p.line, p.character, &PositionEncodingKind::UTF8), Some(i));
+        }
+    }
+
+    #[test]
+    fn char_in_rope_round_trips_utf16() {
+        let r = rope("a😀b\ncd");
+        for i in 0..=r.len_chars() {
+            let p = position_in_rope(&r, i, &PositionEncodingKind::UTF16);
+            assert_eq!(char_in_rope(&r, p.line, p.character, &PositionEncodingKind::UTF16), Some(i));
+        }
+    }
+
+    #[test]
+    fn char_in_rope_returns_none_for_line_past_eof() {
+        let r = rope("a\nb");
+        assert!(char_in_rope(&r, 99, 0, &PositionEncodingKind::UTF8).is_none());
+    }
+
+    #[test]
+    fn char_in_rope_clamps_character_past_eol() {
+        let r = rope("ab\ncd");
+        // Line 0 only has 2 chars; character=99 should clamp to end of line.
+        assert_eq!(char_in_rope(&r, 0, 99, &PositionEncodingKind::UTF8), Some(2));
+    }
+
+    #[test]
+    fn char_in_rope_strips_crlf_terminator() {
+        let r = rope("ab\r\ncd");
+        // Line 0 visible length is 2 (b is index 1, EOL clamps to 2).
+        assert_eq!(char_in_rope(&r, 0, 99, &PositionEncodingKind::UTF8), Some(2));
     }
 }

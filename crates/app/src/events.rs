@@ -3,8 +3,9 @@
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind};
-use devix_config::chord_from_key;
-use devix_workspace::{Action, Context, Overlay, ScrollMode, TabStripHit, Viewport, dispatch};
+use devix_workspace::{
+    Action, Context, Overlay, TabStripHit, Viewport, chord_from_key, dispatch,
+};
 
 use crate::app::App;
 
@@ -209,9 +210,6 @@ fn handle_tab_strip_click(app: &mut App, hit: TabStripHit) {
     let TabStripHit::Tab { frame, idx } = hit;
     app.workspace.focus_frame(frame);
     app.workspace.activate_tab(frame, idx);
-    if let Some(v) = app.workspace.active_view_mut() {
-        v.scroll_mode = ScrollMode::Anchored;
-    }
     app.dirty = true;
 }
 
@@ -238,7 +236,6 @@ pub fn run_action(app: &mut App, action: Action) {
         height: rect.height,
         gutter_width,
     };
-    let is_scroll = matches!(action, Action::ScrollBy(_));
 
     let mut cx = Context {
         workspace: &mut app.workspace,
@@ -251,8 +248,10 @@ pub fn run_action(app: &mut App, action: Action) {
     };
     dispatch(action, &mut cx);
 
-    if let Some(v) = app.workspace.active_view_mut() {
-        v.scroll_mode = if is_scroll { ScrollMode::Free } else { ScrollMode::Anchored };
-    }
+    // scroll_mode is owned by the dispatch arms now. Cursor-moving actions
+    // route through View::move_to (which sets Anchored); ScrollBy sets Free
+    // explicitly. Actions that don't touch the cursor leave it alone — so a
+    // wheel-scroll followed by Save no longer snaps the viewport back to
+    // the cursor on the next frame.
     app.dirty = true;
 }

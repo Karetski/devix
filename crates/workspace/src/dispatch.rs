@@ -1,14 +1,14 @@
 //! Action dispatcher.
 
-use devix_buffer::{Buffer, Range, Selection, delete_range_tx, replace_selection_tx};
-use devix_lsp::{CompletionTrigger, LspCommand, position_in_rope};
+use devix_buffer::{Buffer, Change, Range, Selection, Transaction, delete_range_tx, replace_selection_tx};
+use devix_lsp::{CompletionTrigger, LspCommand, char_in_rope, position_in_rope};
 use lsp_types::CompletionTextEdit;
 
 use crate::action::Action;
 use crate::context::{Context, Viewport};
 use crate::overlay::{Overlay, PaletteState, SymbolsKind, SymbolsState};
-use crate::view::{CompletionState, CompletionStatus, HoverState, HoverStatus, ViewId};
-use crate::workspace::Workspace;
+use crate::view::{CompletionState, CompletionStatus, HoverState, HoverStatus, ScrollMode, View, ViewId};
+use crate::workspace::{LspChannel, Workspace};
 
 /// Trigger characters that auto-fire completion. Hardcoded for slice 3;
 /// a follow-up will surface the server's `ServerCapabilities.completion_provider
@@ -19,48 +19,16 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
     use Action::*;
     match action {
         // ---- motion ----
-        MoveLeft { extend } => {
-            let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-            let to = cx.workspace.documents[did].buffer.move_left(cx.workspace.views[vid].primary().head);
-            cx.workspace.views[vid].move_to(to, extend, false);
-        }
-        MoveRight { extend } => {
-            let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-            let to = cx.workspace.documents[did].buffer.move_right(cx.workspace.views[vid].primary().head);
-            cx.workspace.views[vid].move_to(to, extend, false);
-        }
+        MoveLeft { extend } => move_to_with(cx, extend, |b, h| b.move_left(h)),
+        MoveRight { extend } => move_to_with(cx, extend, |b, h| b.move_right(h)),
         MoveUp { extend } => move_vertical(cx, false, extend),
         MoveDown { extend } => move_vertical(cx, true, extend),
-        MoveWordLeft { extend } => {
-            let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-            let to = cx.workspace.documents[did].buffer.word_left(cx.workspace.views[vid].primary().head);
-            cx.workspace.views[vid].move_to(to, extend, false);
-        }
-        MoveWordRight { extend } => {
-            let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-            let to = cx.workspace.documents[did].buffer.word_right(cx.workspace.views[vid].primary().head);
-            cx.workspace.views[vid].move_to(to, extend, false);
-        }
-        MoveLineStart { extend } => {
-            let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-            let to = cx.workspace.documents[did].buffer.line_start_of(cx.workspace.views[vid].primary().head);
-            cx.workspace.views[vid].move_to(to, extend, false);
-        }
-        MoveLineEnd { extend } => {
-            let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-            let to = cx.workspace.documents[did].buffer.line_end_of(cx.workspace.views[vid].primary().head);
-            cx.workspace.views[vid].move_to(to, extend, false);
-        }
-        MoveDocStart { extend } => {
-            let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-            let to = cx.workspace.documents[did].buffer.doc_start();
-            cx.workspace.views[vid].move_to(to, extend, false);
-        }
-        MoveDocEnd { extend } => {
-            let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-            let to = cx.workspace.documents[did].buffer.doc_end();
-            cx.workspace.views[vid].move_to(to, extend, false);
-        }
+        MoveWordLeft { extend } => move_to_with(cx, extend, |b, h| b.word_left(h)),
+        MoveWordRight { extend } => move_to_with(cx, extend, |b, h| b.word_right(h)),
+        MoveLineStart { extend } => move_to_with(cx, extend, |b, h| b.line_start_of(h)),
+        MoveLineEnd { extend } => move_to_with(cx, extend, |b, h| b.line_end_of(h)),
+        MoveDocStart { extend } => move_to_with(cx, extend, |b, _| b.doc_start()),
+        MoveDocEnd { extend } => move_to_with(cx, extend, |b, _| b.doc_end()),
         PageUp { extend } => {
             let step = page_step(cx.viewport);
             for _ in 0..step { move_vertical(cx, false, extend); }
@@ -80,7 +48,7 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
             replace_selection(cx, c.encode_utf8(&mut buf));
             if TRIGGER_CHARS.contains(&c) {
                 drop(saved); // trigger replaces any prior popup
-                dispatch(Action::TriggerCompletion, cx);
+                dispatch(Action::TriggerCompletion(CompletionTrigger::Char(c)), cx);
             } else if let Some(state) = saved {
                 if let Some((_, vid, _)) = cx.workspace.active_ids() {
                     cx.workspace.views[vid].completion = Some(state);
@@ -128,11 +96,7 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
         Undo => {
             let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
             if let Some(sel) = cx.workspace.documents[did].undo() {
-                let v = &mut cx.workspace.views[vid];
-                v.selection = sel;
-                v.target_col = None;
-                v.hover = None;
-                v.completion = None;
+                cx.workspace.views[vid].adopt_selection(sel);
                 cx.status.clear();
             } else {
                 cx.status.set("nothing to undo");
@@ -141,11 +105,7 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
         Redo => {
             let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
             if let Some(sel) = cx.workspace.documents[did].redo() {
-                let v = &mut cx.workspace.views[vid];
-                v.selection = sel;
-                v.target_col = None;
-                v.hover = None;
-                v.completion = None;
+                cx.workspace.views[vid].adopt_selection(sel);
                 cx.status.clear();
             } else {
                 cx.status.set("nothing to redo");
@@ -156,11 +116,7 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
         SelectAll => {
             let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
             let end = cx.workspace.documents[did].buffer.len_chars();
-            let v = &mut cx.workspace.views[vid];
-            v.selection = Selection::single(Range::new(0, end));
-            v.target_col = None;
-            v.hover = None;
-            v.completion = None;
+            cx.workspace.views[vid].adopt_selection(Selection::single(Range::new(0, end)));
         }
 
         // ---- clipboard ----
@@ -264,71 +220,43 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
 
         // ---- language server ----
         Hover => {
-            let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-            let Some(wiring) = cx.workspace.lsp_wiring() else { return };
-            let doc = &cx.workspace.documents[did];
-            let Some(uri) = doc.lsp_uri().cloned() else { return };
-            let head = cx.workspace.views[vid].primary().head;
-            let position = position_in_rope(doc.buffer.rope(), head, &wiring.encoding);
-            let _ = wiring.sink.send(LspCommand::Hover {
-                uri,
-                position,
-                anchor_char: head,
+            let Some(req) = lsp_position_request(cx.workspace) else { return };
+            let _ = req.wiring.sink.send(LspCommand::Hover {
+                uri: req.uri,
+                position: req.position,
+                anchor_char: req.head,
             });
-            cx.workspace.views[vid].hover = Some(HoverState {
-                anchor_char: head,
+            cx.workspace.views[req.vid].hover = Some(HoverState {
+                anchor_char: req.head,
                 status: HoverStatus::Pending,
             });
         }
         GotoDefinition => {
-            let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-            let Some(wiring) = cx.workspace.lsp_wiring() else { return };
-            let doc = &cx.workspace.documents[did];
-            let Some(uri) = doc.lsp_uri().cloned() else { return };
-            let head = cx.workspace.views[vid].primary().head;
-            let position = position_in_rope(doc.buffer.rope(), head, &wiring.encoding);
-            let _ = wiring.sink.send(LspCommand::GotoDefinition {
-                uri,
-                position,
-                anchor_char: head,
+            let Some(req) = lsp_position_request(cx.workspace) else { return };
+            let _ = req.wiring.sink.send(LspCommand::GotoDefinition {
+                uri: req.uri,
+                position: req.position,
+                anchor_char: req.head,
             });
         }
-        TriggerCompletion => {
-            let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-            let Some(wiring) = cx.workspace.lsp_wiring() else { return };
-            let doc = &cx.workspace.documents[did];
-            let Some(uri) = doc.lsp_uri().cloned() else { return };
-            let head = cx.workspace.views[vid].primary().head;
-            let position = position_in_rope(doc.buffer.rope(), head, &wiring.encoding);
-            // Decide whether this trigger is from a typed character or an
-            // explicit invocation: peek the char immediately to the cursor's
-            // left and check it against TRIGGER_CHARS. This is good enough
-            // for slice 3; a more rigorous design threads the trigger
-            // through the InsertChar arm.
-            let prev_char = if head > 0 {
-                doc.buffer.rope().char(head - 1)
-            } else {
-                '\0'
-            };
-            let trigger = if TRIGGER_CHARS.contains(&prev_char) {
-                CompletionTrigger::Char(prev_char)
-            } else {
-                CompletionTrigger::Manual
-            };
-            let _ = wiring.sink.send(LspCommand::Completion {
-                uri,
-                position,
-                anchor_char: head,
+        TriggerCompletion(trigger) => {
+            let Some(req) = lsp_position_request(cx.workspace) else { return };
+            let _ = req.wiring.sink.send(LspCommand::Completion {
+                uri: req.uri,
+                position: req.position,
+                anchor_char: req.head,
                 trigger,
             });
             // The query starts where the user can still meaningfully filter.
             // For trigger-char (`.`, `:`), the cursor itself; for manual,
             // walk back over the identifier. ident_start_at handles both.
-            let query_start = ident_start_at(&doc.buffer, head);
-            cx.workspace.views[vid].completion = Some(CompletionState {
-                anchor_char: head,
+            let did = cx.workspace.views[req.vid].doc;
+            let query_start = ident_start_at(&cx.workspace.documents[did].buffer, req.head);
+            cx.workspace.views[req.vid].completion = Some(CompletionState {
+                anchor_char: req.head,
                 query_start,
                 items: Vec::new(),
+                labels_lower: Vec::new(),
                 filtered: Vec::new(),
                 selected: 0,
                 status: CompletionStatus::Pending,
@@ -353,7 +281,7 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
         // ---- symbol picker overlay ----
         ShowDocumentSymbols => {
             let Some((_, _vid, did)) = cx.workspace.active_ids() else { return };
-            let Some(wiring) = cx.workspace.lsp_wiring() else {
+            let Some(wiring) = cx.workspace.lsp_channel() else {
                 cx.status.set("LSP not attached for this document");
                 return;
             };
@@ -369,7 +297,7 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
             *cx.overlay = Some(Overlay::Symbols(state));
         }
         ShowWorkspaceSymbols => {
-            let Some(wiring) = cx.workspace.lsp_wiring() else {
+            let Some(wiring) = cx.workspace.lsp_channel() else {
                 cx.status.set("LSP not attached");
                 return;
             };
@@ -400,7 +328,7 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
                 if needs_refetch {
                     let epoch = s.epoch;
                     let query = s.query.clone();
-                    if let Some(wiring) = cx.workspace.lsp_wiring() {
+                    if let Some(wiring) = cx.workspace.lsp_channel() {
                         let _ = wiring.sink.send(LspCommand::WorkspaceSymbols { query, epoch });
                     }
                 }
@@ -440,6 +368,11 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
                 .saturating_add(delta)
                 .clamp(0, max as isize) as usize;
             v.set_scroll_top(next);
+            // Wheel/trackpad scrolling expresses "I want to look here, not at
+            // the cursor" — flip out of Anchored so the next render doesn't
+            // immediately snap back. The next cursor-moving action restores
+            // Anchored via move_to.
+            v.scroll_mode = crate::view::ScrollMode::Free;
         }
     }
 }
@@ -449,6 +382,43 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
 // ---------------------------------------------------------------------------
 
 fn page_step(v: Viewport) -> usize { v.height.saturating_sub(1).max(1) as usize }
+
+/// Inputs every position-anchored LSP request needs: the active view, the
+/// LSP channel, the document's URI, the cursor position translated to LSP
+/// coordinates, and the head as a char index. Returns None when any of
+/// those is unavailable (no active view, LSP not attached, doc not on
+/// disk yet).
+struct LspPositionRequest {
+    vid: ViewId,
+    wiring: LspChannel,
+    uri: lsp_types::Uri,
+    position: lsp_types::Position,
+    head: usize,
+}
+
+fn lsp_position_request(ws: &Workspace) -> Option<LspPositionRequest> {
+    let (_, vid, did) = ws.active_ids()?;
+    let wiring = ws.lsp_channel()?;
+    let doc = &ws.documents[did];
+    let uri = doc.lsp_uri().cloned()?;
+    let head = ws.views[vid].primary().head;
+    let position = position_in_rope(doc.buffer.rope(), head, &wiring.encoding);
+    Some(LspPositionRequest { vid, wiring, uri, position, head })
+}
+
+/// Apply a single-axis motion: pick the new char index from the active
+/// buffer + current head, then `move_to` it. Used by every cursor-key
+/// arm except the vertical pair (which threads `target_col`).
+fn move_to_with(
+    cx: &mut Context<'_>,
+    extend: bool,
+    motion: impl FnOnce(&Buffer, usize) -> usize,
+) {
+    let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
+    let head = cx.workspace.views[vid].primary().head;
+    let to = motion(&cx.workspace.documents[did].buffer, head);
+    cx.workspace.views[vid].move_to(to, extend, false);
+}
 
 fn move_vertical(cx: &mut Context<'_>, down: bool, extend: bool) {
     let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
@@ -477,8 +447,7 @@ fn replace_selection(cx: &mut Context<'_>, text: &str) {
     cx.workspace.documents[did].apply_tx(tx);
     let v = &mut cx.workspace.views[vid];
     v.selection = after;
-    v.target_col = None;
-    v.hover = None;
+    reset_motion_state(v);
     cx.status.clear();
 }
 
@@ -504,9 +473,18 @@ fn delete_primary_or(
     cx.workspace.documents[did].apply_tx(tx);
     let v = &mut cx.workspace.views[vid];
     v.selection = after;
+    reset_motion_state(v);
+    cx.status.clear();
+}
+
+/// Reset transient view state shared with `adopt_selection` *minus* the
+/// completion popup. Used by edit helpers (`replace_selection`,
+/// `delete_primary_or`) where the caller (InsertChar / DeleteBack) wants
+/// to preserve completion across the edit and re-filter it afterward.
+fn reset_motion_state(v: &mut View) {
     v.target_col = None;
     v.hover = None;
-    cx.status.clear();
+    v.scroll_mode = ScrollMode::Anchored;
 }
 
 fn current_line_span(buf: &Buffer, head: usize) -> (usize, usize) {
@@ -561,10 +539,7 @@ fn do_cut(cx: &mut Context<'_>) {
     );
     let after = tx.selection_after.clone();
     cx.workspace.documents[did].apply_tx(tx);
-    let v = &mut cx.workspace.views[vid];
-    v.selection = after;
-    v.target_col = None;
-    v.hover = None;
+    cx.workspace.views[vid].adopt_selection(after);
     cx.status.set(if line_cut { "cut line" } else { "cut" });
 }
 
@@ -637,16 +612,18 @@ pub fn refilter_completion(ws: &mut Workspace, vid: ViewId) {
             scored.push((i, 0));
         }
     } else {
+        // labels_lower is built alongside items by `set_items`, so refilter
+        // doesn't re-lowercase every label on every keystroke. The two
+        // vecs are kept in lockstep; index by `i` into both.
         let prefix_lower = prefix.to_lowercase();
-        for (i, item) in state.items.iter().enumerate() {
-            let label_lower = item.label.to_lowercase();
+        for (i, label_lower) in state.labels_lower.iter().enumerate() {
             if let Some(pos) = label_lower.find(&prefix_lower) {
                 // Earlier match position scores higher; exact-prefix match
                 // ranks above mid-string. Tie-break by shorter label so
                 // the canonical name shows first.
                 let mut score = 1000 - (pos as i32 * 10);
                 if pos == 0 { score += 500; }
-                score -= item.label.len() as i32;
+                score -= state.items[i].label.len() as i32;
                 scored.push((i, score));
             }
         }
@@ -671,7 +648,7 @@ fn apply_completion_accept(cx: &mut Context<'_>) {
     let head = cx.workspace.views[vid].primary().head;
     let encoding = cx
         .workspace
-        .lsp_wiring()
+        .lsp_channel()
         .map(|w| w.encoding)
         .unwrap_or(lsp_types::PositionEncodingKind::UTF16);
 
@@ -681,8 +658,9 @@ fn apply_completion_accept(cx: &mut Context<'_>) {
             CompletionTextEdit::InsertAndReplace(ir) => (ir.replace, ir.new_text.clone()),
         };
         let rope = cx.workspace.documents[did].buffer.rope();
-        let s = lsp_pos_to_char(rope, range.start.line, range.start.character, &encoding);
-        let e = lsp_pos_to_char(rope, range.end.line, range.end.character, &encoding);
+        let len = rope.len_chars();
+        let s = char_in_rope(rope, range.start.line, range.start.character, &encoding).unwrap_or(len);
+        let e = char_in_rope(rope, range.end.line, range.end.character, &encoding).unwrap_or(len);
         (s, e, txt)
     } else {
         // Fallback: replace the typed-prefix span [query_start, cursor)
@@ -696,70 +674,23 @@ fn apply_completion_accept(cx: &mut Context<'_>) {
     let start = start.min(len);
     let end = end.min(len);
     let (start, end) = if start <= end { (start, end) } else { (end, start) };
-    let tx = if start == end {
-        replace_selection_tx(buf, &Selection::point(start), &new_text)
-    } else {
-        let del = delete_range_tx(buf, &cx.workspace.views[vid].selection, start, end);
-        // Apply delete first so we can re-anchor selection at `start`, then
-        // insert. Two transactions keeps undo behavior clean.
-        cx.workspace.documents[did].apply_tx(del);
-        replace_selection_tx(
-            &cx.workspace.documents[did].buffer,
-            &Selection::point(start),
-            &new_text,
-        )
+    // One Change with both remove and insert keeps the accept atomic: a
+    // single undo press reverts to the pre-accept state. Two separate
+    // transactions (delete then insert) showed up as two undo steps.
+    let insert_chars = new_text.chars().count();
+    let tx = Transaction {
+        changes: vec![Change {
+            start,
+            remove_len: end - start,
+            insert: new_text,
+        }],
+        selection_before: cx.workspace.views[vid].selection.clone(),
+        selection_after: Selection::single(Range::point(start + insert_chars)),
     };
     let after = tx.selection_after.clone();
     cx.workspace.documents[did].apply_tx(tx);
-    let v = &mut cx.workspace.views[vid];
-    v.selection = after;
-    v.target_col = None;
-    v.hover = None;
-    v.completion = None;
+    cx.workspace.views[vid].adopt_selection(after);
     cx.status.clear();
-}
-
-/// Reverse-translate an LSP `(line, character)` to a char offset using
-/// the negotiated encoding. Mirrors `Document::lsp_pos_to_char` but
-/// works directly off a rope so we don't have to plumb back through
-/// Document for completion edits.
-fn lsp_pos_to_char(
-    rope: &ropey::Rope,
-    line: u32,
-    character: u32,
-    encoding: &lsp_types::PositionEncodingKind,
-) -> usize {
-    let line = (line as usize).min(rope.len_lines().saturating_sub(1));
-    let line_start = rope.line_to_char(line);
-    let line_slice = rope.line(line);
-    let mut line_chars = line_slice.len_chars();
-    if line_chars > 0 && line_slice.char(line_chars - 1) == '\n' {
-        line_chars -= 1;
-    }
-    let char_in_line = if encoding == &lsp_types::PositionEncodingKind::UTF8 {
-        let mut remaining = character as usize;
-        let mut idx = 0;
-        for c in line_slice.chars().take(line_chars) {
-            let b = char::len_utf8(c);
-            if remaining < b { break; }
-            remaining -= b;
-            idx += 1;
-        }
-        idx.min(line_chars)
-    } else if encoding == &lsp_types::PositionEncodingKind::UTF32 {
-        (character as usize).min(line_chars)
-    } else {
-        let mut remaining = character as usize;
-        let mut idx = 0;
-        for c in line_slice.chars().take(line_chars) {
-            let u = char::len_utf16(c);
-            if remaining < u { break; }
-            remaining -= u;
-            idx += 1;
-        }
-        idx.min(line_chars)
-    };
-    line_start + char_in_line
 }
 
 /// Open the file at `loc.uri` (reusing an open view if any) and place the
@@ -772,7 +703,7 @@ fn jump_to_location(cx: &mut Context<'_>, loc: lsp_types::Location) {
     let Ok(target_path) = uri_to_path(&loc.uri) else { return };
     let encoding = cx
         .workspace
-        .lsp_wiring()
+        .lsp_channel()
         .map(|w| w.encoding)
         .unwrap_or(lsp_types::PositionEncodingKind::UTF16);
 
@@ -824,7 +755,8 @@ fn place_cursor_at_pos(
 ) {
     let did = cx.workspace.views[vid].doc;
     let rope = cx.workspace.documents[did].buffer.rope();
-    let idx = lsp_pos_to_char(rope, loc.range.start.line, loc.range.start.character, encoding);
+    let idx = char_in_rope(rope, loc.range.start.line, loc.range.start.character, encoding)
+        .unwrap_or_else(|| rope.len_chars());
     let v = &mut cx.workspace.views[vid];
     v.move_to(idx, false, false);
     v.scroll_mode = crate::view::ScrollMode::Anchored;
@@ -893,6 +825,7 @@ mod tests {
                 CompletionItem { label: "new".into(), ..Default::default() },
                 CompletionItem { label: "next".into(), ..Default::default() },
             ],
+            labels_lower: vec!["new".into(), "next".into()],
             filtered: vec![0, 1],
             selected: 0,
             status: CompletionStatus::Ready,
@@ -901,6 +834,60 @@ mod tests {
         ws.views[vid].selection = Selection::point(3);
         refilter_completion(&mut ws, vid);
         assert!(ws.views[vid].completion.is_none(), "non-ident in prefix dismisses");
+    }
+
+    #[test]
+    fn completion_accept_replace_is_one_undo_step() {
+        use crate::command::CommandRegistry;
+        use crate::context::StatusLine;
+        // Set up a doc containing "ne" with cursor at end. Completion item
+        // carries a text_edit replacing [0, 2) with "next". A single undo
+        // press must restore the original "ne" — pre-fix this took two
+        // (delete then insert were separate transactions).
+        let (mut ws, vid) = ws_with_text("ne");
+        let mut overlay: Option<crate::overlay::Overlay> = None;
+        let mut clipboard: Option<arboard::Clipboard> = None;
+        let mut status = StatusLine::default();
+        let mut quit = false;
+        let commands = CommandRegistry::new();
+
+        let item = lsp_types::CompletionItem {
+            label: "next".into(),
+            text_edit: Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
+                range: lsp_types::Range {
+                    start: lsp_types::Position { line: 0, character: 0 },
+                    end: lsp_types::Position { line: 0, character: 2 },
+                },
+                new_text: "next".into(),
+            })),
+            ..Default::default()
+        };
+        ws.views[vid].completion = Some(CompletionState {
+            anchor_char: 2,
+            query_start: 0,
+            items: vec![item],
+            labels_lower: vec!["next".into()],
+            filtered: vec![0],
+            selected: 0,
+            status: CompletionStatus::Ready,
+        });
+
+        let mut cx = Context {
+            workspace: &mut ws,
+            clipboard: &mut clipboard,
+            status: &mut status,
+            quit: &mut quit,
+            viewport: Viewport::default(),
+            commands: &commands,
+            overlay: &mut overlay,
+        };
+        dispatch(Action::CompletionAccept, &mut cx);
+
+        let did = ws.views[vid].doc;
+        assert_eq!(ws.documents[did].buffer.rope().to_string(), "next");
+        let _ = ws.documents[did].undo();
+        assert_eq!(ws.documents[did].buffer.rope().to_string(), "ne",
+            "single undo should restore pre-accept text");
     }
 
     #[test]
@@ -914,6 +901,7 @@ mod tests {
                 CompletionItem { label: "into".into(), ..Default::default() }, // contains 'n' but later
                 CompletionItem { label: "new".into(), ..Default::default() },
             ],
+            labels_lower: vec!["next".into(), "into".into(), "new".into()],
             filtered: vec![],
             selected: 0,
             status: CompletionStatus::Ready,

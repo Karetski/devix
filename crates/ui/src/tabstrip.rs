@@ -14,7 +14,7 @@
 //!    partially-visible tab.
 
 use devix_collection::{
-    Axis, CollectionLayout, CollectionPass, CollectionState, Hit, LinearLayout,
+    CollectionLayout, CollectionPass, CollectionState, Hit, LinearLayout,
 };
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -41,29 +41,28 @@ pub struct TabStripRender {
 pub const MIN_TAB_WIDTH: u32 = 8;
 const SEP: &str = "│";
 
-pub fn render_tabstrip(
+/// Pre-paint scroll math for the strip: clamp on resize/tab-close, and
+/// honour a one-shot `recenter_active` request. Render-pure path runs after.
+///
+/// Split out from [`render_tabstrip`] so the renderer can stay pure (PLAN.md
+/// rule 3). Callers should run this in their layout phase, *before* paint.
+pub fn layout_tabstrip(
     tabs: &[TabInfo],
     active: usize,
     state: &mut CollectionState,
     recenter_active: &mut bool,
     area: Rect,
-    frame: &mut Frame<'_>,
-) -> TabStripRender {
+) {
     if tabs.is_empty() || area.width == 0 || area.height == 0 {
         // No content → reset scroll so a future re-fill doesn't inherit stale state.
         state.scroll_x = 0;
         state.scroll_y = 0;
         *recenter_active = false;
-        return TabStripRender::default();
+        return;
     }
     let active = active.min(tabs.len() - 1);
     let widths = pick_widths(tabs, area.width);
-    let layout = LinearLayout {
-        axis: Axis::Horizontal,
-        sizes: widths,
-        cross: 1,
-        spacing: 1,
-    };
+    let layout = LinearLayout::horizontal(widths, 1).with_spacing(1);
     let content = layout.content_size();
     let viewport = (area.width as u32, area.height as u32);
 
@@ -76,6 +75,22 @@ pub fn render_tabstrip(
         state.ensure_visible(layout.rect_for(active), content, viewport);
         *recenter_active = false;
     }
+}
+
+pub fn render_tabstrip(
+    tabs: &[TabInfo],
+    active: usize,
+    state: &CollectionState,
+    area: Rect,
+    frame: &mut Frame<'_>,
+) -> TabStripRender {
+    if tabs.is_empty() || area.width == 0 || area.height == 0 {
+        return TabStripRender::default();
+    }
+    let active = active.min(tabs.len() - 1);
+    let widths = pick_widths(tabs, area.width);
+    let layout = LinearLayout::horizontal(widths, 1).with_spacing(1);
+    let content = layout.content_size();
 
     let mut hits = Vec::new();
     let pass = CollectionPass::new(&layout, state, area);

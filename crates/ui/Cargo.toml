@@ -6,11 +6,5 @@ rust-version.workspace = true
 
 [dependencies]
 ratatui.workspace = true
-ropey.workspace = true
-crossterm.workspace = true
-devix-buffer.workspace = true
 devix-collection.workspace = true
-devix-syntax.workspace = true
 devix-config.workspace = true
-devix-workspace.workspace = true
-lsp-types.workspace = true

@@ -12,7 +12,7 @@ use std::sync::mpsc as std_mpsc;
 
 use anyhow::Result;
 use devix_buffer::{Buffer, Selection, Transaction};
-use devix_lsp::{LspCommand, Edit as LspEdit, path_to_uri, translate_changes};
+use devix_lsp::{LspCommand, Edit as LspEdit, char_in_rope, path_to_uri, translate_changes};
 use devix_syntax::{HighlightSpan, Highlighter, Language, input_edit_for_range};
 use lsp_types::{
     Diagnostic, DiagnosticSeverity, PositionEncodingKind, TextDocumentContentChangeEvent, Uri,
@@ -278,8 +278,12 @@ impl Document {
         let enc = &self.lsp_encoding;
         let mut out = Vec::with_capacity(raw.len());
         for d in raw {
-            let Some((sl, sc)) = lsp_pos_to_char(rope, d.range.start.line, d.range.start.character, enc) else { continue };
-            let Some((el, ec)) = lsp_pos_to_char(rope, d.range.end.line, d.range.end.character, enc) else { continue };
+            let Some(s_abs) = char_in_rope(rope, d.range.start.line, d.range.start.character, enc) else { continue };
+            let Some(e_abs) = char_in_rope(rope, d.range.end.line, d.range.end.character, enc) else { continue };
+            let sl = rope.char_to_line(s_abs);
+            let el = rope.char_to_line(e_abs);
+            let sc = s_abs - rope.line_to_char(sl);
+            let ec = e_abs - rope.line_to_char(el);
             out.push(DocDiagnostic {
                 start_line: sl,
                 start_char_in_line: sc,
@@ -341,63 +345,6 @@ fn spawn_watcher_for(
     let watch_target = target_path.parent().unwrap_or_else(|| Path::new("."));
     watcher.watch(watch_target, RecursiveMode::NonRecursive)?;
     Ok((watcher, rx))
-}
-
-/// Convert an LSP `(line, character)` to `(line, char_in_line)` in the
-/// rope's char domain, given the negotiated position encoding. Returns
-/// `None` if the line is out of range or the character offset can't be
-/// resolved within the line.
-fn lsp_pos_to_char(
-    rope: &ropey::Rope,
-    line: u32,
-    character: u32,
-    encoding: &PositionEncodingKind,
-) -> Option<(usize, usize)> {
-    let line = line as usize;
-    if line >= rope.len_lines() {
-        return None;
-    }
-    let line_slice = rope.line(line);
-    // Strip trailing newline so end-of-line clamps correctly.
-    let mut line_chars = line_slice.len_chars();
-    if line_chars > 0 && line_slice.char(line_chars - 1) == '\n' {
-        line_chars -= 1;
-    }
-    if line_chars > 0 && line_slice.char(line_chars - 1) == '\r' {
-        line_chars -= 1;
-    }
-
-    let char_in_line = if encoding == &PositionEncodingKind::UTF8 {
-        // `character` is bytes within the line.
-        let mut remaining = character as usize;
-        let mut idx = 0;
-        for c in line_slice.chars().take(line_chars) {
-            let b: usize = char::len_utf8(c);
-            if remaining < b {
-                break;
-            }
-            remaining -= b;
-            idx += 1;
-        }
-        idx.min(line_chars)
-    } else if encoding == &PositionEncodingKind::UTF32 {
-        (character as usize).min(line_chars)
-    } else {
-        // utf-16: walk code units.
-        let mut remaining = character as usize;
-        let mut idx = 0;
-        for c in line_slice.chars().take(line_chars) {
-            let u: usize = char::len_utf16(c);
-            if remaining < u {
-                break;
-            }
-            remaining -= u;
-            idx += 1;
-        }
-        idx.min(line_chars)
-    };
-
-    Some((line, char_in_line))
 }
 
 /// Best-effort path-equality check. Both sides may or may not be canonical;

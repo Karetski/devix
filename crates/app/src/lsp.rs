@@ -9,7 +9,7 @@
 use anyhow::Result;
 use devix_lsp::{
     Coordinator, CoordinatorConfig, LanguageConfig, LspCommand, LspEvent, SubprocessSpawner,
-    uri_to_path,
+    char_in_rope, uri_to_path,
 };
 use devix_workspace::{CompletionStatus, HoverStatus, Overlay, refilter_completion};
 use lsp_types::{CompletionItem, Location, PositionEncodingKind};
@@ -172,7 +172,7 @@ fn apply_completion_response(app: &mut App, uri: &lsp_types::Uri, anchor_char: u
     let Some(vid) = hit_vid else { return };
     {
         let state = app.workspace.views[vid].completion.as_mut().unwrap();
-        state.items = items;
+        state.set_items(items);
         state.status = CompletionStatus::Ready;
     }
     refilter_completion(&mut app.workspace, vid);
@@ -232,11 +232,10 @@ fn apply_definition_response(
     };
     let Ok(target_path) = uri_to_path(&loc.uri) else { return };
 
-    // Convert the LSP Position to a char index against the (eventually) open
-    // document so we can position the cursor. For an already-open doc, use
-    // its rope; for a fresh open, the call falls through after open_path_*.
-    let want_line = loc.range.start.line as usize;
-    let want_char_in_line = loc.range.start.character as usize;
+    // Carry the raw LSP position through to placement; the encoding-aware
+    // resolve has to happen against the *target* doc's rope, not the doc
+    // we may be replacing.
+    let target_pos = loc.range.start;
 
     // If `target_path` is open in any view of any frame, prefer that — it
     // avoids replacing the user's current tab.
@@ -258,7 +257,7 @@ fn apply_definition_response(
                 app.workspace.activate_tab(fid, idx);
             }
         }
-        position_cursor_at(app, vid, want_line, want_char_in_line);
+        position_cursor_at(app, vid, target_pos);
         return;
     }
 
@@ -267,7 +266,7 @@ fn apply_definition_response(
         return;
     }
     if let Some((_, vid, _)) = app.workspace.active_ids() {
-        position_cursor_at(app, vid, want_line, want_char_in_line);
+        position_cursor_at(app, vid, target_pos);
     }
 }
 
@@ -280,13 +279,19 @@ fn frame_owning_view(ws: &devix_workspace::Workspace, vid: devix_workspace::View
     None
 }
 
-fn position_cursor_at(app: &mut App, vid: devix_workspace::ViewId, line: usize, char_in_line: usize) {
+fn position_cursor_at(app: &mut App, vid: devix_workspace::ViewId, pos: lsp_types::Position) {
     let did = app.workspace.views[vid].doc;
-    let buf = &app.workspace.documents[did].buffer;
-    let line = line.min(buf.line_count().saturating_sub(1));
-    let line_len = buf.line_len_chars(line);
-    let col = char_in_line.min(line_len);
-    let idx = buf.line_start(line) + col;
+    let rope = app.workspace.documents[did].buffer.rope();
+    // Use the negotiated encoding to resolve the LSP position. Treating
+    // `pos.character` as raw chars-in-line silently mispositions the cursor
+    // on any line containing non-ASCII (utf-16 default counts code units;
+    // utf-8 negotiation counts bytes).
+    let encoding = app
+        .workspace
+        .lsp_encoding()
+        .unwrap_or(PositionEncodingKind::UTF16);
+    let idx = char_in_rope(rope, pos.line, pos.character, &encoding)
+        .unwrap_or_else(|| rope.len_chars());
     let v = &mut app.workspace.views[vid];
     v.move_to(idx, false, false);
     v.scroll_mode = devix_workspace::ScrollMode::Anchored;

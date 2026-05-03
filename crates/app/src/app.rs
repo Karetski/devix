@@ -7,8 +7,11 @@ use anyhow::Result;
 use crossterm::event;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
-use devix_config::{Keymap, Theme, build_registry, default_keymap};
-use devix_workspace::{Action, CommandRegistry, Overlay, StatusLine, Workspace};
+use devix_config::Theme;
+use devix_workspace::{
+    Action, CommandRegistry, Keymap, Overlay, StatusLine, Workspace, build_registry,
+    default_keymap,
+};
 
 use crate::clipboard;
 use crate::events::{handle_event, run_action};

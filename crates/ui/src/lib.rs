@@ -1,17 +1,13 @@
-//! Ratatui widgets for the editor view and status line.
+//! Pure ratatui widgets — design-system primitives with no awareness of
+//! workspace, buffer, or LSP types. Workspace-coupled renderers (editor,
+//! palette, symbols) live in `devix-views`.
 
-pub mod editor;
-pub mod palette;
 pub mod popup;
 pub mod sidebar;
 pub mod status;
-pub mod symbols;
 pub mod tabstrip;
 
-pub use editor::{EditorRenderResult, EditorView, render_editor};
-pub use palette::{format_chord, palette_area, render_palette};
 pub use popup::{CompletionLine, Popup, PopupAnchor, PopupContent, render_popup};
 pub use sidebar::{SidebarInfo, render_sidebar};
 pub use status::{StatusInfo, render_status};
-pub use symbols::{render_symbols, symbols_area};
-pub use tabstrip::{MIN_TAB_WIDTH, TabInfo, TabStripRender, render_tabstrip};
+pub use tabstrip::{MIN_TAB_WIDTH, TabInfo, TabStripRender, layout_tabstrip, render_tabstrip};

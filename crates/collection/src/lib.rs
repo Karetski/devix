@@ -148,45 +148,71 @@ pub enum Axis {
 
 /// 1D flow layout — items along an axis with optional spacing between them.
 /// Spacing is reported as decorations (id = index of the item *before* the
-/// gap), so renderers can paint separators inside it. O(n) `rect_for`; use
-/// [`UniformLayout`] for huge constant-stride collections.
+/// gap), so renderers can paint separators inside it. O(1) `rect_for` via
+/// a precomputed prefix-sum cache; use [`UniformLayout`] for huge
+/// constant-stride collections where even storing per-item sizes is
+/// wasteful.
 pub struct LinearLayout {
     pub axis: Axis,
-    pub sizes: Vec<u32>,
+    sizes: Vec<u32>,
     pub cross: u32,
-    pub spacing: u32,
+    spacing: u32,
+    /// Cumulative axis offsets. `offsets[i]` is the start position of item
+    /// `i` along the axis; `offsets[n]` is the layout's total axis extent
+    /// including the final inter-item gap *not* added past the last item.
+    /// Built once in the constructor; O(1) `rect_for`.
+    offsets: Vec<u32>,
 }
 
 impl LinearLayout {
     pub fn horizontal(sizes: Vec<u32>, cross: u32) -> Self {
-        Self { axis: Axis::Horizontal, sizes, cross, spacing: 0 }
+        Self::new(Axis::Horizontal, sizes, cross, 0)
     }
 
     pub fn vertical(sizes: Vec<u32>, cross: u32) -> Self {
-        Self { axis: Axis::Vertical, sizes, cross, spacing: 0 }
+        Self::new(Axis::Vertical, sizes, cross, 0)
     }
 
-    pub fn with_spacing(mut self, spacing: u32) -> Self {
-        self.spacing = spacing;
-        self
+    pub fn with_spacing(self, spacing: u32) -> Self {
+        Self::new(self.axis, self.sizes, self.cross, spacing)
     }
+
+    fn new(axis: Axis, sizes: Vec<u32>, cross: u32, spacing: u32) -> Self {
+        let offsets = compute_offsets(&sizes, spacing);
+        Self { axis, sizes, cross, spacing, offsets }
+    }
+
+    pub fn sizes(&self) -> &[u32] { &self.sizes }
+    pub fn spacing(&self) -> u32 { self.spacing }
 
     fn axis_offset(&self, idx: usize) -> u32 {
-        let mut x: u32 = 0;
-        for i in 0..idx {
-            x = x.saturating_add(self.sizes[i]);
-            x = x.saturating_add(self.spacing);
-        }
-        x
+        // Constructor guarantees offsets.len() == sizes.len() + 1.
+        self.offsets[idx]
     }
+}
+
+/// Build the prefix-sum cache: `out[i] = sum(sizes[..i]) + spacing*i`.
+/// Length is `sizes.len() + 1` so `out.last()` is the total axis extent
+/// (used by `content_size`).
+fn compute_offsets(sizes: &[u32], spacing: u32) -> Vec<u32> {
+    let mut out = Vec::with_capacity(sizes.len() + 1);
+    let mut acc: u32 = 0;
+    out.push(0);
+    for (i, &s) in sizes.iter().enumerate() {
+        acc = acc.saturating_add(s);
+        if i + 1 < sizes.len() {
+            acc = acc.saturating_add(spacing);
+        }
+        out.push(acc);
+    }
+    out
 }
 
 impl CollectionLayout for LinearLayout {
     fn content_size(&self) -> (u32, u32) {
-        let n = self.sizes.len();
-        if n == 0 { return (0, 0); }
-        let total: u32 = self.sizes.iter().copied().sum::<u32>()
-            + self.spacing * ((n as u32).saturating_sub(1));
+        if self.sizes.is_empty() { return (0, 0); }
+        // offsets.last() == sum(sizes) + spacing*(n-1).
+        let total = *self.offsets.last().unwrap();
         match self.axis {
             Axis::Horizontal => (total, self.cross),
             Axis::Vertical => (self.cross, total),
@@ -205,20 +231,19 @@ impl CollectionLayout for LinearLayout {
     }
 
     fn items_in(&self, viewport: VRect) -> Vec<usize> {
+        // rect_for is now O(1); the early-out keeps us O(visible) instead of
+        // O(n) in the common case where many items lie past the viewport.
+        let viewport_end = match self.axis {
+            Axis::Horizontal => viewport.end_x(),
+            Axis::Vertical => viewport.end_y(),
+        };
         let mut out = Vec::new();
-        let mut off: u32 = 0;
-        for (i, size) in self.sizes.iter().enumerate() {
-            let rect = match self.axis {
-                Axis::Horizontal => VRect { x: off, y: 0, w: *size, h: self.cross },
-                Axis::Vertical => VRect { x: 0, y: off, w: self.cross, h: *size },
-            };
+        for i in 0..self.sizes.len() {
+            let rect = self.rect_for(i);
             if rect.intersects(viewport) { out.push(i); }
-            off = off.saturating_add(*size).saturating_add(self.spacing);
-            let past = match self.axis {
-                Axis::Horizontal => off >= viewport.end_x(),
-                Axis::Vertical => off >= viewport.end_y(),
-            };
-            if past && !rect.intersects(viewport) { break; }
+            if self.offsets[i + 1] >= viewport_end {
+                break;
+            }
         }
         out
     }
@@ -226,17 +251,14 @@ impl CollectionLayout for LinearLayout {
     fn decorations_in(&self, viewport: VRect) -> Vec<(usize, VRect)> {
         if self.spacing == 0 || self.sizes.len() < 2 { return Vec::new(); }
         let mut out = Vec::new();
-        let mut off: u32 = 0;
-        for i in 0..self.sizes.len() {
-            off = off.saturating_add(self.sizes[i]);
-            if i + 1 < self.sizes.len() {
-                let rect = match self.axis {
-                    Axis::Horizontal => VRect { x: off, y: 0, w: self.spacing, h: self.cross },
-                    Axis::Vertical => VRect { x: 0, y: off, w: self.cross, h: self.spacing },
-                };
-                if rect.intersects(viewport) { out.push((i, rect)); }
-                off = off.saturating_add(self.spacing);
-            }
+        for i in 0..self.sizes.len() - 1 {
+            // Gap between item i and item i+1: its start is offsets[i] + sizes[i].
+            let off = self.offsets[i].saturating_add(self.sizes[i]);
+            let rect = match self.axis {
+                Axis::Horizontal => VRect { x: off, y: 0, w: self.spacing, h: self.cross },
+                Axis::Vertical => VRect { x: 0, y: off, w: self.cross, h: self.spacing },
+            };
+            if rect.intersects(viewport) { out.push((i, rect)); }
         }
         out
     }

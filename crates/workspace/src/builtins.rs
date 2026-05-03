@@ -4,7 +4,11 @@
 //! continuously-fired actions are dispatched directly via the keymap and
 //! never appear in the palette.
 
-use devix_workspace::{Action, Command, CommandId, CommandRegistry, SidebarSlot};
+use devix_lsp::CompletionTrigger;
+
+use crate::action::Action;
+use crate::command::{Command, CommandId, CommandRegistry};
+use crate::layout::SidebarSlot;
 
 pub const PALETTE_OPEN:        CommandId = CommandId("palette.open");
 pub const PALETTE_CLOSE:       CommandId = CommandId("palette.close");
@@ -83,7 +87,7 @@ pub fn register_builtins(reg: &mut CommandRegistry) {
 
     r(reg, LSP_HOVER,                "Show Hover Info",        "Language", Action::Hover);
     r(reg, LSP_GOTO_DEFINITION,      "Go to Definition",       "Language", Action::GotoDefinition);
-    r(reg, LSP_COMPLETION_TRIGGER,   "Trigger Completion",     "Language", Action::TriggerCompletion);
+    r(reg, LSP_COMPLETION_TRIGGER,   "Trigger Completion",     "Language", Action::TriggerCompletion(CompletionTrigger::Manual));
     r(reg, LSP_DOCUMENT_SYMBOLS,     "Document Symbols",       "Language", Action::ShowDocumentSymbols);
     r(reg, LSP_WORKSPACE_SYMBOLS,    "Workspace Symbols",      "Language", Action::ShowWorkspaceSymbols);
 }

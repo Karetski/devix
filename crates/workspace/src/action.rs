@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use devix_lsp::CompletionTrigger;
+
 use crate::layout::Direction;
 use crate::layout::SidebarSlot;
 
@@ -75,8 +77,11 @@ pub enum Action {
     GotoDefinition,
     /// Manual / trigger-character invocation of completion. Sends a
     /// `LspCommand::Completion` and parks `CompletionState::Pending` on
-    /// the active view.
-    TriggerCompletion,
+    /// the active view. The trigger value is decided by the producer
+    /// (the InsertChar arm tags the inserted char; keymap-bound manual
+    /// invocation tags `Manual`) — peeking at rope state after the fact
+    /// confused trigger-char with cursor-on-existing-punctuation.
+    TriggerCompletion(CompletionTrigger),
     /// Adjust the highlighted completion item by `delta`. No-op when the
     /// popup is closed.
     CompletionMove(isize),

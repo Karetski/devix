@@ -18,12 +18,14 @@ pub mod coord;
 pub mod framing;
 pub mod jsonrpc;
 pub mod translate;
+pub mod uri;
 
 pub use client::{ClientNotification, LspClient};
 pub use coord::{
     CompletionTrigger, Coordinator, CoordinatorConfig, FlatSymbol, LanguageConfig, LspCommand,
-    LspEvent, Spawner, SubprocessSpawner, path_to_uri, uri_to_path,
+    LspEvent, Spawner, SubprocessSpawner,
 };
 pub use framing::{FrameReader, write_frame};
 pub use jsonrpc::{Notification, Request, RequestId, ResponseError, ServerMessage, ServerMessageKind};
-pub use translate::{Edit, position_in_rope, translate_changes};
+pub use translate::{Edit, char_in_rope, position_in_rope, translate_changes};
+pub use uri::{path_to_uri, uri_to_path};

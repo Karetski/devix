@@ -5,6 +5,4 @@ version.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-devix-workspace.workspace = true
-crossterm.workspace = true
 ratatui.workspace = true

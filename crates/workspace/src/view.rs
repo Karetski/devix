@@ -77,12 +77,25 @@ pub struct CompletionState {
     pub query_start: usize,
     /// All items the server returned. Owned to avoid lifetime soup.
     pub items: Vec<CompletionItem>,
+    /// Per-item lowercased label, parallel to `items`. Built once when
+    /// items land so the per-keystroke refilter can do case-insensitive
+    /// `find` without allocating a String per item per keystroke.
+    pub labels_lower: Vec<String>,
     /// Indices into `items`, in current match order. Empty until response
     /// arrives or while the typed prefix matches nothing.
     pub filtered: Vec<usize>,
     /// Index into `filtered` of the highlighted row.
     pub selected: usize,
     pub status: CompletionStatus,
+}
+
+impl CompletionState {
+    /// Replace items and refresh the lowercased-label cache. The two must
+    /// stay in lockstep for refilter to address them by the same index.
+    pub fn set_items(&mut self, items: Vec<CompletionItem>) {
+        self.labels_lower = items.iter().map(|i| i.label.to_lowercase()).collect();
+        self.items = items;
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -132,15 +145,28 @@ impl View {
         // Cursor-key motion also dismisses completion. Typing-driven motion
         // (InsertChar / DeleteBack) bypasses move_to and refilters instead.
         self.completion = None;
+        // Cursor moved → next render must keep the cursor on screen. Wheel
+        // scrolls flip back to Free, so a deliberate scroll that's then
+        // followed by a key press doesn't get stuck in Free.
+        self.scroll_mode = ScrollMode::Anchored;
+    }
+
+    /// Replace the selection and reset transient view state (sticky col,
+    /// hover, completion, scroll mode). Used by jump-style updates (undo,
+    /// redo, select-all, completion-accept) where the new position has no
+    /// continuity with prior state.
+    pub fn adopt_selection(&mut self, sel: Selection) {
+        self.selection = sel;
+        self.target_col = None;
+        self.hover = None;
+        self.completion = None;
+        self.scroll_mode = ScrollMode::Anchored;
     }
 
     /// Apply a transaction's selection_after; the buffer mutation happens on
     /// the Document side (the caller does buffer.apply(tx) first).
     pub fn adopt_selection_after(&mut self, tx: &Transaction) {
-        self.selection = tx.selection_after.clone();
-        self.target_col = None;
-        self.hover = None;
-        self.completion = None;
+        self.adopt_selection(tx.selection_after.clone());
     }
 }
 

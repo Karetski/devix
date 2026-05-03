@@ -18,10 +18,10 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use devix_collection::VRect;
 use devix_ui::{
-    CompletionLine, EditorView, Popup, PopupAnchor, PopupContent, StatusInfo, render_editor,
-    render_palette, render_popup, render_status as render_status_widget, render_symbols,
-    render_tabstrip,
+    CompletionLine, Popup, PopupAnchor, PopupContent, StatusInfo, layout_tabstrip, render_popup,
+    render_status as render_status_widget, render_tabstrip,
 };
+use devix_views::{EditorView, render_editor, render_palette, render_symbols};
 use devix_workspace::{
     CompletionStatus, Document, FrameId, HoverStatus, LeafRef, Overlay, ScrollMode, SidebarSlot,
     View, Workspace,
@@ -60,12 +60,41 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 /// Mutate every `Frame`'s active `View.scroll` so the next paint pass renders
-/// the cursor in view (Anchored mode) or against a clamped offset (Free mode).
-/// No painting, no cache writes — those happen in [`paint`].
+/// the cursor in view (Anchored mode) or against a clamped offset (Free mode),
+/// and run the tab-strip's pre-paint scroll math.  No painting, no cache
+/// writes — those happen in [`paint`].
 fn layout_pass(leaves: &[(LeafRef, Rect)], ws: &mut Workspace) {
     for (leaf, rect) in leaves {
         let LeafRef::Frame(fid) = leaf else { continue };
+        let strip_area = Rect { height: 1, ..*rect };
         let body_area = frame_body_rect(*rect);
+
+        // Tab-strip layout: clamp on resize/tab-close and consume the
+        // recenter-active one-shot. Done here so paint can stay pure.
+        let tabs: Vec<devix_ui::TabInfo> = ws.frames[*fid]
+            .tabs
+            .iter()
+            .map(|vid| {
+                let v = &ws.views[*vid];
+                let d = &ws.documents[v.doc];
+                let label = d.buffer.path()
+                    .and_then(|p| p.file_name())
+                    .and_then(|f| f.to_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "[scratch]".to_string());
+                devix_ui::TabInfo { label, dirty: d.buffer.dirty() }
+            })
+            .collect();
+        let active_tab = ws.frames[*fid].active_tab;
+        let f = &mut ws.frames[*fid];
+        layout_tabstrip(
+            &tabs,
+            active_tab,
+            &mut f.tab_strip_state,
+            &mut f.recenter_active,
+            strip_area,
+        );
+
         let Some(vid) = ws.frames[*fid].active_view() else { continue };
         let view = &ws.views[vid];
         let doc = &ws.documents[view.doc];
@@ -136,12 +165,11 @@ fn paint_frame(id: FrameId, area: Rect, app: &mut App, frame: &mut Frame<'_>) {
         })
         .collect();
     let active_tab = app.workspace.frames[id].active_tab;
-    let f = &mut app.workspace.frames[id];
+    let f = &app.workspace.frames[id];
     let render = render_tabstrip(
         &tabs,
         active_tab,
-        &mut f.tab_strip_state,
-        &mut f.recenter_active,
+        &f.tab_strip_state,
         strip_area,
         frame,
     );
