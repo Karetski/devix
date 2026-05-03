@@ -15,6 +15,8 @@ pub struct StatusInfo<'a> {
     pub col: usize,
     pub sel_len: usize,
     pub message: Option<&'a str>,
+    pub diag_errors: usize,
+    pub diag_warnings: usize,
 }
 
 pub fn render_status(info: &StatusInfo<'_>, area: Rect, frame: &mut Frame<'_>) {
@@ -25,8 +27,13 @@ pub fn render_status(info: &StatusInfo<'_>, area: Rect, frame: &mut Frame<'_>) {
     } else {
         String::new()
     };
+    let diags = if info.diag_errors > 0 || info.diag_warnings > 0 {
+        format!("  E:{} W:{}", info.diag_errors, info.diag_warnings)
+    } else {
+        String::new()
+    };
 
-    let left = format!(" {}{}  {}:{}{}", path, dirty, info.line, info.col, sel);
+    let left = format!(" {}{}  {}:{}{}{}", path, dirty, info.line, info.col, sel, diags);
     let right = info
         .message
         .map(|s| s.to_string())

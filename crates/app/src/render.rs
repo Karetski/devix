@@ -156,6 +156,7 @@ fn paint_frame(id: FrameId, area: Rect, app: &mut App, frame: &mut Frame<'_>) {
         scroll: &view.scroll,
         theme: &app.theme,
         highlights: &highlights,
+        diagnostics: doc.diagnostics(),
     };
     let r = render_editor(editor_view, body_area, frame);
     if app.workspace.active_frame() == Some(id) {
@@ -208,6 +209,7 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let doc = &app.workspace.documents[view.doc];
     let path_str = doc.buffer.path().map(|p| p.display().to_string());
     let head = view.primary().head;
+    let (errors, warnings) = count_diagnostics(doc);
     let info = StatusInfo {
         path: path_str.as_deref(),
         dirty: doc.buffer.dirty(),
@@ -215,6 +217,22 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
         col: doc.buffer.col_of_char(head) + 1,
         sel_len: view.primary().len(),
         message: app.status.get(),
+        diag_errors: errors,
+        diag_warnings: warnings,
     };
     render_status_widget(&info, area, frame);
+}
+
+fn count_diagnostics(doc: &Document) -> (usize, usize) {
+    use lsp_types::DiagnosticSeverity;
+    let mut e = 0;
+    let mut w = 0;
+    for d in doc.diagnostics() {
+        match d.severity {
+            DiagnosticSeverity::ERROR => e += 1,
+            DiagnosticSeverity::WARNING => w += 1,
+            _ => {}
+        }
+    }
+    (e, w)
 }

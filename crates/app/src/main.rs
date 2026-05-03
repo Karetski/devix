@@ -13,6 +13,7 @@ use ratatui::backend::CrosstermBackend;
 mod app;
 mod clipboard;
 mod events;
+mod lsp;
 mod render;
 mod watcher;
 

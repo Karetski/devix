@@ -17,5 +17,8 @@ devix-collection.workspace = true
 devix-ui.workspace = true
 devix-workspace.workspace = true
 devix-config.workspace = true
+devix-lsp.workspace = true
+lsp-types.workspace = true
+tokio.workspace = true
 arboard = { version = "3.4", default-features = false }
 notify = "6"

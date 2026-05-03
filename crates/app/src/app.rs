@@ -12,6 +12,7 @@ use devix_workspace::{Action, CommandRegistry, Overlay, StatusLine, Workspace};
 
 use crate::clipboard;
 use crate::events::{handle_event, run_action};
+use crate::lsp::{LspWiring, drain_lsp_events, setup_lsp};
 use crate::render::render;
 use crate::watcher::drain_disk_events;
 
@@ -26,6 +27,10 @@ pub struct App {
     pub clipboard: Option<arboard::Clipboard>,
     pub dirty: bool,
     pub pending_scroll: isize,
+    /// LSP runtime + inbound event channel. `None` when LSP setup failed at
+    /// startup (e.g. the runtime couldn't be built); the editor still runs
+    /// without LSP integration in that case.
+    pub lsp: Option<LspWiring>,
 }
 
 const MAX_DRAIN_PER_TICK: usize = 256;
@@ -33,8 +38,18 @@ const POLL_TIMEOUT: Duration = Duration::from_millis(100);
 
 impl App {
     pub fn new(path: Option<PathBuf>) -> Result<Self> {
-        let workspace = Workspace::open(path)?;
+        let mut workspace = Workspace::open(path)?;
         let clipboard = clipboard::init();
+
+        // LSP setup is best-effort: if it fails we still launch the editor
+        // without server integration rather than refusing to open a file.
+        let lsp = match setup_lsp() {
+            Ok((sink, encoding, wiring)) => {
+                workspace.attach_lsp(sink, encoding);
+                Some(wiring)
+            }
+            Err(_) => None,
+        };
 
         Ok(Self {
             workspace,
@@ -47,6 +62,7 @@ impl App {
             clipboard,
             dirty: true,
             pending_scroll: 0,
+            lsp,
         })
     }
 }
@@ -56,6 +72,7 @@ pub fn run<B: Backend>(terminal: &mut Terminal<B>, path: Option<PathBuf>) -> Res
 
     while !app.quit {
         drain_disk_events(&mut app);
+        drain_lsp_events(&mut app);
 
         if app.dirty {
             terminal.draw(|frame| render(frame, &mut app))?;

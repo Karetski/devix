@@ -14,12 +14,26 @@ use anyhow::Result;
 use devix_buffer::{Buffer, Selection, Transaction};
 use devix_lsp::{DocChange, Edit as LspEdit, path_to_uri, translate_changes};
 use devix_syntax::{HighlightSpan, Highlighter, Language, input_edit_for_range};
-use lsp_types::{PositionEncodingKind, TextDocumentContentChangeEvent, Uri};
+use lsp_types::{
+    Diagnostic, DiagnosticSeverity, PositionEncodingKind, TextDocumentContentChangeEvent, Uri,
+};
 use notify::{RecursiveMode, Watcher};
 use slotmap::new_key_type;
 use tokio::sync::mpsc as tokio_mpsc;
 
 new_key_type! { pub struct DocId; }
+
+/// LSP diagnostic, normalized to char positions in the current rope so the
+/// renderer doesn't need to know the negotiated encoding.
+#[derive(Clone, Debug)]
+pub struct DocDiagnostic {
+    pub start_line: usize,
+    pub start_char_in_line: usize,
+    pub end_line: usize,
+    pub end_char_in_line: usize,
+    pub severity: DiagnosticSeverity,
+    pub message: String,
+}
 
 pub struct Document {
     pub buffer: Buffer,
@@ -48,6 +62,7 @@ pub struct Document {
     /// not set, matching what `Coordinator` reports if utf-8 negotiation
     /// fails.
     lsp_encoding: PositionEncodingKind,
+    diagnostics: Vec<DocDiagnostic>,
 }
 
 impl Document {
@@ -66,6 +81,7 @@ impl Document {
             lsp_sink: None,
             lsp_uri: None,
             lsp_encoding: PositionEncodingKind::UTF16,
+            diagnostics: Vec::new(),
         };
         d.full_reparse();
         d
@@ -92,6 +108,7 @@ impl Document {
             lsp_sink: None,
             lsp_uri: None,
             lsp_encoding: PositionEncodingKind::UTF16,
+            diagnostics: Vec::new(),
         };
         d.full_reparse();
         Ok(d)
@@ -247,6 +264,34 @@ impl Document {
         let _ = sink.send(DocChange::Close { uri });
     }
 
+    pub fn diagnostics(&self) -> &[DocDiagnostic] {
+        &self.diagnostics
+    }
+
+    /// Replace the document's diagnostic list. LSP positions are converted
+    /// to char-in-line offsets using the negotiated encoding so the
+    /// renderer can paint them directly. Diagnostics whose positions don't
+    /// resolve in the current rope are dropped — they're advisory anyway,
+    /// and the server will republish on the next keystroke pause.
+    pub fn set_diagnostics(&mut self, raw: Vec<Diagnostic>) {
+        let rope = self.buffer.rope();
+        let enc = &self.lsp_encoding;
+        let mut out = Vec::with_capacity(raw.len());
+        for d in raw {
+            let Some((sl, sc)) = lsp_pos_to_char(rope, d.range.start.line, d.range.start.character, enc) else { continue };
+            let Some((el, ec)) = lsp_pos_to_char(rope, d.range.end.line, d.range.end.character, enc) else { continue };
+            out.push(DocDiagnostic {
+                start_line: sl,
+                start_char_in_line: sc,
+                end_line: el,
+                end_char_in_line: ec,
+                severity: d.severity.unwrap_or(DiagnosticSeverity::INFORMATION),
+                message: d.message,
+            });
+        }
+        self.diagnostics = out;
+    }
+
     fn send_lsp_change(&mut self, content_changes: Vec<TextDocumentContentChangeEvent>) {
         let Some(sink) = self.lsp_sink.as_ref() else { return };
         let Some(uri) = self.lsp_uri.clone() else { return };
@@ -296,6 +341,63 @@ fn spawn_watcher_for(
     let watch_target = target_path.parent().unwrap_or_else(|| Path::new("."));
     watcher.watch(watch_target, RecursiveMode::NonRecursive)?;
     Ok((watcher, rx))
+}
+
+/// Convert an LSP `(line, character)` to `(line, char_in_line)` in the
+/// rope's char domain, given the negotiated position encoding. Returns
+/// `None` if the line is out of range or the character offset can't be
+/// resolved within the line.
+fn lsp_pos_to_char(
+    rope: &ropey::Rope,
+    line: u32,
+    character: u32,
+    encoding: &PositionEncodingKind,
+) -> Option<(usize, usize)> {
+    let line = line as usize;
+    if line >= rope.len_lines() {
+        return None;
+    }
+    let line_slice = rope.line(line);
+    // Strip trailing newline so end-of-line clamps correctly.
+    let mut line_chars = line_slice.len_chars();
+    if line_chars > 0 && line_slice.char(line_chars - 1) == '\n' {
+        line_chars -= 1;
+    }
+    if line_chars > 0 && line_slice.char(line_chars - 1) == '\r' {
+        line_chars -= 1;
+    }
+
+    let char_in_line = if encoding == &PositionEncodingKind::UTF8 {
+        // `character` is bytes within the line.
+        let mut remaining = character as usize;
+        let mut idx = 0;
+        for c in line_slice.chars().take(line_chars) {
+            let b: usize = char::len_utf8(c);
+            if remaining < b {
+                break;
+            }
+            remaining -= b;
+            idx += 1;
+        }
+        idx.min(line_chars)
+    } else if encoding == &PositionEncodingKind::UTF32 {
+        (character as usize).min(line_chars)
+    } else {
+        // utf-16: walk code units.
+        let mut remaining = character as usize;
+        let mut idx = 0;
+        for c in line_slice.chars().take(line_chars) {
+            let u: usize = char::len_utf16(c);
+            if remaining < u {
+                break;
+            }
+            remaining -= u;
+            idx += 1;
+        }
+        idx.min(line_chars)
+    };
+
+    Some((line, char_in_line))
 }
 
 /// Best-effort path-equality check. Both sides may or may not be canonical;
@@ -499,6 +601,52 @@ mod tests {
             }
             other => panic!("expected Close, got {other:?}"),
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_diagnostics_converts_utf8_byte_positions_to_char() {
+        let (mut d, dir) = rust_doc("diag.rs", "fn héllo() {}");
+        let (tx, _rx) = tokio_mpsc::unbounded_channel();
+        d.attach_lsp(tx, PositionEncodingKind::UTF8);
+        // 'é' starts at byte 4 (after "fn h"), is 2 bytes wide. Diagnostic
+        // covering the 'é' byte range [4, 6) should resolve to char range [4, 5).
+        let raw = vec![lsp_types::Diagnostic {
+            range: lsp_types::Range {
+                start: lsp_types::Position { line: 0, character: 4 },
+                end: lsp_types::Position { line: 0, character: 6 },
+            },
+            severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+            message: "noisy é".into(),
+            ..Default::default()
+        }];
+        d.set_diagnostics(raw);
+        let diags = d.diagnostics();
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].start_line, 0);
+        assert_eq!(diags[0].start_char_in_line, 4);
+        assert_eq!(diags[0].end_line, 0);
+        assert_eq!(diags[0].end_char_in_line, 5);
+        assert_eq!(diags[0].severity, lsp_types::DiagnosticSeverity::ERROR);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_diagnostics_drops_out_of_range_lines() {
+        let (mut d, dir) = rust_doc("diag2.rs", "fn x() {}");
+        let (tx, _rx) = tokio_mpsc::unbounded_channel();
+        d.attach_lsp(tx, PositionEncodingKind::UTF8);
+        let raw = vec![lsp_types::Diagnostic {
+            range: lsp_types::Range {
+                start: lsp_types::Position { line: 99, character: 0 },
+                end: lsp_types::Position { line: 99, character: 1 },
+            },
+            severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+            message: "stale".into(),
+            ..Default::default()
+        }];
+        d.set_diagnostics(raw);
+        assert!(d.diagnostics().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

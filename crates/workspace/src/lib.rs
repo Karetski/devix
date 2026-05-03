@@ -15,7 +15,7 @@ pub use action::Action;
 pub use command::{Command, CommandId, CommandRegistry};
 pub use context::{Context, StatusLine, Viewport};
 pub use dispatch::dispatch;
-pub use document::{DocId, Document};
+pub use document::{DocDiagnostic, DocId, Document};
 pub use frame::{Frame, FrameId};
 pub use layout::{Axis, Direction, Node, SidebarSlot};
 pub use overlay::{Overlay, PaletteState};

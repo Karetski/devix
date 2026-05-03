@@ -21,6 +21,9 @@ use ropey::Rope;
 use devix_buffer::{Buffer, Range, Selection};
 use devix_config::Theme;
 use devix_syntax::HighlightSpan;
+use devix_workspace::DocDiagnostic;
+use lsp_types::DiagnosticSeverity;
+use ratatui::style::Color;
 
 pub struct EditorView<'a> {
     pub buffer: &'a Buffer,
@@ -33,6 +36,9 @@ pub struct EditorView<'a> {
     /// override earlier ones (last-write paint), letting more-specific scopes
     /// win over their parents.
     pub highlights: &'a [HighlightSpan],
+    /// Diagnostics on this document. The renderer paints them as
+    /// underlines colored by severity over the visible range.
+    pub diagnostics: &'a [DocDiagnostic],
 }
 
 pub struct EditorRenderResult {
@@ -85,6 +91,14 @@ pub fn render_editor(view: EditorView<'_>, area: Rect, frame: &mut Frame<'_>) ->
         gutter_width,
         scroll_top,
         view.theme.selection_style(),
+        frame.buffer_mut(),
+    );
+
+    paint_diagnostics(
+        view.diagnostics,
+        area,
+        gutter_width,
+        scroll_top,
         frame.buffer_mut(),
     );
 
@@ -201,6 +215,66 @@ fn paint_line_span(
 #[allow(dead_code)]
 fn paint_zero_width(_r: Range) {}
 
+/// Paint diagnostic ranges as colored underlines on the visible viewport.
+/// Multi-line diagnostics are flattened: each line in the range gets the
+/// underline. Empty ranges (start==end) get a one-cell underline so
+/// zero-width "missing semicolon"-style diagnostics still surface.
+fn paint_diagnostics(
+    diagnostics: &[DocDiagnostic],
+    area: Rect,
+    gutter_width: u16,
+    scroll_top: usize,
+    target: &mut RatBuffer,
+) {
+    let visible_rows = area.height as usize;
+    let view_end = scroll_top.saturating_add(visible_rows);
+    let max_x = area.x + area.width;
+    let text_x = area.x + gutter_width;
+
+    for d in diagnostics {
+        let first = d.start_line.max(scroll_top);
+        let last = d.end_line.min(view_end.saturating_sub(1));
+        if first > last { continue; }
+        let color = severity_color(d.severity);
+        let style = Style::default().fg(color).add_modifier(Modifier::UNDERLINED);
+        for line_idx in first..=last {
+            let s = if line_idx == d.start_line { d.start_char_in_line } else { 0 };
+            // For non-end lines, paint to a generous bound (clamped against
+            // viewport). For the end line, stop at end_char_in_line; if the
+            // range was empty (point diagnostic), widen to one cell.
+            let raw_e = if line_idx == d.end_line { d.end_char_in_line } else { area.width as usize };
+            let e = if raw_e == s { s + 1 } else { raw_e };
+            let row = (line_idx - scroll_top) as u16;
+            let y = area.y + row;
+            if y >= area.y + area.height { continue; }
+            let mut x = text_x.saturating_add(s as u16);
+            let x_end = text_x.saturating_add(e as u16).min(max_x);
+            if x >= max_x { continue; }
+            while x < x_end {
+                if let Some(cell) = target.cell_mut((x, y)) {
+                    let mut cs = cell.style();
+                    // Combine: keep existing fg/bg; layer underline + red/yellow.
+                    cs.fg = Some(color);
+                    cs = cs.add_modifier(Modifier::UNDERLINED);
+                    cell.set_style(cs);
+                }
+                x += 1;
+            }
+            let _ = style;
+        }
+    }
+}
+
+fn severity_color(s: DiagnosticSeverity) -> Color {
+    match s {
+        DiagnosticSeverity::ERROR => Color::Red,
+        DiagnosticSeverity::WARNING => Color::Yellow,
+        DiagnosticSeverity::INFORMATION => Color::Cyan,
+        DiagnosticSeverity::HINT => Color::Gray,
+        _ => Color::Red,
+    }
+}
+
 /// Build per-line ratatui spans coloured by the highlight list. `line_text`
 /// is the already-truncated visible substring of `line_idx`. Spans whose byte
 /// ranges intersect this line are painted as styled runs; everything else
@@ -292,6 +366,7 @@ mod tests {
                         scroll: &scroll,
                         theme: &theme,
                         highlights: &highlights,
+                        diagnostics: &[],
                     },
                     area,
                     f,
@@ -348,6 +423,7 @@ mod tests {
                         scroll: &scroll,
                         theme: &theme,
                         highlights: &[],
+                        diagnostics: &[],
                     },
                     area,
                     f,
@@ -359,5 +435,54 @@ mod tests {
         assert_eq!(cell.symbol(), "h");
         let expected_fg = theme.text_style().fg.expect("default text style sets fg");
         assert_eq!(cell.fg, expected_fg);
+    }
+
+    #[test]
+    fn diagnostic_paints_underline_on_visible_range() {
+        let mut buf = devix_buffer::Buffer::empty();
+        let tx = replace_selection_tx(&buf, &Selection::point(0), "fn main() {}");
+        buf.apply(tx);
+        let theme = Theme::default();
+        let scroll = CollectionState::default();
+        let selection = Selection::point(0);
+        // Diagnostic on `main` (chars 3..7) — error severity → red underline.
+        let diag = vec![DocDiagnostic {
+            start_line: 0,
+            start_char_in_line: 3,
+            end_line: 0,
+            end_char_in_line: 7,
+            severity: DiagnosticSeverity::ERROR,
+            message: "x".into(),
+        }];
+
+        let backend = TestBackend::new(40, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect { x: 0, y: 0, width: 40, height: 3 };
+                let _ = render_editor(
+                    EditorView {
+                        buffer: &buf,
+                        selection: &selection,
+                        scroll: &scroll,
+                        theme: &theme,
+                        highlights: &[],
+                        diagnostics: &diag,
+                    },
+                    area,
+                    f,
+                );
+            })
+            .unwrap();
+        let rendered = terminal.backend().buffer();
+        // Gutter renders as " 1 " + " " (3 cells), so 'm' of `main` lands at col 6.
+        let cell = rendered.cell((6, 0)).unwrap();
+        assert_eq!(cell.symbol(), "m");
+        assert!(cell.modifier.contains(Modifier::UNDERLINED), "diagnostic range should be underlined");
+        assert_eq!(cell.fg, Color::Red);
+        // Cells outside the diagnostic range stay un-underlined.
+        let outside = rendered.cell((10, 0)).unwrap();
+        assert_eq!(outside.symbol(), "(");
+        assert!(!outside.modifier.contains(Modifier::UNDERLINED));
     }
 }
