@@ -169,6 +169,7 @@ dependencies = [
  "arboard",
  "crossterm",
  "devix-buffer",
+ "devix-collection",
  "devix-config",
  "devix-ui",
  "devix-workspace",
@@ -183,6 +184,13 @@ dependencies = [
  "anyhow",
  "ropey",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "devix-collection"
+version = "0.1.0"
+dependencies = [
+ "ratatui",
 ]
 
 [[package]]
@@ -210,6 +218,7 @@ name = "devix-ui"
 version = "0.1.0"
 dependencies = [
  "devix-buffer",
+ "devix-collection",
  "ratatui",
 ]
 
@@ -220,6 +229,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "devix-buffer",
+ "devix-collection",
  "notify",
  "ratatui",
  "slotmap",

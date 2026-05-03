@@ -13,6 +13,7 @@ anyhow.workspace = true
 crossterm.workspace = true
 ratatui.workspace = true
 devix-buffer.workspace = true
+devix-collection.workspace = true
 devix-ui.workspace = true
 devix-workspace.workspace = true
 devix-config.workspace = true

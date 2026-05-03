@@ -2,6 +2,7 @@
 //! Owned by Workspace, indexed by ViewId.
 
 use devix_buffer::{Range, Selection, Transaction};
+use devix_collection::CollectionState;
 use slotmap::new_key_type;
 
 use crate::document::DocId;
@@ -13,8 +14,13 @@ pub struct View {
     pub selection: Selection,
     /// Sticky column for vertical motion.
     pub target_col: Option<usize>,
-    pub scroll_top: usize,
-    /// Anchored: render keeps the cursor in view. Detached: scroll_top floats.
+    /// Editor scroll state. `scroll_y` is the line index of the topmost
+    /// visible line (one cell per line for now); `scroll_x` is reserved for
+    /// horizontal scrolling within long lines.
+    pub scroll: CollectionState,
+    /// Anchored: render keeps the cursor in view. Detached: the scroll state
+    /// floats — set by `Action::ScrollBy` so wheel scroll past the cursor
+    /// doesn't snap back.
     pub view_anchored: bool,
 }
 
@@ -24,9 +30,18 @@ impl View {
             doc,
             selection: Selection::point(0),
             target_col: None,
-            scroll_top: 0,
+            scroll: CollectionState::default(),
             view_anchored: true,
         }
+    }
+
+    pub fn scroll_top(&self) -> usize {
+        self.scroll.scroll_y as usize
+    }
+
+    pub fn set_scroll_top(&mut self, line: usize) {
+        // Scroll is bounded to u32 — fine for any practical buffer (4B lines).
+        self.scroll.scroll_y = line.min(u32::MAX as usize) as u32;
     }
 
     pub fn primary(&self) -> Range {
@@ -62,6 +77,6 @@ mod tests {
         assert_eq!(v.primary().head, 0);
         assert!(v.view_anchored);
         assert!(v.target_col.is_none());
-        assert_eq!(v.scroll_top, 0);
+        assert_eq!(v.scroll_top(), 0);
     }
 }

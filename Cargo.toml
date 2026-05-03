@@ -18,6 +18,7 @@ crossterm = "0.28"
 
 # internal
 devix-buffer = { path = "crates/buffer" }
+devix-collection = { path = "crates/collection" }
 devix-ui = { path = "crates/ui" }
 devix-syntax = { path = "crates/syntax" }
 devix-lsp = { path = "crates/lsp" }

@@ -1,6 +1,8 @@
 //! Editor view: pure render of buffer text with line-number gutter and
-//! selection-range highlight.
+//! selection-range highlight. Vertical scroll comes from the collection
+//! primitives — each line is one item in a `UniformLayout`.
 
+use devix_collection::{CollectionPass, CollectionState, UniformLayout};
 use ratatui::Frame;
 use ratatui::buffer::Buffer as RatBuffer;
 use ratatui::layout::Rect;
@@ -13,7 +15,7 @@ use devix_buffer::{Buffer, Range, Selection};
 pub struct EditorView<'a> {
     pub buffer: &'a Buffer,
     pub selection: &'a Selection,
-    pub scroll_top: usize,
+    pub scroll: &'a CollectionState,
 }
 
 pub struct EditorRenderResult {
@@ -28,39 +30,34 @@ pub fn render_editor(view: EditorView<'_>, area: Rect, frame: &mut Frame<'_>) ->
     let num_width = line_count.to_string().len() as u16;
     let gutter_width = num_width + 2; // " 12 "
 
-    let visible_rows = area.height as usize;
-    let scroll_top = view.scroll_top;
+    let layout = UniformLayout::vertical(line_count, 1, area.width as u32);
+    let pass = CollectionPass::new(&layout, view.scroll, area);
+    let scroll_top = view.scroll.scroll_y as usize;
 
     let gutter_style = Style::default().add_modifier(Modifier::DIM);
 
-    // Cap per-line work to what the viewport can show. Without this, files
-    // with long lines (minified code, JSON, logs) allocate the full line as a
-    // String per visible row per frame — easily megabytes of churn on every
-    // navigation key, which makes input feel ignored because the render
-    // thread is busy copying.
+    // Cap per-line work to what the viewport can show. Long lines (minified
+    // code, JSON, logs) would otherwise allocate the full line as a String per
+    // visible row per frame — easily megabytes of churn on every navigation
+    // key, which makes input feel ignored because the render thread is busy.
     let max_text = (area.width as usize).saturating_sub(gutter_width as usize + 1);
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity(visible_rows);
-    for row in 0..visible_rows {
-        let line_idx = scroll_top + row;
-        if line_idx >= line_count { break; }
+    for (line_idx, geom) in pass.visible_items() {
+        let line_text = view.buffer.line_string_truncated(line_idx, max_text);
         let gutter = format!("{:>width$} ", line_idx + 1, width = num_width as usize);
-        let text = view.buffer.line_string_truncated(line_idx, max_text);
-        lines.push(Line::from(vec![
+        let line = Line::from(vec![
             Span::styled(gutter, gutter_style),
             Span::raw(" "),
-            Span::raw(text),
-        ]));
+            Span::raw(line_text),
+        ]);
+        Paragraph::new(line).render(geom.screen, frame.buffer_mut());
     }
 
-    Paragraph::new(lines).render(area, frame.buffer_mut());
-
-    // Paint selection backgrounds on top of the rendered text. Text-only ranges
-    // (anchor == head) render as a plain cursor and are skipped here.
     paint_selection(view.buffer, view.selection, area, gutter_width, scroll_top, frame.buffer_mut());
 
     let primary = view.selection.primary();
     let cur_line = view.buffer.line_of_char(primary.head);
     let cur_col = view.buffer.col_of_char(primary.head);
+    let visible_rows = area.height as usize;
     let cursor_screen = if cur_line >= scroll_top && cur_line < scroll_top + visible_rows {
         let y = area.y + (cur_line - scroll_top) as u16;
         let x = area.x + gutter_width + cur_col as u16;

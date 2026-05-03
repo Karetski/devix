@@ -192,10 +192,13 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
         }
         ScrollBy(delta) => {
             let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-            let max = cx.workspace.documents[did].buffer.line_count().saturating_sub(1) as isize;
+            let line_count = cx.workspace.documents[did].buffer.line_count();
             let v = &mut cx.workspace.views[vid];
-            let next = (v.scroll_top as isize).saturating_add(delta);
-            v.scroll_top = next.clamp(0, max) as usize;
+            let max = line_count.saturating_sub(1);
+            let next = (v.scroll_top() as isize)
+                .saturating_add(delta)
+                .clamp(0, max as isize) as usize;
+            v.set_scroll_top(next);
         }
     }
 }
@@ -339,7 +342,7 @@ fn click_to_char_idx(cx: &Context<'_>, col: u16, row: u16) -> Option<usize> {
     let row_in_view = (row - v.y) as usize;
     let view = cx.workspace.active_view()?;
     let buf = &cx.workspace.documents.get(view.doc)?.buffer;
-    let line = (view.scroll_top + row_in_view).min(buf.line_count().saturating_sub(1));
+    let line = (view.scroll_top() + row_in_view).min(buf.line_count().saturating_sub(1));
     let local_col = click_col.min(buf.line_len_chars(line));
     Some(buf.line_start(line) + local_col)
 }

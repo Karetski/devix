@@ -113,6 +113,16 @@ pub fn default_keymap() -> Keymap {
     k.bind(chord(ch('w'), C | S), Action::ForceCloseTab);
     k.bind(chord(KeyCode::Char('['), C | S), Action::PrevTab);
     k.bind(chord(KeyCode::Char(']'), C | S), Action::NextTab);
+    // Fallback for terminals (notably macOS Terminal.app) that drop the SHIFT
+    // bit when CTRL+SHIFT+symbol is pressed and deliver the shifted character
+    // with CTRL alone. On a US layout, Shift+[ = { and Shift+] = }.
+    k.bind(chord(KeyCode::Char('{'), C), Action::PrevTab);
+    k.bind(chord(KeyCode::Char('}'), C), Action::NextTab);
+    // PageUp/PageDown with Ctrl is the lingua-franca tab-switch chord that
+    // every terminal forwards cleanly. Worth binding so tabs are reachable
+    // even on terminals that mangle the bracket chords entirely.
+    k.bind(chord(KeyCode::PageUp, C), Action::PrevTab);
+    k.bind(chord(KeyCode::PageDown, C), Action::NextTab);
 
     // Fallback for terminals (e.g. macOS Terminal.app default) that emit
     // ESC b / ESC f for Option+Left/Right rather than the CSI Alt+arrow

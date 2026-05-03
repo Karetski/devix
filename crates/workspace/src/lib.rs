@@ -16,4 +16,4 @@ pub use document::{DocId, Document};
 pub use frame::{Frame, FrameId};
 pub use layout::{Axis, Direction, Node, SidebarSlot};
 pub use view::{View, ViewId};
-pub use workspace::{LeafRef, RenderCache, Workspace};
+pub use workspace::{LeafRef, RenderCache, TabHit, TabStripCache, TabStripHit, Workspace};

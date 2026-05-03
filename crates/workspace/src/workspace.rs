@@ -20,10 +20,30 @@ pub enum LeafRef {
     Sidebar(SidebarSlot),
 }
 
+/// One clickable tab region in a frame's tab strip. Mirrors `devix_ui::TabHit`
+/// but lives here so workspace can do hit-testing without depending on the UI
+/// crate.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TabHit {
+    pub idx: usize,
+    pub rect: Rect,
+}
+
+/// Hit-test layout of a frame's tab strip, populated on render. `strip_rect`
+/// covers the whole 1-row tab strip (including empty space past the last tab),
+/// so wheel events anywhere on that row resolve to this frame.
+#[derive(Default, Clone, Debug)]
+pub struct TabStripCache {
+    pub strip_rect: Rect,
+    pub content_width: u32,
+    pub hits: Vec<TabHit>,
+}
+
 #[derive(Default)]
 pub struct RenderCache {
     pub frame_rects: SecondaryMap<FrameId, Rect>,
     pub sidebar_rects: HashMap<SidebarSlot, Rect>,
+    pub tab_strips: SecondaryMap<FrameId, TabStripCache>,
 }
 
 pub struct Workspace {
@@ -117,7 +137,8 @@ impl Workspace {
         let vid = self.views.insert(View::new(did));
         let frame = &mut self.frames[fid];
         frame.tabs.push(vid);
-        frame.active_tab = frame.tabs.len() - 1;
+        let new_idx = frame.tabs.len() - 1;
+        frame.set_active(new_idx);
     }
 
     /// Returns false if the active doc is dirty; the caller should warn.
@@ -134,7 +155,7 @@ impl Workspace {
             let new_did = self.documents.insert(Document::empty());
             let new_vid = self.views.insert(View::new(new_did));
             frame.tabs[0] = new_vid;
-            frame.active_tab = 0;
+            frame.set_active(0);
             self.views.remove(vid);
             self.try_remove_orphan_doc(did);
             return true;
@@ -142,9 +163,8 @@ impl Workspace {
 
         let idx = frame.active_tab;
         frame.tabs.remove(idx);
-        if frame.active_tab >= frame.tabs.len() {
-            frame.active_tab = frame.tabs.len() - 1;
-        }
+        let next = idx.min(frame.tabs.len() - 1);
+        frame.set_active(next);
         self.views.remove(vid);
         self.try_remove_orphan_doc(did);
         true
@@ -154,14 +174,16 @@ impl Workspace {
         let Some(fid) = self.active_frame() else { return };
         let frame = &mut self.frames[fid];
         if frame.tabs.is_empty() { return; }
-        frame.active_tab = (frame.active_tab + 1) % frame.tabs.len();
+        let next = (frame.active_tab + 1) % frame.tabs.len();
+        frame.set_active(next);
     }
 
     pub fn prev_tab(&mut self) {
         let Some(fid) = self.active_frame() else { return };
         let frame = &mut self.frames[fid];
         if frame.tabs.is_empty() { return; }
-        frame.active_tab = (frame.active_tab + frame.tabs.len() - 1) % frame.tabs.len();
+        let prev = (frame.active_tab + frame.tabs.len() - 1) % frame.tabs.len();
+        frame.set_active(prev);
     }
 
     /// If no surviving view references `did`, drop the document and its
@@ -295,7 +317,7 @@ impl Workspace {
                 doc: v.doc,
                 selection: v.selection.clone(),
                 target_col: v.target_col,
-                scroll_top: v.scroll_top,
+                scroll: v.scroll,
                 view_anchored: true,
             }
         };
@@ -531,7 +553,77 @@ fn find_sidebar(node: &Node, slot: SidebarSlot) -> Option<Vec<usize>> {
     if go(node, slot, &mut p) { Some(p) } else { None }
 }
 
+/// What was hit by a click on the tab-strip overlay.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TabStripHit {
+    Tab { frame: FrameId, idx: usize },
+}
+
 impl Workspace {
+    /// Find the tab-strip element under (col, row), if any. Used by the input
+    /// layer before falling back to body-area hit-testing.
+    pub fn tab_strip_hit(&self, col: u16, row: u16) -> Option<TabStripHit> {
+        for (fid, strip) in &self.render_cache.tab_strips {
+            for hit in &strip.hits {
+                if rect_contains(hit.rect, col, row) {
+                    return Some(TabStripHit::Tab { frame: fid, idx: hit.idx });
+                }
+            }
+        }
+        None
+    }
+
+    /// Frame whose tab-strip row contains (col, row). Independent of where in
+    /// the strip the click landed — empty space past the last tab still
+    /// resolves the frame so the wheel scrolls it.
+    pub fn frame_at_strip(&self, col: u16, row: u16) -> Option<FrameId> {
+        for (fid, strip) in &self.render_cache.tab_strips {
+            if rect_contains(strip.strip_rect, col, row) {
+                return Some(fid);
+            }
+        }
+        None
+    }
+
+    /// Whether the tab strip currently overflows its row — i.e., scrolling
+    /// can produce a visible change. Used by the input layer to decide
+    /// whether to consume a wheel event or pass it through to the editor.
+    pub fn tab_strip_can_scroll(&self, frame: FrameId) -> bool {
+        let Some(strip) = self.render_cache.tab_strips.get(frame) else { return false };
+        strip.content_width > strip.strip_rect.width as u32
+    }
+
+    /// Apply a horizontal scroll delta (cells) to a frame's tab strip. Routes
+    /// through the frame's `CollectionState` so all scroll math lives in one
+    /// place. No-op when content fits in the strip.
+    pub fn scroll_tab_strip(&mut self, frame: FrameId, delta: isize) {
+        let Some(strip) = self.render_cache.tab_strips.get(frame) else { return };
+        let content = (strip.content_width, 1);
+        let viewport = (strip.strip_rect.width as u32, 1);
+        let Some(f) = self.frames.get_mut(frame) else { return };
+        f.tab_strip_state.scroll_by(delta, 0, content, viewport);
+    }
+
+    /// Move focus to `frame`'s leaf, if it exists in the layout tree. Returns
+    /// true on success.
+    pub fn focus_frame(&mut self, frame: FrameId) -> bool {
+        if let Some(path) = path_to_leaf(&self.layout, LeafRef::Frame(frame)) {
+            self.focus = path;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Activate `idx` on `frame` from a click on a visible tab. Does *not*
+    /// scroll the strip — the user already picked a tab they could see.
+    /// Out-of-range indices clamp to a valid value.
+    pub fn activate_tab(&mut self, frame: FrameId, idx: usize) {
+        let Some(f) = self.frames.get_mut(frame) else { return };
+        if f.tabs.is_empty() { return; }
+        f.select_visible(idx.min(f.tabs.len() - 1));
+    }
+
     /// Set focus to the leaf whose Rect contains (col, row), if any.
     pub fn focus_at_screen(&mut self, col: u16, row: u16) {
         let leaves = self.layout.leaves_with_rects(self.outer_editor_area());
@@ -548,11 +640,16 @@ impl Workspace {
     }
 
     /// The total area the layout tree occupies, derived from cached rects.
-    /// Used by hit-testing without re-running a layout pass.
+    /// Used by hit-testing without re-running a layout pass. Includes tab-strip
+    /// rows so clicks on the strip can resolve to the owning frame.
     fn outer_editor_area(&self) -> ratatui::layout::Rect {
         use ratatui::layout::Rect;
         let rects: Vec<Rect> = self.render_cache.frame_rects.values().copied()
             .chain(self.render_cache.sidebar_rects.values().copied())
+            .chain(
+                self.render_cache.tab_strips.values()
+                    .map(|s| s.strip_rect)
+            )
             .collect();
         if rects.is_empty() { return Rect::default(); }
         let x = rects.iter().map(|r| r.x).min().unwrap();
@@ -561,6 +658,13 @@ impl Workspace {
         let y_end = rects.iter().map(|r| r.y + r.height).max().unwrap();
         Rect { x, y, width: x_end - x, height: y_end - y }
     }
+}
+
+fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
+    col >= rect.x
+        && col < rect.x.saturating_add(rect.width)
+        && row >= rect.y
+        && row < rect.y.saturating_add(rect.height)
 }
 
 fn path_to_leaf(node: &Node, target: LeafRef) -> Option<Vec<usize>> {
@@ -737,15 +841,15 @@ mod tests {
 
         // Underflow clamps to 0.
         let v = ws.active_view_mut().unwrap();
-        let next: isize = (v.scroll_top as isize).saturating_add(-1);
-        v.scroll_top = next.clamp(0, 99) as usize;
-        assert_eq!(v.scroll_top, 0);
+        let next: isize = (v.scroll_top() as isize).saturating_add(-1);
+        v.set_scroll_top(next.clamp(0, 99) as usize);
+        assert_eq!(v.scroll_top(), 0);
 
         // Overflow clamps to last visible line index.
         let v = ws.active_view_mut().unwrap();
-        let next: isize = (v.scroll_top as isize).saturating_add(1_000_000);
-        v.scroll_top = next.clamp(0, 99) as usize;
-        assert_eq!(v.scroll_top, 99);
+        let next: isize = (v.scroll_top() as isize).saturating_add(1_000_000);
+        v.set_scroll_top(next.clamp(0, 99) as usize);
+        assert_eq!(v.scroll_top(), 99);
     }
 
     #[test]
@@ -808,5 +912,132 @@ mod tests {
 
         assert_eq!(did1, did2, "same path opened in different frames should share DocId");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tab_strip_hit_returns_tab_under_cursor() {
+        let mut ws = Workspace::open(None).unwrap();
+        ws.new_tab(); // 2 tabs in active frame
+        let fid = ws.active_frame().unwrap();
+        let strip = TabStripCache {
+            strip_rect: Rect { x: 0, y: 0, width: 30, height: 1 },
+            content_width: 21,
+            hits: vec![
+                TabHit { idx: 0, rect: Rect { x: 0, y: 0, width: 10, height: 1 } },
+                TabHit { idx: 1, rect: Rect { x: 11, y: 0, width: 10, height: 1 } },
+            ],
+        };
+        ws.render_cache.tab_strips.insert(fid, strip);
+
+        assert_eq!(
+            ws.tab_strip_hit(5, 0),
+            Some(TabStripHit::Tab { frame: fid, idx: 0 }),
+        );
+        assert_eq!(
+            ws.tab_strip_hit(15, 0),
+            Some(TabStripHit::Tab { frame: fid, idx: 1 }),
+        );
+        // Outside any tab → no hit.
+        assert_eq!(ws.tab_strip_hit(50, 0), None);
+        // Off the strip entirely → no hit.
+        assert_eq!(ws.tab_strip_hit(5, 5), None);
+    }
+
+    #[test]
+    fn activate_tab_focuses_clicked_index() {
+        let mut ws = Workspace::open(None).unwrap();
+        ws.new_tab();
+        ws.new_tab(); // 3 tabs, active = 2
+        let fid = ws.active_frame().unwrap();
+        ws.activate_tab(fid, 0);
+        assert_eq!(ws.frames[fid].active_tab, 0);
+        // Out-of-range clamps to last.
+        ws.activate_tab(fid, 99);
+        assert_eq!(ws.frames[fid].active_tab, 2);
+    }
+
+    #[test]
+    fn scroll_tab_strip_clamps_to_content_minus_strip_width() {
+        let mut ws = Workspace::open(None).unwrap();
+        let fid = ws.active_frame().unwrap();
+        ws.render_cache.tab_strips.insert(fid, TabStripCache {
+            strip_rect: Rect { x: 0, y: 0, width: 20, height: 1 },
+            content_width: 50,
+            hits: Vec::new(),
+        });
+        ws.scroll_tab_strip(fid, 100);
+        assert_eq!(ws.frames[fid].tab_strip_state.scroll_x, 30, "clamped to 50 - 20");
+        ws.scroll_tab_strip(fid, -1000);
+        assert_eq!(ws.frames[fid].tab_strip_state.scroll_x, 0, "clamped at 0");
+    }
+
+    #[test]
+    fn scroll_tab_strip_noop_when_content_fits() {
+        let mut ws = Workspace::open(None).unwrap();
+        let fid = ws.active_frame().unwrap();
+        ws.render_cache.tab_strips.insert(fid, TabStripCache {
+            strip_rect: Rect { x: 0, y: 0, width: 20, height: 1 },
+            content_width: 15,
+            hits: Vec::new(),
+        });
+        ws.scroll_tab_strip(fid, 5);
+        assert_eq!(ws.frames[fid].tab_strip_state.scroll_x, 0);
+    }
+
+    #[test]
+    fn frame_at_strip_resolves_full_strip_row() {
+        let mut ws = Workspace::open(None).unwrap();
+        let fid = ws.active_frame().unwrap();
+        ws.render_cache.tab_strips.insert(fid, TabStripCache {
+            strip_rect: Rect { x: 0, y: 4, width: 30, height: 1 },
+            content_width: 10,
+            hits: Vec::new(),
+        });
+        // Empty space past the last tab still resolves the frame so wheel scroll works.
+        assert_eq!(ws.frame_at_strip(25, 4), Some(fid));
+        assert_eq!(ws.frame_at_strip(25, 5), None);
+    }
+
+    #[test]
+    fn next_tab_requests_recenter_but_click_does_not() {
+        let mut ws = Workspace::open(None).unwrap();
+        ws.new_tab(); // 2 tabs, active = 1, recenter set by new_tab
+        let fid = ws.active_frame().unwrap();
+        ws.frames[fid].recenter_active = false; // simulate render that consumed it
+
+        ws.next_tab();
+        assert!(ws.frames[fid].recenter_active, "keyboard nav requests scroll-into-view");
+
+        ws.frames[fid].recenter_active = false;
+        ws.activate_tab(fid, 0);
+        assert!(!ws.frames[fid].recenter_active,
+            "click activation must not request scroll — strip stays put");
+    }
+
+    #[test]
+    fn activate_tab_does_not_change_tab_scroll() {
+        let mut ws = Workspace::open(None).unwrap();
+        ws.new_tab();
+        ws.new_tab();
+        let fid = ws.active_frame().unwrap();
+        ws.frames[fid].tab_strip_state.scroll_x = 7;
+        ws.activate_tab(fid, 0);
+        assert_eq!(ws.frames[fid].tab_strip_state.scroll_x, 7,
+            "click-to-activate must not relayout the strip");
+    }
+
+    #[test]
+    fn focus_frame_jumps_focus_across_a_split() {
+        use crate::layout::Axis;
+        let mut ws = Workspace::open(None).unwrap();
+        let original = ws.active_frame().unwrap();
+        ws.split_active(Axis::Horizontal);
+        let new_fid = ws.active_frame().unwrap();
+        assert_ne!(original, new_fid);
+
+        assert!(ws.focus_frame(original));
+        assert_eq!(ws.active_frame(), Some(original));
+        assert!(ws.focus_frame(new_fid));
+        assert_eq!(ws.active_frame(), Some(new_fid));
     }
 }

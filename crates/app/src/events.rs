@@ -4,7 +4,7 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind};
 use devix_config::chord_from_key;
-use devix_workspace::{Action, Context, Viewport, dispatch};
+use devix_workspace::{Action, Context, TabStripHit, Viewport, dispatch};
 
 use crate::app::App;
 
@@ -51,6 +51,12 @@ pub fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
 pub fn handle_mouse(me: MouseEvent, app: &mut App) {
     match me.kind {
         MouseEventKind::Down(MouseButton::Left) => {
+            // Tab-strip clicks are not editor clicks: don't fall through to
+            // ClickAt or we'd reposition the caret on a phantom row.
+            if let Some(hit) = app.workspace.tab_strip_hit(me.column, me.row) {
+                handle_tab_strip_click(app, hit);
+                return;
+            }
             app.workspace.focus_at_screen(me.column, me.row);
             let extend = me.modifiers.contains(KeyModifiers::SHIFT);
             run_action(app, Action::ClickAt {
@@ -63,11 +69,44 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
             });
         }
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+            // Wheel over a *scrollable* tab strip scrolls the strip
+            // horizontally (vertical-wheel-as-horizontal-scroll, like browsers
+            // do). When the strip already fits, fall through so the wheel
+            // reaches the editor instead of being silently swallowed.
+            if let Some(fid) = app.workspace.frame_at_strip(me.column, me.row) {
+                if app.workspace.tab_strip_can_scroll(fid) {
+                    let delta: isize = if matches!(me.kind, MouseEventKind::ScrollUp) { -2 } else { 2 };
+                    app.workspace.scroll_tab_strip(fid, delta);
+                    app.dirty = true;
+                    return;
+                }
+            }
             let delta: isize = if matches!(me.kind, MouseEventKind::ScrollUp) { -1 } else { 1 };
             app.pending_scroll = app.pending_scroll.saturating_add(delta);
         }
+        MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
+            // Real horizontal scroll (trackpad swipe). Only meaningful on the
+            // tab strip; the editor is not horizontally scrollable today.
+            if let Some(fid) = app.workspace.frame_at_strip(me.column, me.row) {
+                if app.workspace.tab_strip_can_scroll(fid) {
+                    let delta: isize = if matches!(me.kind, MouseEventKind::ScrollLeft) { -2 } else { 2 };
+                    app.workspace.scroll_tab_strip(fid, delta);
+                    app.dirty = true;
+                }
+            }
+        }
         _ => {}
     }
+}
+
+fn handle_tab_strip_click(app: &mut App, hit: TabStripHit) {
+    let TabStripHit::Tab { frame, idx } = hit;
+    app.workspace.focus_frame(frame);
+    app.workspace.activate_tab(frame, idx);
+    if let Some(v) = app.workspace.active_view_mut() {
+        v.view_anchored = true;
+    }
+    app.dirty = true;
 }
 
 pub fn run_action(app: &mut App, action: Action) {
