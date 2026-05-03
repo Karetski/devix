@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::document::{DocId, Document};
+use devix_document::{DocId, Document};
 use crate::frame::Frame;
 use crate::layout::{Axis, Node, SidebarSlot};
 use crate::view::{ScrollMode, View, ViewId};

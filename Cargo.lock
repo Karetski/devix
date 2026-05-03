@@ -229,6 +229,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "devix-document"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "devix-buffer",
+ "devix-lsp",
+ "devix-syntax",
+ "lsp-types",
+ "notify",
+ "ropey",
+ "slotmap",
+ "tokio",
+]
+
+[[package]]
 name = "devix-lsp"
 version = "0.1.0"
 dependencies = [
@@ -290,13 +305,12 @@ dependencies = [
  "crossterm",
  "devix-buffer",
  "devix-collection",
+ "devix-document",
  "devix-lsp",
  "devix-syntax",
  "lsp-types",
- "notify",
  "nucleo-matcher",
  "ratatui",
- "ropey",
  "slotmap",
  "tokio",
 ]

@@ -6,7 +6,7 @@ use devix_collection::CollectionState;
 use lsp_types::CompletionItem;
 use slotmap::new_key_type;
 
-use crate::document::DocId;
+use devix_document::DocId;
 
 new_key_type! { pub struct ViewId; }
 

@@ -27,6 +27,7 @@ lsp-types = "0.97"
 # internal
 devix-buffer = { path = "crates/buffer" }
 devix-collection = { path = "crates/collection" }
+devix-document = { path = "crates/document" }
 devix-ui = { path = "crates/ui" }
 devix-views = { path = "crates/views" }
 devix-syntax = { path = "crates/syntax" }

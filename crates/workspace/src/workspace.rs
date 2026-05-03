@@ -23,7 +23,7 @@ use ratatui::layout::Rect;
 use slotmap::{SecondaryMap, SlotMap};
 use tokio::sync::mpsc;
 
-use crate::document::{DocId, Document};
+use devix_document::{DocId, Document};
 use crate::frame::{Frame, FrameId};
 use crate::layout::{Node, SidebarSlot};
 use crate::view::{View, ViewId};

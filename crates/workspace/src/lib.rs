@@ -5,7 +5,6 @@ pub mod builtins;
 pub mod command;
 pub mod context;
 pub mod dispatch;
-pub mod document;
 pub mod frame;
 pub mod keymap;
 pub mod layout;
@@ -17,12 +16,14 @@ pub use action::Action;
 // Re-exported so callers building Actions don't have to depend on devix-lsp
 // directly for the trigger discriminator.
 pub use devix_lsp::CompletionTrigger;
+// Document model lives in `devix-document`; re-exported here so existing
+// callers (app, views) continue to import via `devix_workspace::*`.
+pub use devix_document::{DocDiagnostic, DocId, Document};
 pub use builtins::{build_registry, register_builtins};
 pub use command::{Command, CommandId, CommandRegistry};
 pub use keymap::{Chord, Keymap, chord_from_key, default_keymap};
 pub use context::{Context, StatusLine, Viewport};
 pub use dispatch::{dispatch, refilter_completion};
-pub use document::{DocDiagnostic, DocId, Document};
 pub use frame::{Frame, FrameId};
 pub use layout::{Axis, Direction, Node, SidebarSlot};
 pub use overlay::{Overlay, PaletteState, SymbolsKind, SymbolsState, SymbolsStatus};
