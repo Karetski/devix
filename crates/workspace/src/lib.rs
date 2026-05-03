@@ -30,4 +30,4 @@ pub use overlay::{Overlay, PaletteState, SymbolsKind, SymbolsState, SymbolsStatu
 pub use view::{
     CompletionState, CompletionStatus, HoverState, HoverStatus, ScrollMode, View, ViewId,
 };
-pub use workspace::{LeafRef, RenderCache, TabStripCache, TabStripHit, Workspace};
+pub use workspace::{LeafRef, RenderCache, TabHit, TabStripCache, TabStripHit, Workspace};

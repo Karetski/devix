@@ -16,7 +16,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use devix_collection::VRect;
+use devix_ui::layout::{VRect, ensure_visible, set_scroll};
 use devix_ui::{
     CompletionLine, Popup, PopupAnchor, PopupContent, StatusInfo, layout_tabstrip, render_popup,
     render_status as render_status_widget, render_tabstrip,
@@ -90,7 +90,7 @@ fn layout_pass(leaves: &[(LeafRef, Rect)], ws: &mut Workspace) {
         layout_tabstrip(
             &tabs,
             active_tab,
-            &mut f.tab_strip_state,
+            &mut f.tab_strip_scroll,
             &mut f.recenter_active,
             strip_area,
         );
@@ -116,12 +116,13 @@ fn layout_pass(leaves: &[(LeafRef, Rect)], ws: &mut Workspace) {
                 // bumps scroll the minimum amount needed to show it. No-op
                 // when the cursor is already in view.
                 let line_rect = VRect { x: 0, y: cur_line as u32, w: body_w, h: 1 };
-                v.scroll.ensure_visible(line_rect, content, viewport);
+                ensure_visible(&mut v.scroll, line_rect, content, viewport);
             }
             ScrollMode::Free => {
                 // Re-clamp so resize / line-count changes don't leave a stale
                 // out-of-bounds scroll.
-                v.scroll.set_scroll(v.scroll.scroll_x, v.scroll.scroll_y, content, viewport);
+                let (sx, sy) = v.scroll;
+                set_scroll(&mut v.scroll, sx, sy, content, viewport);
             }
         }
     }
@@ -169,16 +170,21 @@ fn paint_frame(id: FrameId, area: Rect, app: &mut App, frame: &mut Frame<'_>) {
     let render = render_tabstrip(
         &tabs,
         active_tab,
-        &f.tab_strip_state,
+        f.tab_strip_scroll,
         strip_area,
         frame,
     );
+    let hits = render
+        .hits
+        .iter()
+        .map(|h| devix_workspace::TabHit { idx: h.idx, rect: h.rect })
+        .collect();
     app.workspace.render_cache.tab_strips.insert(
         id,
         devix_workspace::TabStripCache {
             strip_rect: strip_area,
             content_width: render.content_width,
-            hits: render.hits.clone(),
+            hits,
         },
     );
 
@@ -190,7 +196,7 @@ fn paint_frame(id: FrameId, area: Rect, app: &mut App, frame: &mut Frame<'_>) {
     let editor_view = EditorView {
         buffer: &doc.buffer,
         selection: &view.selection,
-        scroll: &view.scroll,
+        scroll: view.scroll,
         theme: &app.theme,
         highlights: &highlights,
         diagnostics: doc.diagnostics(),

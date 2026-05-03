@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use devix_collection::Hit;
 use devix_lsp::LspCommand;
 use lsp_types::PositionEncodingKind;
 use ratatui::layout::Rect;
@@ -38,6 +37,15 @@ pub enum LeafRef {
     Sidebar(SidebarSlot),
 }
 
+/// One clickable tab region produced by the tab-strip render. Stored in the
+/// render cache and consumed by hit-testing. Defined here (rather than in
+/// `devix-ui`) so the workspace model has no view-layer dependency.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TabHit {
+    pub idx: usize,
+    pub rect: Rect,
+}
+
 /// Hit-test layout of a frame's tab strip, populated on render. `strip_rect`
 /// covers the whole 1-row tab strip (including empty space past the last tab),
 /// so wheel events anywhere on that row resolve to this frame.
@@ -45,7 +53,7 @@ pub enum LeafRef {
 pub struct TabStripCache {
     pub strip_rect: Rect,
     pub content_width: u32,
-    pub hits: Vec<Hit>,
+    pub hits: Vec<TabHit>,
 }
 
 #[derive(Default)]
@@ -404,8 +412,8 @@ mod tests {
             strip_rect: Rect { x: 0, y: 0, width: 30, height: 1 },
             content_width: 21,
             hits: vec![
-                Hit { idx: 0, rect: Rect { x: 0, y: 0, width: 10, height: 1 } },
-                Hit { idx: 1, rect: Rect { x: 11, y: 0, width: 10, height: 1 } },
+                TabHit { idx: 0, rect: Rect { x: 0, y: 0, width: 10, height: 1 } },
+                TabHit { idx: 1, rect: Rect { x: 11, y: 0, width: 10, height: 1 } },
             ],
         };
         ws.render_cache.tab_strips.insert(fid, strip);
@@ -444,9 +452,9 @@ mod tests {
             hits: Vec::new(),
         });
         ws.scroll_tab_strip(fid, 100);
-        assert_eq!(ws.frames[fid].tab_strip_state.scroll_x, 30, "clamped to 50 - 20");
+        assert_eq!(ws.frames[fid].tab_strip_scroll.0, 30, "clamped to 50 - 20");
         ws.scroll_tab_strip(fid, -1000);
-        assert_eq!(ws.frames[fid].tab_strip_state.scroll_x, 0, "clamped at 0");
+        assert_eq!(ws.frames[fid].tab_strip_scroll.0, 0, "clamped at 0");
     }
 
     #[test]
@@ -459,7 +467,7 @@ mod tests {
             hits: Vec::new(),
         });
         ws.scroll_tab_strip(fid, 5);
-        assert_eq!(ws.frames[fid].tab_strip_state.scroll_x, 0);
+        assert_eq!(ws.frames[fid].tab_strip_scroll.0, 0);
     }
 
     #[test]
@@ -497,9 +505,9 @@ mod tests {
         ws.new_tab();
         ws.new_tab();
         let fid = ws.active_frame().unwrap();
-        ws.frames[fid].tab_strip_state.scroll_x = 7;
+        ws.frames[fid].tab_strip_scroll.0 = 7;
         ws.activate_tab(fid, 0);
-        assert_eq!(ws.frames[fid].tab_strip_state.scroll_x, 7,
+        assert_eq!(ws.frames[fid].tab_strip_scroll.0, 7,
             "click-to-activate must not relayout the strip");
     }
 

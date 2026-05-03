@@ -1,37 +1,34 @@
-//! Reusable collection-view primitives, modeled on UICollectionView.
+//! Layout/virtualization primitives modeled on `UICollectionView`.
 //!
-//! Four concerns are kept strictly separate so this scales beyond the tab
-//! strip to lists, grids, sidebars, palettes, etc.:
+//! Three orthogonal concerns:
 //!
 //! * **Layout** ([`CollectionLayout`]) — pure mapping from item index to
 //!   virtual rect. Knows nothing about scroll, screen, or input. Examples:
 //!   [`LinearLayout`] (1D flow), [`UniformLayout`] (constant-stride 1D for
 //!   huge counts), future grid / waterfall / compositional.
-//! * **State** ([`CollectionState`]) — scroll offset (and, later, focus /
-//!   selection). Owned by whoever owns the data being scrolled (e.g. a
-//!   `Frame`); persists across renders.
 //! * **Projection** ([`CollectionPass`], [`project_to_screen`]) — given a
-//!   layout and a state, computes per-item screen geometry plus edge clip
-//!   information. The renderer paints into the projected screen rects.
-//! * **Interaction** ([`CollectionPass::item_at_screen`],
-//!   [`CollectionState::scroll_by`], [`CollectionState::ensure_visible`]) —
-//!   hit-testing and scroll mutation.
+//!   layout, a scroll offset, and a screen area, computes per-item screen
+//!   geometry plus edge clip information.
+//! * **Scroll math** ([`scroll_by`], [`set_scroll`], [`ensure_visible`]) —
+//!   free functions that mutate a raw `(u32, u32)` scroll offset against a
+//!   `(content, viewport)` pair. Workspace stores scroll as a plain tuple so
+//!   the model crate has no view dependency; renderers and input handlers
+//!   reach for the math here.
 //!
 //! Virtual coordinates are `u32` so a layout can address a far larger content
-//! area than the screen (e.g. a million-line buffer) — the screen `Rect` stays
-//! `u16` and the projection code converts at the boundary.
+//! area than the screen (e.g. a million-line buffer) — the screen `Rect`
+//! stays `u16` and the projection code converts at the boundary.
 //!
-//! There is intentionally no "cell" type and no rendering code in this crate.
-//! Cells are whatever the caller decides to draw inside [`CellGeometry::screen`].
+//! There is intentionally no "cell" type and no rendering code in this
+//! module. Cells are whatever the caller decides to draw inside
+//! [`CellGeometry::screen`].
 
 use ratatui::layout::Rect;
 
 // -- Hit --------------------------------------------------------------------
 
 /// One clickable region produced by a render pass — the screen rect a given
-/// item painted into. UIKit calls the equivalent value `UICollectionView`
-/// layout attributes; here we keep just `idx + rect` because that is all the
-/// hit-test path needs. Renderers stash `Hit`s in their output; input handlers
+/// item painted into. Renderers stash `Hit`s in their output; input handlers
 /// search them at click time.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Hit {
@@ -94,7 +91,6 @@ pub fn project_to_screen(virt: VRect, scroll: (u32, u32), area: Rect) -> Option<
     if visible_x_end <= visible_x || visible_y_end <= visible_y {
         return None;
     }
-    // Differences fit in u16 because view_x_end - view_x = area.width (u16).
     Some(CellGeometry {
         virt,
         screen: Rect {
@@ -108,6 +104,64 @@ pub fn project_to_screen(virt: VRect, scroll: (u32, u32), area: Rect) -> Option<
         clip_right: (virt.end_x() - visible_x_end) as u16,
         clip_bottom: (virt.end_y() - visible_y_end) as u16,
     })
+}
+
+// -- Scroll math ------------------------------------------------------------
+
+/// Clamp a scroll offset so the viewport stays inside content.
+pub fn set_scroll(
+    scroll: &mut (u32, u32),
+    x: u32,
+    y: u32,
+    content: (u32, u32),
+    viewport: (u32, u32),
+) {
+    let max_x = content.0.saturating_sub(viewport.0);
+    let max_y = content.1.saturating_sub(viewport.1);
+    scroll.0 = x.min(max_x);
+    scroll.1 = y.min(max_y);
+}
+
+/// Move a scroll offset by signed deltas, clamped to content/viewport.
+pub fn scroll_by(
+    scroll: &mut (u32, u32),
+    dx: isize,
+    dy: isize,
+    content: (u32, u32),
+    viewport: (u32, u32),
+) {
+    let max_x = content.0.saturating_sub(viewport.0) as i64;
+    let max_y = content.1.saturating_sub(viewport.1) as i64;
+    let nx = (scroll.0 as i64 + dx as i64).clamp(0, max_x);
+    let ny = (scroll.1 as i64 + dy as i64).clamp(0, max_y);
+    scroll.0 = nx as u32;
+    scroll.1 = ny as u32;
+}
+
+/// Sticky scroll: bump the smallest amount needed to bring `target` fully
+/// inside `viewport`. No-op if already in view.
+pub fn ensure_visible(
+    scroll: &mut (u32, u32),
+    target: VRect,
+    content: (u32, u32),
+    viewport: (u32, u32),
+) {
+    let mut sx = scroll.0;
+    let mut sy = scroll.1;
+    if target.x < sx {
+        sx = target.x;
+    } else if target.end_x() > sx.saturating_add(viewport.0) {
+        sx = target.end_x().saturating_sub(viewport.0);
+    }
+    if target.y < sy {
+        sy = target.y;
+    } else if target.end_y() > sy.saturating_add(viewport.1) {
+        sy = target.end_y().saturating_sub(viewport.1);
+    }
+    let max_x = content.0.saturating_sub(viewport.0);
+    let max_y = content.1.saturating_sub(viewport.1);
+    scroll.0 = sx.min(max_x);
+    scroll.1 = sy.min(max_y);
 }
 
 // -- Layout -----------------------------------------------------------------
@@ -343,77 +397,26 @@ impl CollectionLayout for UniformLayout {
     }
 }
 
-// -- State ------------------------------------------------------------------
-
-/// Persistent state for one collection view. Owned by the data layer (e.g. a
-/// `Frame` that hosts a tab strip). Mutated via the methods on this type so
-/// scroll math stays in one place.
-#[derive(Default, Copy, Clone, Debug, PartialEq, Eq)]
-pub struct CollectionState {
-    pub scroll_x: u32,
-    pub scroll_y: u32,
-}
-
-impl CollectionState {
-    pub fn scroll(&self) -> (u32, u32) { (self.scroll_x, self.scroll_y) }
-
-    pub fn set_scroll(&mut self, x: u32, y: u32, content: (u32, u32), viewport: (u32, u32)) {
-        let max_x = content.0.saturating_sub(viewport.0);
-        let max_y = content.1.saturating_sub(viewport.1);
-        self.scroll_x = x.min(max_x);
-        self.scroll_y = y.min(max_y);
-    }
-
-    pub fn scroll_by(&mut self, dx: isize, dy: isize, content: (u32, u32), viewport: (u32, u32)) {
-        let max_x = content.0.saturating_sub(viewport.0) as i64;
-        let max_y = content.1.saturating_sub(viewport.1) as i64;
-        let nx = (self.scroll_x as i64 + dx as i64).clamp(0, max_x);
-        let ny = (self.scroll_y as i64 + dy as i64).clamp(0, max_y);
-        self.scroll_x = nx as u32;
-        self.scroll_y = ny as u32;
-    }
-
-    /// Sticky scroll: bump the smallest amount needed to bring `target` fully
-    /// inside `viewport`. No-op if already in view.
-    pub fn ensure_visible(&mut self, target: VRect, content: (u32, u32), viewport: (u32, u32)) {
-        let mut sx = self.scroll_x;
-        let mut sy = self.scroll_y;
-        if target.x < sx {
-            sx = target.x;
-        } else if target.end_x() > sx.saturating_add(viewport.0) {
-            sx = target.end_x().saturating_sub(viewport.0);
-        }
-        if target.y < sy {
-            sy = target.y;
-        } else if target.end_y() > sy.saturating_add(viewport.1) {
-            sy = target.end_y().saturating_sub(viewport.1);
-        }
-        let max_x = content.0.saturating_sub(viewport.0);
-        let max_y = content.1.saturating_sub(viewport.1);
-        self.scroll_x = sx.min(max_x);
-        self.scroll_y = sy.min(max_y);
-    }
-}
-
 // -- Pass (one render iteration) -------------------------------------------
 
-/// One render pass over a layout. Borrows the layout, state, and screen area;
-/// produces visible-item / visible-decoration iterators and hit-tests.
+/// One render pass over a layout. Borrows the layout and screen area, takes
+/// the scroll offset by value (it's just two `u32`s); produces visible-item
+/// / visible-decoration iterators and hit-tests.
 pub struct CollectionPass<'a, L: CollectionLayout> {
     pub layout: &'a L,
-    pub state: &'a CollectionState,
+    pub scroll: (u32, u32),
     pub area: Rect,
 }
 
 impl<'a, L: CollectionLayout> CollectionPass<'a, L> {
-    pub fn new(layout: &'a L, state: &'a CollectionState, area: Rect) -> Self {
-        Self { layout, state, area }
+    pub fn new(layout: &'a L, scroll: (u32, u32), area: Rect) -> Self {
+        Self { layout, scroll, area }
     }
 
     pub fn viewport(&self) -> VRect {
         VRect {
-            x: self.state.scroll_x,
-            y: self.state.scroll_y,
+            x: self.scroll.0,
+            y: self.scroll.1,
             w: self.area.width as u32,
             h: self.area.height as u32,
         }
@@ -421,7 +424,7 @@ impl<'a, L: CollectionLayout> CollectionPass<'a, L> {
 
     /// Iterate visible items, projected to screen geometry.
     pub fn visible_items(&self) -> impl Iterator<Item = (usize, CellGeometry)> + '_ {
-        let scroll = self.state.scroll();
+        let scroll = self.scroll;
         let area = self.area;
         let layout = self.layout;
         layout.items_in(self.viewport()).into_iter()
@@ -433,7 +436,7 @@ impl<'a, L: CollectionLayout> CollectionPass<'a, L> {
     /// Iterate visible decorations, projected to screen geometry. Decoration
     /// ids are layout-defined.
     pub fn visible_decorations(&self) -> impl Iterator<Item = (usize, CellGeometry)> + '_ {
-        let scroll = self.state.scroll();
+        let scroll = self.scroll;
         let area = self.area;
         self.layout.decorations_in(self.viewport()).into_iter()
             .filter_map(move |(id, v)| project_to_screen(v, scroll, area).map(|g| (id, g)))
@@ -446,8 +449,8 @@ impl<'a, L: CollectionLayout> CollectionPass<'a, L> {
         {
             return None;
         }
-        let vx = (col - self.area.x) as u32 + self.state.scroll_x;
-        let vy = (row - self.area.y) as u32 + self.state.scroll_y;
+        let vx = (col - self.area.x) as u32 + self.scroll.0;
+        let vy = (row - self.area.y) as u32 + self.scroll.1;
         self.layout.items_in(self.viewport())
             .into_iter()
             .find(|&idx| self.layout.rect_for(idx).contains(vx, vy))
@@ -519,7 +522,6 @@ mod tests {
     #[test]
     fn linear_layout_items_in_skips_off_screen() {
         let l = h(vec![5; 10], 1);
-        // viewport x=12..19 hits item 2 (12..17) and item 3 (18..23).
         let visible = l.items_in(VRect { x: 12, y: 0, w: 7, h: 1 });
         assert_eq!(visible, vec![2, 3]);
         let visible = l.items_in(VRect { x: 0, y: 0, w: 10, h: 1 });
@@ -530,18 +532,18 @@ mod tests {
     fn ensure_visible_sticky_does_not_move_when_already_in_view() {
         let layout = h(vec![5; 10], 1);
         let content = layout.content_size();
-        let mut st = CollectionState { scroll_x: 8, scroll_y: 0 };
-        st.ensure_visible(layout.rect_for(2), content, (10, 1));
-        assert_eq!(st.scroll(), (8, 0));
+        let mut scroll = (8u32, 0u32);
+        ensure_visible(&mut scroll, layout.rect_for(2), content, (10, 1));
+        assert_eq!(scroll, (8, 0));
     }
 
     #[test]
     fn ensure_visible_scrolls_minimum_to_show_item() {
         let layout = h(vec![5; 10], 1);
         let content = layout.content_size();
-        let mut st = CollectionState::default();
-        st.ensure_visible(layout.rect_for(9), content, (10, 1));
-        assert_eq!(st.scroll_x, 49);
+        let mut scroll = (0u32, 0u32);
+        ensure_visible(&mut scroll, layout.rect_for(9), content, (10, 1));
+        assert_eq!(scroll.0, 49);
     }
 
     #[test]
@@ -563,17 +565,14 @@ mod tests {
         let l = UniformLayout::vertical(4, 2, 80).with_spacing(1);
         assert_eq!(l.rect_for(2), VRect { x: 0, y: 6, w: 80, h: 2 });
         let visible = l.items_in(VRect { x: 0, y: 5, w: 80, h: 4 });
-        // Item 1 at y=3..5 ends exactly at viewport start → not visible.
-        // Item 2 at y=6..8 → visible.
         assert_eq!(visible, vec![2]);
     }
 
     #[test]
     fn collection_pass_item_at_screen_accounts_for_scroll() {
         let layout = h(vec![5; 10], 1);
-        let st = CollectionState { scroll_x: 6, scroll_y: 0 };
         let area = Rect { x: 0, y: 0, width: 10, height: 1 };
-        let pass = CollectionPass::new(&layout, &st, area);
+        let pass = CollectionPass::new(&layout, (6, 0), area);
         assert_eq!(pass.item_at_screen(0, 0), Some(1));
         assert_eq!(pass.item_at_screen(5, 0), None);
         assert_eq!(pass.item_at_screen(6, 0), Some(2));

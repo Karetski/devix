@@ -7,7 +7,6 @@ rust-version.workspace = true
 [dependencies]
 crossterm.workspace = true
 devix-buffer.workspace = true
-devix-collection.workspace = true
 devix-document.workspace = true
 devix-lsp.workspace = true
 devix-syntax.workspace = true

@@ -43,15 +43,17 @@ impl Workspace {
         strip.content_width > strip.strip_rect.width as u32
     }
 
-    /// Apply a horizontal scroll delta (cells) to a frame's tab strip. Routes
-    /// through the frame's `CollectionState` so all scroll math lives in one
-    /// place. No-op when content fits in the strip.
+    /// Apply a horizontal scroll delta (cells) to a frame's tab strip.
+    /// Inline integer clamp — no view-layer dependency. No-op when content
+    /// fits in the strip.
     pub fn scroll_tab_strip(&mut self, frame: FrameId, delta: isize) {
         let Some(strip) = self.render_cache.tab_strips.get(frame) else { return };
-        let content = (strip.content_width, 1);
-        let viewport = (strip.strip_rect.width as u32, 1);
+        let max_x = strip
+            .content_width
+            .saturating_sub(strip.strip_rect.width as u32) as i64;
         let Some(f) = self.frames.get_mut(frame) else { return };
-        f.tab_strip_state.scroll_by(delta, 0, content, viewport);
+        let nx = (f.tab_strip_scroll.0 as i64 + delta as i64).clamp(0, max_x);
+        f.tab_strip_scroll.0 = nx as u32;
     }
 
     /// Activate `idx` on `frame` from a click on a visible tab. Does *not*

@@ -1,5 +1,5 @@
-//! Tab strip widget — a thin presentation layer on top of the collection
-//! primitives in `devix_collection`.
+//! Tab strip widget — a thin presentation layer on top of the layout
+//! primitives in [`crate::layout`].
 //!
 //! Pipeline:
 //!
@@ -8,30 +8,39 @@
 //!    strip; everything below is generic.
 //! 2. Build a `LinearLayout` from those widths with a 1-cell separator
 //!    spacing. Decorations come for free.
-//! 3. Sticky scroll the `CollectionState` so the active tab stays visible.
+//! 3. Sticky scroll the `(scroll_x, scroll_y)` offset so the active tab stays
+//!    visible.
 //! 4. Render visible items + decorations through `CollectionPass`. Cells with
 //!    `clip_left > 0` use `Paragraph::scroll` to show the right portion of a
 //!    partially-visible tab.
 
-use devix_collection::{
-    CollectionLayout, CollectionPass, CollectionState, Hit, LinearLayout,
-};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use crate::layout::{
+    CollectionLayout, CollectionPass, LinearLayout, ensure_visible, set_scroll,
+};
+
 pub struct TabInfo {
     pub label: String,
     pub dirty: bool,
+}
+
+/// Per-tab hit region produced by render — clickable rect on screen.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct TabHit {
+    pub idx: usize,
+    pub rect: Rect,
 }
 
 /// Result of a tab-strip render. Owners cache `content_width` to drive
 /// scroll-clamp math from input handlers.
 #[derive(Default, Clone, Debug)]
 pub struct TabStripRender {
-    pub hits: Vec<Hit>,
+    pub hits: Vec<TabHit>,
     pub content_width: u32,
 }
 
@@ -49,14 +58,13 @@ const SEP: &str = "│";
 pub fn layout_tabstrip(
     tabs: &[TabInfo],
     active: usize,
-    state: &mut CollectionState,
+    scroll: &mut (u32, u32),
     recenter_active: &mut bool,
     area: Rect,
 ) {
     if tabs.is_empty() || area.width == 0 || area.height == 0 {
         // No content → reset scroll so a future re-fill doesn't inherit stale state.
-        state.scroll_x = 0;
-        state.scroll_y = 0;
+        *scroll = (0, 0);
         *recenter_active = false;
         return;
     }
@@ -67,12 +75,12 @@ pub fn layout_tabstrip(
     let viewport = (area.width as u32, area.height as u32);
 
     // Always re-clamp so resize / tab-close can shrink an out-of-bounds scroll.
-    state.set_scroll(state.scroll_x, state.scroll_y, content, viewport);
+    set_scroll(scroll, scroll.0, scroll.1, content, viewport);
     // Scroll-into-view is one-shot: only the operation that just changed the
     // active tab can ask for it. Manual wheel scroll past the active tab must
     // not snap back.
     if *recenter_active {
-        state.ensure_visible(layout.rect_for(active), content, viewport);
+        ensure_visible(scroll, layout.rect_for(active), content, viewport);
         *recenter_active = false;
     }
 }
@@ -80,7 +88,7 @@ pub fn layout_tabstrip(
 pub fn render_tabstrip(
     tabs: &[TabInfo],
     active: usize,
-    state: &CollectionState,
+    scroll: (u32, u32),
     area: Rect,
     frame: &mut Frame<'_>,
 ) -> TabStripRender {
@@ -93,7 +101,7 @@ pub fn render_tabstrip(
     let content = layout.content_size();
 
     let mut hits = Vec::new();
-    let pass = CollectionPass::new(&layout, state, area);
+    let pass = CollectionPass::new(&layout, scroll, area);
 
     for (idx, geom) in pass.visible_items() {
         let style = if idx == active {
@@ -117,7 +125,7 @@ pub fn render_tabstrip(
             Paragraph::new(Line::from(Span::styled(visible, style))).style(style),
             geom.screen,
         );
-        hits.push(Hit { idx, rect: geom.screen });
+        hits.push(TabHit { idx, rect: geom.screen });
     }
 
     for (_id, geom) in pass.visible_decorations() {
@@ -140,7 +148,8 @@ pub fn render_tabstrip(
 /// * Otherwise distribute the strip evenly across all tabs (down to
 ///   `MIN_TAB_WIDTH`), sprinkling remainder cells onto leading tabs.
 /// * Otherwise (still doesn't fit at minimum) every tab gets `MIN_TAB_WIDTH`
-///   and the strip overflows — the caller's `CollectionState` handles scroll.
+///   and the strip overflows — the caller's `(scroll_x, scroll_y)` handles
+///   scroll.
 fn pick_widths(tabs: &[TabInfo], area_width: u16) -> Vec<u32> {
     let n = tabs.len();
     let natural: Vec<u32> = tabs.iter().map(label_width).collect();

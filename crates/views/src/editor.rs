@@ -1,14 +1,14 @@
 //! Editor view: pure render of buffer text with line-number gutter,
 //! syntax-scope styling, and selection-range highlight. Vertical scroll
-//! comes from the collection primitives — each line is one item in a
-//! `UniformLayout`.
+//! comes from the layout primitives in `devix_ui::layout` — each line is
+//! one item in a `UniformLayout`.
 //!
 //! Highlights are passed in by the caller (resolved from the document's
 //! tree-sitter Highlighter for the visible byte range). The renderer is
 //! agnostic to how that list was produced; it just paints scope styles
 //! over visible text.
 
-use devix_collection::{CollectionPass, CollectionState, UniformLayout};
+use devix_ui::layout::{CollectionPass, UniformLayout};
 use ratatui::Frame;
 use ratatui::buffer::Buffer as RatBuffer;
 use ratatui::layout::Rect;
@@ -28,7 +28,7 @@ use ratatui::style::Color;
 pub struct EditorView<'a> {
     pub buffer: &'a Buffer,
     pub selection: &'a Selection,
-    pub scroll: &'a CollectionState,
+    pub scroll: (u32, u32),
     pub theme: &'a Theme,
     /// Highlight spans intersecting the visible byte range. May include spans
     /// straddling the viewport edges; the renderer clips per line. Order is
@@ -55,7 +55,7 @@ pub fn render_editor(view: EditorView<'_>, area: Rect, frame: &mut Frame<'_>) ->
 
     let layout = UniformLayout::vertical(line_count, 1, area.width as u32);
     let pass = CollectionPass::new(&layout, view.scroll, area);
-    let scroll_top = view.scroll.scroll_y as usize;
+    let scroll_top = view.scroll.1 as usize;
 
     let gutter_style = Style::default().add_modifier(Modifier::DIM);
     let text_style = view.theme.text_style();
@@ -333,7 +333,6 @@ fn styled_line_spans(
 mod tests {
     use super::*;
     use devix_buffer::{Selection, replace_selection_tx};
-    use devix_collection::CollectionState;
     use devix_syntax::{Highlighter, Language};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -351,7 +350,7 @@ mod tests {
         let highlights = h.highlights(buf.rope(), 0, buf.rope().len_bytes());
 
         let theme = Theme::default();
-        let scroll = CollectionState::default();
+        let scroll = (0u32, 0u32);
         let selection = Selection::point(0);
 
         let backend = TestBackend::new(width, height);
@@ -363,7 +362,7 @@ mod tests {
                     EditorView {
                         buffer: &buf,
                         selection: &selection,
-                        scroll: &scroll,
+                        scroll,
                         theme: &theme,
                         highlights: &highlights,
                         diagnostics: &[],
@@ -408,7 +407,7 @@ mod tests {
         let tx = replace_selection_tx(&buf, &Selection::point(0), "hello");
         buf.apply(tx);
         let theme = Theme::default();
-        let scroll = CollectionState::default();
+        let scroll = (0u32, 0u32);
         let selection = Selection::point(0);
 
         let backend = TestBackend::new(40, 3);
@@ -420,7 +419,7 @@ mod tests {
                     EditorView {
                         buffer: &buf,
                         selection: &selection,
-                        scroll: &scroll,
+                        scroll,
                         theme: &theme,
                         highlights: &[],
                         diagnostics: &[],
@@ -443,7 +442,7 @@ mod tests {
         let tx = replace_selection_tx(&buf, &Selection::point(0), "fn main() {}");
         buf.apply(tx);
         let theme = Theme::default();
-        let scroll = CollectionState::default();
+        let scroll = (0u32, 0u32);
         let selection = Selection::point(0);
         // Diagnostic on `main` (chars 3..7) — error severity → red underline.
         let diag = vec![DocDiagnostic {
@@ -464,7 +463,7 @@ mod tests {
                     EditorView {
                         buffer: &buf,
                         selection: &selection,
-                        scroll: &scroll,
+                        scroll,
                         theme: &theme,
                         highlights: &[],
                         diagnostics: &diag,

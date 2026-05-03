@@ -1,7 +1,6 @@
 //! Frame = editor tab group: a strip of tabs plus an active index.
 //! Each tab is a ViewId.
 
-use devix_collection::CollectionState;
 use slotmap::new_key_type;
 
 use crate::view::ViewId;
@@ -11,9 +10,10 @@ new_key_type! { pub struct FrameId; }
 pub struct Frame {
     pub tabs: Vec<ViewId>,
     pub active_tab: usize,
-    /// Scroll state for this frame's tab strip. Owned here so it survives
-    /// across renders / resizes; mutated through the `devix_collection` API.
-    pub tab_strip_state: CollectionState,
+    /// Scroll offset for this frame's tab strip, in cells. Owned here so it
+    /// survives across renders / resizes. The render layer (which has the
+    /// layout) does the math; this is plain data.
+    pub tab_strip_scroll: (u32, u32),
     /// One-shot signal asking the next tab-strip render to scroll the active
     /// tab into view. Set by mutators that change `active_tab` (keyboard nav,
     /// new tab, close), cleared by the renderer once consumed. Click-to-select
@@ -26,7 +26,7 @@ impl Frame {
         Self {
             tabs: vec![view],
             active_tab: 0,
-            tab_strip_state: CollectionState::default(),
+            tab_strip_scroll: (0, 0),
             recenter_active: true,
         }
     }

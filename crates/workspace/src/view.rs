@@ -2,7 +2,6 @@
 //! Owned by Workspace, indexed by ViewId.
 
 use devix_buffer::{Range, Selection, Transaction};
-use devix_collection::CollectionState;
 use lsp_types::CompletionItem;
 use slotmap::new_key_type;
 
@@ -28,10 +27,11 @@ pub struct View {
     pub selection: Selection,
     /// Sticky column for vertical motion.
     pub target_col: Option<usize>,
-    /// Editor scroll state. `scroll_y` is the line index of the topmost
-    /// visible line (one cell per line for now); `scroll_x` is reserved for
-    /// horizontal scrolling within long lines.
-    pub scroll: CollectionState,
+    /// Editor scroll offset in cells. `.1` is the line index of the topmost
+    /// visible line (one cell per line for now); `.0` is reserved for
+    /// horizontal scrolling within long lines. Pure data — the render layer
+    /// applies layout-aware clamping via `devix_ui::layout` free functions.
+    pub scroll: (u32, u32),
     pub scroll_mode: ScrollMode,
     /// Active hover popup state, or `None` when no hover is in flight or
     /// being shown. Cleared on cursor motion / edit (the dispatcher resets
@@ -112,7 +112,7 @@ impl View {
             doc,
             selection: Selection::point(0),
             target_col: None,
-            scroll: CollectionState::default(),
+            scroll: (0, 0),
             scroll_mode: ScrollMode::Anchored,
             hover: None,
             completion: None,
@@ -120,12 +120,12 @@ impl View {
     }
 
     pub fn scroll_top(&self) -> usize {
-        self.scroll.scroll_y as usize
+        self.scroll.1 as usize
     }
 
     pub fn set_scroll_top(&mut self, line: usize) {
         // Scroll is bounded to u32 — fine for any practical buffer (4B lines).
-        self.scroll.scroll_y = line.min(u32::MAX as usize) as u32;
+        self.scroll.1 = line.min(u32::MAX as usize) as u32;
     }
 
     pub fn primary(&self) -> Range {
