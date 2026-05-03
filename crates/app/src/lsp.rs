@@ -112,6 +112,8 @@ pub fn drain_lsp_events(app: &mut App) {
             LspEvent::DefinitionResponse { uri, anchor_char, locations } => {
                 apply_definition_response(app, &uri, anchor_char, locations);
             }
+            // Completion response: applied with the UI commit.
+            LspEvent::CompletionResponse { .. } => {}
         }
     }
     app.dirty = true;

@@ -23,6 +23,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use lsp_types::{
+    CompletionContext, CompletionItem, CompletionParams, CompletionResponse, CompletionTriggerKind,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     GotoDefinitionParams, GotoDefinitionResponse, HoverContents, HoverParams, Location,
     MarkedString, Position, PublishDiagnosticsParams, TextDocumentContentChangeEvent,
@@ -89,6 +90,23 @@ pub enum LspCommand {
         position: Position,
         anchor_char: usize,
     },
+    /// Request completion items at `position`. `trigger` mirrors the LSP
+    /// `CompletionContext`: `Manual` for an explicit Ctrl+Space, `Char(c)`
+    /// when the user typed one of the server's trigger characters.
+    Completion {
+        uri: Uri,
+        position: Position,
+        anchor_char: usize,
+        trigger: CompletionTrigger,
+    },
+}
+
+/// What initiated a completion request — passed through to the server's
+/// `CompletionContext` so it can rank/prefilter accordingly.
+#[derive(Clone, Debug)]
+pub enum CompletionTrigger {
+    Manual,
+    Char(char),
 }
 
 /// Outbound event for the App to drain each frame.
@@ -109,6 +127,19 @@ pub enum LspEvent {
         uri: Uri,
         anchor_char: usize,
         locations: Vec<Location>,
+    },
+    /// Completion result. `items` is the full list as returned by the
+    /// server (already flattened from `CompletionResponse::Array | List`).
+    /// Empty when the server returned null or the request errored.
+    CompletionResponse {
+        uri: Uri,
+        anchor_char: usize,
+        items: Vec<CompletionItem>,
+        /// Mirrors LSP's `CompletionList::is_incomplete` — server signaled
+        /// the list may need refetching after further keystrokes. Slice 3
+        /// just tags it; client-side filter handles refinement until the
+        /// cursor moves to a new context, when the App refetches anyway.
+        is_incomplete: bool,
     },
 }
 
@@ -338,6 +369,45 @@ impl<S: Spawner> Coordinator<S> {
                     });
                 });
             }
+            LspCommand::Completion { uri, position, anchor_char, trigger } => {
+                let client = Arc::clone(self.client_for_uri(&uri)?);
+                let events = events.clone();
+                let uri_resp = uri.clone();
+                tokio::spawn(async move {
+                    let context = match trigger {
+                        CompletionTrigger::Manual => CompletionContext {
+                            trigger_kind: CompletionTriggerKind::INVOKED,
+                            trigger_character: None,
+                        },
+                        CompletionTrigger::Char(c) => CompletionContext {
+                            trigger_kind: CompletionTriggerKind::TRIGGER_CHARACTER,
+                            trigger_character: Some(c.to_string()),
+                        },
+                    };
+                    let params = CompletionParams {
+                        text_document_position: TextDocumentPositionParams {
+                            text_document: TextDocumentIdentifier { uri },
+                            position,
+                        },
+                        work_done_progress_params: Default::default(),
+                        partial_result_params: Default::default(),
+                        context: Some(context),
+                    };
+                    let (items, is_incomplete) = match client
+                        .request::<lsp_types::request::Completion>(params)
+                        .await
+                    {
+                        Ok(Some(resp)) => completion_response_flatten(resp),
+                        _ => (Vec::new(), false),
+                    };
+                    let _ = events.send(LspEvent::CompletionResponse {
+                        uri: uri_resp,
+                        anchor_char,
+                        items,
+                        is_incomplete,
+                    });
+                });
+            }
         }
         Ok(())
     }
@@ -403,6 +473,16 @@ fn hover_contents_to_lines(c: HoverContents) -> Vec<String> {
         lines.pop();
     }
     lines
+}
+
+/// Flatten LSP's `CompletionResponse::Array | List` into a single vec plus
+/// the `is_incomplete` bit. Slice 3 ignores the bit beyond surfacing it on
+/// the event; we refetch on cursor motion regardless.
+fn completion_response_flatten(r: CompletionResponse) -> (Vec<CompletionItem>, bool) {
+    match r {
+        CompletionResponse::Array(items) => (items, false),
+        CompletionResponse::List(list) => (list.items, list.is_incomplete),
+    }
 }
 
 fn goto_definition_to_locations(r: GotoDefinitionResponse) -> Vec<Location> {
@@ -826,6 +906,73 @@ mod tests {
                 assert_eq!(locations[0].range.start, Position { line: 0, character: 3 });
             }
             other => panic!("expected DefinitionResponse, got {other:?}"),
+        }
+
+        drop(cmd_tx);
+        run_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn completion_request_pumps_items_back() {
+        let (coord, mut servers_rx) = make_coord();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let run_handle = tokio::spawn(coord.run(cmd_rx, events_tx));
+
+        let uri = Uri::from_str("file:///proj/c.rs").unwrap();
+        cmd_tx
+            .send(LspCommand::Open {
+                uri: uri.clone(),
+                language_id: "rust".into(),
+                version: 1,
+                text: "fn main() { let s = String::ne".into(),
+                root_hint: Some(PathBuf::from("/proj")),
+            })
+            .unwrap();
+        let mut server = servers_rx.recv().await.unwrap();
+        let _ = server.recv().await;
+
+        cmd_tx
+            .send(LspCommand::Completion {
+                uri: uri.clone(),
+                position: Position { line: 0, character: 30 },
+                anchor_char: 30,
+                trigger: CompletionTrigger::Char(':'),
+            })
+            .unwrap();
+
+        let req = server.recv().await;
+        assert_eq!(req.method.as_deref(), Some("textDocument/completion"));
+        // Verify trigger context made the trip.
+        let ctx = &req.params.as_ref().unwrap()["context"];
+        assert_eq!(ctx["triggerKind"], 2); // TRIGGER_CHARACTER
+        assert_eq!(ctx["triggerCharacter"], ":");
+        let id = req.id.expect("completion request has id");
+        server
+            .respond(
+                id,
+                serde_json::json!({
+                    "isIncomplete": true,
+                    "items": [
+                        { "label": "new", "detail": "fn() -> String", "kind": 3 },
+                        { "label": "next", "kind": 6 },
+                    ],
+                }),
+            )
+            .await;
+
+        let ev = events_rx.recv().await.expect("event");
+        match ev {
+            LspEvent::CompletionResponse { uri: u, anchor_char, items, is_incomplete } => {
+                assert_eq!(u, uri);
+                assert_eq!(anchor_char, 30);
+                assert!(is_incomplete);
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0].label, "new");
+                assert_eq!(items[0].detail.as_deref(), Some("fn() -> String"));
+                assert_eq!(items[1].label, "next");
+            }
+            other => panic!("expected CompletionResponse, got {other:?}"),
         }
 
         drop(cmd_tx);
