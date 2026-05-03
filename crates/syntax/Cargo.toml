@@ -5,3 +5,8 @@ version.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+anyhow = { workspace = true }
+ropey = { workspace = true }
+tree-sitter = { workspace = true }
+tree-sitter-rust = { workspace = true }
+streaming-iterator = { workspace = true }

@@ -21,7 +21,7 @@ use devix_ui::{
     EditorView, StatusInfo, render_editor, render_status as render_status_widget,
     render_tabstrip,
 };
-use devix_workspace::{FrameId, LeafRef, ScrollMode, SidebarSlot, Workspace};
+use devix_workspace::{Document, FrameId, LeafRef, ScrollMode, SidebarSlot, View, Workspace};
 
 use crate::app::App;
 
@@ -142,10 +142,14 @@ fn paint_frame(id: FrameId, area: Rect, app: &mut App, frame: &mut Frame<'_>) {
     let Some(view_id) = app.workspace.frames[id].active_view() else { return };
     let view = &app.workspace.views[view_id];
     let doc = &app.workspace.documents[view.doc];
+    let (vis_byte_start, vis_byte_end) = visible_byte_range(doc, view, body_area.height as usize);
+    let highlights = doc.highlights(vis_byte_start, vis_byte_end);
     let editor_view = EditorView {
         buffer: &doc.buffer,
         selection: &view.selection,
         scroll: &view.scroll,
+        theme: &app.theme,
+        highlights: &highlights,
     };
     let r = render_editor(editor_view, body_area, frame);
     if app.workspace.active_frame() == Some(id) {
@@ -173,6 +177,24 @@ fn frame_body_rect(area: Rect) -> Rect {
         height: area.height.saturating_sub(1),
         ..area
     }
+}
+
+/// Byte range covering all lines currently visible in `view`'s editor body.
+/// Used to scope tree-sitter highlight queries to the viewport rather than
+/// the whole document — full-file queries on large buffers would push past
+/// the 16ms frame budget.
+fn visible_byte_range(doc: &Document, view: &View, height_rows: usize) -> (usize, usize) {
+    let line_count = doc.buffer.line_count();
+    let rope = doc.buffer.rope();
+    let top = view.scroll_top().min(line_count);
+    let bottom = (view.scroll_top() + height_rows).min(line_count);
+    let start = rope.line_to_byte(top);
+    let end = if bottom >= line_count {
+        rope.len_bytes()
+    } else {
+        rope.line_to_byte(bottom)
+    };
+    (start, end)
 }
 
 fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App) {

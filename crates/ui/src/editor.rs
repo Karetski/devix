@@ -1,21 +1,38 @@
-//! Editor view: pure render of buffer text with line-number gutter and
-//! selection-range highlight. Vertical scroll comes from the collection
-//! primitives — each line is one item in a `UniformLayout`.
+//! Editor view: pure render of buffer text with line-number gutter,
+//! syntax-scope styling, and selection-range highlight. Vertical scroll
+//! comes from the collection primitives — each line is one item in a
+//! `UniformLayout`.
+//!
+//! Highlights are passed in by the caller (resolved from the document's
+//! tree-sitter Highlighter for the visible byte range). The renderer is
+//! agnostic to how that list was produced; it just paints scope styles
+//! over visible text.
 
 use devix_collection::{CollectionPass, CollectionState, UniformLayout};
 use ratatui::Frame;
 use ratatui::buffer::Buffer as RatBuffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 
+use ropey::Rope;
+
 use devix_buffer::{Buffer, Range, Selection};
+use devix_config::Theme;
+use devix_syntax::HighlightSpan;
 
 pub struct EditorView<'a> {
     pub buffer: &'a Buffer,
     pub selection: &'a Selection,
     pub scroll: &'a CollectionState,
+    pub theme: &'a Theme,
+    /// Highlight spans intersecting the visible byte range. May include spans
+    /// straddling the viewport edges; the renderer clips per line. Order is
+    /// significant: tree-sitter emits captures in source order so later spans
+    /// override earlier ones (last-write paint), letting more-specific scopes
+    /// win over their parents.
+    pub highlights: &'a [HighlightSpan],
 }
 
 pub struct EditorRenderResult {
@@ -35,6 +52,8 @@ pub fn render_editor(view: EditorView<'_>, area: Rect, frame: &mut Frame<'_>) ->
     let scroll_top = view.scroll.scroll_y as usize;
 
     let gutter_style = Style::default().add_modifier(Modifier::DIM);
+    let text_style = view.theme.text_style();
+    let rope = view.buffer.rope();
 
     // Cap per-line work to what the viewport can show. Long lines (minified
     // code, JSON, logs) would otherwise allocate the full line as a String per
@@ -44,15 +63,30 @@ pub fn render_editor(view: EditorView<'_>, area: Rect, frame: &mut Frame<'_>) ->
     for (line_idx, geom) in pass.visible_items() {
         let line_text = view.buffer.line_string_truncated(line_idx, max_text);
         let gutter = format!("{:>width$} ", line_idx + 1, width = num_width as usize);
-        let line = Line::from(vec![
-            Span::styled(gutter, gutter_style),
-            Span::raw(" "),
-            Span::raw(line_text),
-        ]);
-        Paragraph::new(line).render(geom.screen, frame.buffer_mut());
+        let mut spans = Vec::with_capacity(2 + 1);
+        spans.push(Span::styled(gutter, gutter_style));
+        spans.push(Span::raw(" "));
+        styled_line_spans(
+            &line_text,
+            line_idx,
+            rope,
+            view.highlights,
+            view.theme,
+            text_style,
+            &mut spans,
+        );
+        Paragraph::new(Line::from(spans)).render(geom.screen, frame.buffer_mut());
     }
 
-    paint_selection(view.buffer, view.selection, area, gutter_width, scroll_top, frame.buffer_mut());
+    paint_selection(
+        view.buffer,
+        view.selection,
+        area,
+        gutter_width,
+        scroll_top,
+        view.theme.selection_style(),
+        frame.buffer_mut(),
+    );
 
     let primary = view.selection.primary();
     let cur_line = view.buffer.line_of_char(primary.head);
@@ -73,15 +107,16 @@ pub fn render_editor(view: EditorView<'_>, area: Rect, frame: &mut Frame<'_>) ->
     EditorRenderResult { cursor_screen, gutter_width }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_selection(
     buffer: &Buffer,
     selection: &Selection,
     area: Rect,
     gutter_width: u16,
     scroll_top: usize,
+    highlight: Style,
     target: &mut RatBuffer,
 ) {
-    let highlight = Style::default().bg(Color::Rgb(60, 80, 130));
     let visible_rows = area.height as usize;
 
     let view_end = scroll_top.saturating_add(visible_rows);
@@ -165,3 +200,164 @@ fn paint_line_span(
 // rendering would go. Keeps `Range` import meaningful when we extend.
 #[allow(dead_code)]
 fn paint_zero_width(_r: Range) {}
+
+/// Build per-line ratatui spans coloured by the highlight list. `line_text`
+/// is the already-truncated visible substring of `line_idx`. Spans whose byte
+/// ranges intersect this line are painted as styled runs; everything else
+/// uses `default_style`. Within a line, later spans override earlier ones
+/// (last-write paint), matching tree-sitter's source-order capture emission.
+fn styled_line_spans(
+    line_text: &str,
+    line_idx: usize,
+    rope: &Rope,
+    highlights: &[HighlightSpan],
+    theme: &Theme,
+    default_style: Style,
+    out: &mut Vec<Span<'static>>,
+) {
+    let chars: Vec<char> = line_text.chars().collect();
+    let n = chars.len();
+    if n == 0 {
+        return;
+    }
+
+    let line_char_start = rope.line_to_char(line_idx);
+    let line_byte_start = rope.char_to_byte(line_char_start);
+    let line_byte_end = rope.char_to_byte(line_char_start + n);
+
+    let mut styles = vec![default_style; n];
+    for span in highlights {
+        if span.end_byte <= line_byte_start || span.start_byte >= line_byte_end {
+            continue;
+        }
+        let Some(scope_style) = theme.style_for(&span.scope) else { continue };
+        let s_byte = span.start_byte.max(line_byte_start);
+        let e_byte = span.end_byte.min(line_byte_end);
+        let s_char = rope.byte_to_char(s_byte).saturating_sub(line_char_start);
+        let e_char = rope.byte_to_char(e_byte).saturating_sub(line_char_start);
+        let s = s_char.min(n);
+        let e = e_char.min(n);
+        for slot in &mut styles[s..e] {
+            *slot = scope_style;
+        }
+    }
+
+    let mut i = 0;
+    while i < n {
+        let st = styles[i];
+        let mut j = i + 1;
+        while j < n && styles[j] == st {
+            j += 1;
+        }
+        let chunk: String = chars[i..j].iter().collect();
+        out.push(Span::styled(chunk, st));
+        i = j;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use devix_buffer::{Selection, replace_selection_tx};
+    use devix_collection::CollectionState;
+    use devix_syntax::{Highlighter, Language};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    /// Build a buffer holding `text`, parse it as Rust, and render through
+    /// `render_editor` to a TestBackend. Returns the rendered buffer plus the
+    /// theme used so callers can compare cell styles against scope styles.
+    fn render_rust(text: &str, width: u16, height: u16) -> (ratatui::buffer::Buffer, Theme) {
+        let mut buf = devix_buffer::Buffer::empty();
+        let tx = replace_selection_tx(&buf, &Selection::point(0), text);
+        buf.apply(tx);
+
+        let mut h = Highlighter::new(Language::Rust).unwrap();
+        h.parse(buf.rope());
+        let highlights = h.highlights(buf.rope(), 0, buf.rope().len_bytes());
+
+        let theme = Theme::default();
+        let scroll = CollectionState::default();
+        let selection = Selection::point(0);
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect { x: 0, y: 0, width, height };
+                let _ = render_editor(
+                    EditorView {
+                        buffer: &buf,
+                        selection: &selection,
+                        scroll: &scroll,
+                        theme: &theme,
+                        highlights: &highlights,
+                    },
+                    area,
+                    f,
+                );
+            })
+            .unwrap();
+
+        (terminal.backend().buffer().clone(), theme)
+    }
+
+    #[test]
+    fn rust_keyword_renders_with_keyword_style() {
+        // Layout: " 1  fn main() {}" — gutter 3 chars (" 1 ") + 1 space, then text.
+        let (rendered, theme) = render_rust("fn main() {}", 40, 3);
+        // Match the `fn` token's foreground against whichever scope the theme
+        // resolves it to (keyword / keyword.function are both registered).
+        let kw_fg = theme
+            .style_for("keyword.function")
+            .or_else(|| theme.style_for("keyword"))
+            .and_then(|s| s.fg)
+            .expect("default theme registers a keyword color");
+        // Layout: " 1  fn main() {}" — gutter is num_width(1) + ' ' + extra
+        // Span::raw(" ") = 3 cells. Text starts at column 3.
+        let cell = rendered.cell((3, 0)).expect("keyword cell exists");
+        assert_eq!(cell.symbol(), "f", "expected `fn` to land at column 3");
+        assert_eq!(
+            cell.fg, kw_fg,
+            "fn keyword cell should adopt the theme's keyword fg, got {:?}",
+            cell.fg,
+        );
+    }
+
+    #[test]
+    fn plaintext_renders_with_default_text_style() {
+        // No language → no highlights → all text cells use the theme's
+        // default text style. (The render path here passes empty highlights,
+        // matching what Document::highlights returns for unknown extensions.)
+        let mut buf = devix_buffer::Buffer::empty();
+        let tx = replace_selection_tx(&buf, &Selection::point(0), "hello");
+        buf.apply(tx);
+        let theme = Theme::default();
+        let scroll = CollectionState::default();
+        let selection = Selection::point(0);
+
+        let backend = TestBackend::new(40, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = Rect { x: 0, y: 0, width: 40, height: 3 };
+                let _ = render_editor(
+                    EditorView {
+                        buffer: &buf,
+                        selection: &selection,
+                        scroll: &scroll,
+                        theme: &theme,
+                        highlights: &[],
+                    },
+                    area,
+                    f,
+                );
+            })
+            .unwrap();
+        let rendered = terminal.backend().buffer();
+        let cell = rendered.cell((3, 0)).unwrap();
+        assert_eq!(cell.symbol(), "h");
+        let expected_fg = theme.text_style().fg.expect("default text style sets fg");
+        assert_eq!(cell.fg, expected_fg);
+    }
+}

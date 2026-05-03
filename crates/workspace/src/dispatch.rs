@@ -82,7 +82,7 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
         // ---- history ----
         Undo => {
             let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-            if let Some(sel) = cx.workspace.documents[did].buffer.undo() {
+            if let Some(sel) = cx.workspace.documents[did].undo() {
                 let v = &mut cx.workspace.views[vid];
                 v.selection = sel;
                 v.target_col = None;
@@ -93,7 +93,7 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
         }
         Redo => {
             let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-            if let Some(sel) = cx.workspace.documents[did].buffer.redo() {
+            if let Some(sel) = cx.workspace.documents[did].redo() {
                 let v = &mut cx.workspace.views[vid];
                 v.selection = sel;
                 v.target_col = None;
@@ -128,7 +128,7 @@ pub fn dispatch(action: Action, cx: &mut Context<'_>) {
         }
         ReloadFromDisk => {
             let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-            let res = cx.workspace.documents[did].buffer.reload_from_disk();
+            let res = cx.workspace.documents[did].reload_from_disk();
             match res {
                 Ok(()) => {
                     let max = cx.workspace.documents[did].buffer.len_chars();
@@ -233,7 +233,7 @@ fn replace_selection(cx: &mut Context<'_>, text: &str) {
         text,
     );
     let after = tx.selection_after.clone();
-    cx.workspace.documents[did].buffer.apply(tx);
+    cx.workspace.documents[did].apply_tx(tx);
     let v = &mut cx.workspace.views[vid];
     v.selection = after;
     v.target_col = None;
@@ -259,7 +259,7 @@ fn delete_primary_or(
         start, end,
     );
     let after = tx.selection_after.clone();
-    cx.workspace.documents[did].buffer.apply(tx);
+    cx.workspace.documents[did].apply_tx(tx);
     let v = &mut cx.workspace.views[vid];
     v.selection = after;
     v.target_col = None;
@@ -317,7 +317,7 @@ fn do_cut(cx: &mut Context<'_>) {
         start, end,
     );
     let after = tx.selection_after.clone();
-    cx.workspace.documents[did].buffer.apply(tx);
+    cx.workspace.documents[did].apply_tx(tx);
     let v = &mut cx.workspace.views[vid];
     v.selection = after;
     v.target_col = None;

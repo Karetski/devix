@@ -7,7 +7,7 @@ use anyhow::Result;
 use crossterm::event;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
-use devix_config::{Keymap, default_keymap};
+use devix_config::{Keymap, Theme, default_keymap};
 use devix_workspace::{Action, StatusLine, Workspace};
 
 use crate::clipboard;
@@ -18,6 +18,7 @@ use crate::watcher::drain_disk_events;
 pub struct App {
     pub workspace: Workspace,
     pub keymap: Keymap,
+    pub theme: Theme,
     pub status: StatusLine,
     pub quit: bool,
     pub clipboard: Option<arboard::Clipboard>,
@@ -36,6 +37,7 @@ impl App {
         Ok(Self {
             workspace,
             keymap: default_keymap(),
+            theme: Theme::default(),
             status: StatusLine::default(),
             quit: false,
             clipboard,
