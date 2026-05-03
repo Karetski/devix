@@ -17,8 +17,11 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use devix_collection::Hit;
+use devix_lsp::DocChange;
+use lsp_types::PositionEncodingKind;
 use ratatui::layout::Rect;
 use slotmap::{SecondaryMap, SlotMap};
+use tokio::sync::mpsc;
 
 use crate::document::{DocId, Document};
 use crate::frame::{Frame, FrameId};
@@ -66,6 +69,17 @@ pub struct Workspace {
     pub focus: Vec<usize>,
     pub doc_index: HashMap<PathBuf, DocId>,
     pub render_cache: RenderCache,
+    /// LSP coordinator sink + the encoding it negotiated. Set via
+    /// `attach_lsp` after the App spawns the coordinator. New documents
+    /// created with a recognized language auto-attach; on `None` the
+    /// workspace runs without LSP integration.
+    pub(crate) lsp: Option<LspWiring>,
+}
+
+#[derive(Clone)]
+pub(crate) struct LspWiring {
+    pub sink: mpsc::UnboundedSender<DocChange>,
+    pub encoding: PositionEncodingKind,
 }
 
 impl Workspace {
@@ -99,7 +113,30 @@ impl Workspace {
             focus,
             doc_index,
             render_cache: RenderCache::default(),
+            lsp: None,
         })
+    }
+
+    /// Wire this workspace to an LSP coordinator. Stores the sink and
+    /// triggers `DocChange::Open` for every existing document with a known
+    /// language. Subsequent `open_path_*` calls auto-attach.
+    ///
+    /// Idempotent in shape but not in side effects — calling twice with
+    /// different sinks would re-open every doc on the new sink (and orphan
+    /// the old one); App doesn't do this.
+    pub fn attach_lsp(
+        &mut self,
+        sink: mpsc::UnboundedSender<DocChange>,
+        encoding: PositionEncodingKind,
+    ) {
+        self.lsp = Some(LspWiring { sink: sink.clone(), encoding: encoding.clone() });
+        for (_, doc) in self.documents.iter_mut() {
+            doc.attach_lsp(sink.clone(), encoding.clone());
+        }
+    }
+
+    pub(crate) fn lsp_wiring(&self) -> Option<LspWiring> {
+        self.lsp.clone()
     }
 
     pub fn active_view(&self) -> Option<&View> {

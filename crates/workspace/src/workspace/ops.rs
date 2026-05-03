@@ -78,7 +78,11 @@ impl Workspace {
         let did = if let Some(&existing) = self.doc_index.get(&key) {
             existing
         } else {
-            let id = self.documents.insert(Document::from_path(path)?);
+            let mut doc = Document::from_path(path)?;
+            if let Some(wiring) = self.lsp_wiring() {
+                doc.attach_lsp(wiring.sink, wiring.encoding);
+            }
+            let id = self.documents.insert(doc);
             self.doc_index.insert(key, id);
             id
         };
@@ -202,10 +206,14 @@ impl Workspace {
     }
 
     /// If no surviving view references `did`, drop the document and its
-    /// path index entry.
+    /// path index entry. Sends `DocChange::Close` to the LSP coordinator
+    /// before the Document is removed.
     fn try_remove_orphan_doc(&mut self, did: DocId) {
         let still_used = self.views.values().any(|v| v.doc == did);
         if still_used { return; }
+        if let Some(d) = self.documents.get_mut(did) {
+            d.detach_lsp();
+        }
         if let Some(d) = self.documents.remove(did) {
             if let Some(p) = d.buffer.path() {
                 let key = canonicalize_or_keep(p);

@@ -7,6 +7,8 @@
 //!   correlation, initialize handshake with utf-8 PositionEncoding negotiation.
 //! - [`coord`]     — `Coordinator`: one client per (workspace_root, language),
 //!   `DocChange` in / `LspEvent` out, lazy spawn via the `Spawner` trait.
+//! - [`translate`] — buffer-edit → LSP `TextDocumentContentChangeEvent`
+//!   translator (utf-8 / utf-16 / utf-32 aware, reverse-order multi-change).
 //!
 //! The App-side drain (Document sink wiring + diagnostics render) lives in
 //! `devix` (the binary crate) on top of this surface.
@@ -15,6 +17,7 @@ pub mod client;
 pub mod coord;
 pub mod framing;
 pub mod jsonrpc;
+pub mod translate;
 
 pub use client::{ClientNotification, LspClient};
 pub use coord::{
@@ -23,3 +26,4 @@ pub use coord::{
 };
 pub use framing::{FrameReader, write_frame};
 pub use jsonrpc::{Notification, Request, RequestId, ResponseError, ServerMessage, ServerMessageKind};
+pub use translate::{Edit, position_in_rope, translate_changes};

@@ -36,6 +36,14 @@ impl Language {
         }
     }
 
+    /// LSP `languageId` for `textDocument/didOpen`. Must match what the
+    /// server expects; rust-analyzer wants `"rust"`.
+    pub fn lsp_id(self) -> &'static str {
+        match self {
+            Language::Rust => "rust",
+        }
+    }
+
     fn ts_language(self) -> TsLanguage {
         match self {
             Language::Rust => tree_sitter_rust::LANGUAGE.into(),

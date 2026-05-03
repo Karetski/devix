@@ -8,13 +8,16 @@
 //! spans pointing into the wrong byte ranges.
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::mpsc as std_mpsc;
 
 use anyhow::Result;
 use devix_buffer::{Buffer, Selection, Transaction};
+use devix_lsp::{DocChange, Edit as LspEdit, path_to_uri, translate_changes};
 use devix_syntax::{HighlightSpan, Highlighter, Language, input_edit_for_range};
+use lsp_types::{PositionEncodingKind, TextDocumentContentChangeEvent, Uri};
 use notify::{RecursiveMode, Watcher};
 use slotmap::new_key_type;
+use tokio::sync::mpsc as tokio_mpsc;
 
 new_key_type! { pub struct DocId; }
 
@@ -24,12 +27,27 @@ pub struct Document {
     /// Receives a `()` whenever the watcher detects a change to this doc's path.
     /// Drained on every event-loop tick by `App::drain_disk_events`, which sets
     /// `disk_changed_pending` on the affected Document.
-    pub disk_rx: Option<mpsc::Receiver<()>>,
+    pub disk_rx: Option<std_mpsc::Receiver<()>>,
     pub disk_changed_pending: bool,
     /// Per-document syntax tree. `None` for plain-text or unknown extensions;
     /// then `highlights` returns an empty vec and the editor renders without
     /// scope styling.
     highlighter: Option<Highlighter>,
+    /// LSP `textDocument` version. Bumped on every mutation that's reported
+    /// to the server (apply_tx / undo / redo / reload). Stays at zero while
+    /// the document is unattached.
+    lsp_version: i32,
+    /// Outbound channel into the LSP coordinator. `Some` once
+    /// `attach_lsp` has fired the `DocOpen` notification; `None` otherwise.
+    /// Closing the channel (coordinator gone) is treated as detach — sends
+    /// fall through silently rather than aborting the editor.
+    lsp_sink: Option<tokio_mpsc::UnboundedSender<DocChange>>,
+    lsp_uri: Option<Uri>,
+    /// Encoding negotiated with the server for this document's client. Only
+    /// consulted while attached; defaults to utf-16 (the LSP fallback) when
+    /// not set, matching what `Coordinator` reports if utf-8 negotiation
+    /// fails.
+    lsp_encoding: PositionEncodingKind,
 }
 
 impl Document {
@@ -44,6 +62,10 @@ impl Document {
             disk_rx: None,
             disk_changed_pending: false,
             highlighter,
+            lsp_version: 0,
+            lsp_sink: None,
+            lsp_uri: None,
+            lsp_encoding: PositionEncodingKind::UTF16,
         };
         d.full_reparse();
         d
@@ -66,6 +88,10 @@ impl Document {
             disk_rx,
             disk_changed_pending: false,
             highlighter,
+            lsp_version: 0,
+            lsp_sink: None,
+            lsp_uri: None,
+            lsp_encoding: PositionEncodingKind::UTF16,
         };
         d.full_reparse();
         Ok(d)
@@ -75,21 +101,46 @@ impl Document {
         Self::from_buffer(Buffer::empty())
     }
 
-    /// Apply a buffer transaction and keep the highlighter in sync.
-    /// Single-change transactions take the cheap incremental path; multi-change
-    /// (only emitted when multicursor lands) falls back to a full reparse.
+    /// Apply a buffer transaction and keep the highlighter + LSP server in
+    /// sync. Single-change transactions take the cheap incremental path on
+    /// both sides; multi-change (only emitted when multicursor lands) falls
+    /// back to a full reparse and a full-text resync.
     pub fn apply_tx(&mut self, tx: Transaction) {
-        let edit_data = (tx.changes.len() == 1).then(|| {
+        let single_change = tx.changes.len() == 1;
+        let edit_data = single_change.then(|| {
             let ch = &tx.changes[0];
             (ch.start, ch.start + ch.remove_len, ch.start + ch.insert.chars().count())
         });
-        let before_rope = if edit_data.is_some() {
-            Some(self.buffer.rope().clone())
+        // Pre-rope is needed by syntax (single-change incremental edit) and
+        // by LSP (translating change ranges from pre-edit positions). One
+        // clone covers both consumers; clones are O(1) on ropey.
+        let needs_pre_rope = edit_data.is_some() || (self.lsp_attached() && single_change);
+        let before_rope = needs_pre_rope.then(|| self.buffer.rope().clone());
+
+        let lsp_events = if self.lsp_attached() && single_change {
+            let pre = before_rope.as_ref().expect("pre-rope cloned for single-change");
+            let edits: Vec<LspEdit<'_>> = tx
+                .changes
+                .iter()
+                .map(|c| LspEdit {
+                    start_char: c.start,
+                    end_char: c.start + c.remove_len,
+                    text: c.insert.as_str(),
+                })
+                .collect();
+            Some(translate_changes(pre, &edits, &self.lsp_encoding))
         } else {
             None
         };
+        let needs_full_resync = self.lsp_attached() && !single_change;
 
         self.buffer.apply(tx);
+
+        if let Some(events) = lsp_events {
+            self.send_lsp_change(events);
+        } else if needs_full_resync {
+            self.send_lsp_full_resync();
+        }
 
         let Some(h) = self.highlighter.as_mut() else { return };
         match (edit_data, before_rope) {
@@ -108,18 +159,21 @@ impl Document {
     pub fn undo(&mut self) -> Option<Selection> {
         let sel = self.buffer.undo()?;
         self.full_reparse();
+        self.send_lsp_full_resync();
         Some(sel)
     }
 
     pub fn redo(&mut self) -> Option<Selection> {
         let sel = self.buffer.redo()?;
         self.full_reparse();
+        self.send_lsp_full_resync();
         Some(sel)
     }
 
     pub fn reload_from_disk(&mut self) -> Result<()> {
         self.buffer.reload_from_disk()?;
         self.full_reparse();
+        self.send_lsp_full_resync();
         Ok(())
     }
 
@@ -142,6 +196,82 @@ impl Document {
             h.parse(self.buffer.rope());
         }
     }
+
+    pub fn lsp_attached(&self) -> bool {
+        self.lsp_sink.is_some()
+    }
+
+    pub fn lsp_uri(&self) -> Option<&Uri> {
+        self.lsp_uri.as_ref()
+    }
+
+    /// Attach this document to the LSP coordinator. No-op if the document
+    /// has no path or no recognized language. Sends `DocChange::Open` with
+    /// the current full text on success.
+    pub fn attach_lsp(
+        &mut self,
+        sink: tokio_mpsc::UnboundedSender<DocChange>,
+        encoding: PositionEncodingKind,
+    ) {
+        if self.lsp_attached() {
+            return;
+        }
+        let Some(path) = self.buffer.path() else { return };
+        let Some(lang) = self.language() else { return };
+        let Ok(uri) = path_to_uri(path) else { return };
+        let text = self.buffer.rope().to_string();
+        // Reset the version on attach so the server starts at 1 with the
+        // first didOpen, matching the LSP spec's monotonic-version contract
+        // for a freshly opened document.
+        self.lsp_version = 1;
+        let send = sink.send(DocChange::Open {
+            uri: uri.clone(),
+            language_id: lang.lsp_id().to_string(),
+            version: self.lsp_version,
+            text,
+            root_hint: None,
+        });
+        if send.is_err() {
+            return;
+        }
+        self.lsp_sink = Some(sink);
+        self.lsp_uri = Some(uri);
+        self.lsp_encoding = encoding;
+    }
+
+    /// Send `DocChange::Close` and clear the sink. Called from
+    /// `Workspace::try_remove_orphan_doc` before the Document is dropped.
+    pub fn detach_lsp(&mut self) {
+        let Some(sink) = self.lsp_sink.take() else { return };
+        let Some(uri) = self.lsp_uri.take() else { return };
+        let _ = sink.send(DocChange::Close { uri });
+    }
+
+    fn send_lsp_change(&mut self, content_changes: Vec<TextDocumentContentChangeEvent>) {
+        let Some(sink) = self.lsp_sink.as_ref() else { return };
+        let Some(uri) = self.lsp_uri.clone() else { return };
+        self.lsp_version += 1;
+        let _ = sink.send(DocChange::Change {
+            uri,
+            version: self.lsp_version,
+            changes: content_changes,
+        });
+    }
+
+    fn send_lsp_full_resync(&mut self) {
+        let Some(sink) = self.lsp_sink.as_ref() else { return };
+        let Some(uri) = self.lsp_uri.clone() else { return };
+        self.lsp_version += 1;
+        let _ = sink.send(DocChange::Change {
+            uri,
+            version: self.lsp_version,
+            changes: vec![TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: self.buffer.rope().to_string(),
+            }],
+        });
+    }
 }
 
 /// Watch `target_path`'s parent directory non-recursively, filtering events to
@@ -149,8 +279,8 @@ impl Document {
 /// be retained (returned to the caller) — dropping it stops the watch.
 fn spawn_watcher_for(
     target_path: &Path,
-) -> Result<(notify::RecommendedWatcher, mpsc::Receiver<()>)> {
-    let (tx, rx) = mpsc::channel::<()>();
+) -> Result<(notify::RecommendedWatcher, std_mpsc::Receiver<()>)> {
+    let (tx, rx) = std_mpsc::channel::<()>();
     let target = target_path.to_path_buf();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         let Ok(ev) = res else { return };
@@ -238,6 +368,148 @@ mod tests {
             before.len(),
             after.len(),
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn rust_doc(file_name: &str, contents: &str) -> (Document, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "devix-doc-lsp-{}-{}",
+            std::process::id(),
+            file_name
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join(file_name);
+        std::fs::write(&p, contents).unwrap();
+        (Document::from_path(p.clone()).unwrap(), dir)
+    }
+
+    fn drain<T>(rx: &mut tokio_mpsc::UnboundedReceiver<T>) -> Vec<T> {
+        let mut out = Vec::new();
+        while let Ok(v) = rx.try_recv() { out.push(v); }
+        out
+    }
+
+    #[test]
+    fn attach_lsp_sends_open_with_full_text() {
+        let (mut d, dir) = rust_doc("a.rs", "fn main() {}");
+        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
+        d.attach_lsp(tx, PositionEncodingKind::UTF8);
+        assert!(d.lsp_attached());
+        let msgs = drain(&mut rx);
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0] {
+            DocChange::Open { language_id, version, text, .. } => {
+                assert_eq!(language_id, "rust");
+                assert_eq!(*version, 1);
+                assert_eq!(text, "fn main() {}");
+            }
+            other => panic!("expected Open, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn attach_lsp_skips_doc_with_no_language() {
+        let dir = std::env::temp_dir().join(format!("devix-lsp-skip-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("a.txt");
+        std::fs::write(&p, "hi").unwrap();
+        let mut d = Document::from_path(p).unwrap();
+        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
+        d.attach_lsp(tx, PositionEncodingKind::UTF8);
+        assert!(!d.lsp_attached());
+        assert!(drain(&mut rx).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_tx_after_attach_sends_incremental_didchange() {
+        let (mut d, dir) = rust_doc("b.rs", "fn a() {}");
+        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
+        d.attach_lsp(tx, PositionEncodingKind::UTF8);
+        let _open = drain(&mut rx);
+
+        let len = d.buffer.len_chars();
+        let edit = replace_selection_tx(&d.buffer, &Selection::point(len), "X");
+        d.apply_tx(edit);
+
+        let msgs = drain(&mut rx);
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0] {
+            DocChange::Change { version, changes, .. } => {
+                assert_eq!(*version, 2);
+                assert_eq!(changes.len(), 1);
+                let ev = &changes[0];
+                assert_eq!(ev.text, "X");
+                let r = ev.range.unwrap();
+                assert_eq!(r.start.line, 0);
+                assert_eq!(r.end.line, 0);
+                // utf-8 character is the byte offset within the line — for ascii
+                // "fn a() {}" that's 9.
+                assert_eq!(r.start.character, 9);
+                assert_eq!(r.end.character, 9);
+            }
+            other => panic!("expected Change, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undo_redo_send_full_text_resync() {
+        let (mut d, dir) = rust_doc("c.rs", "fn x() {}");
+        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
+        d.attach_lsp(tx, PositionEncodingKind::UTF8);
+        let _open = drain(&mut rx);
+
+        let len = d.buffer.len_chars();
+        let edit = replace_selection_tx(&d.buffer, &Selection::point(len), "Y");
+        d.apply_tx(edit);
+        let _change = drain(&mut rx);
+
+        d.undo().unwrap();
+        let msgs = drain(&mut rx);
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0] {
+            DocChange::Change { version, changes, .. } => {
+                assert_eq!(*version, 3);
+                assert_eq!(changes.len(), 1);
+                assert!(changes[0].range.is_none(), "full-text resync has no range");
+                assert_eq!(changes[0].text, "fn x() {}");
+            }
+            other => panic!("expected Change, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn detach_lsp_sends_close_and_clears_state() {
+        let (mut d, dir) = rust_doc("d.rs", "fn d() {}");
+        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
+        d.attach_lsp(tx, PositionEncodingKind::UTF8);
+        let uri_at_attach = d.lsp_uri().cloned();
+        let _open = drain(&mut rx);
+
+        d.detach_lsp();
+        assert!(!d.lsp_attached());
+        let msgs = drain(&mut rx);
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0] {
+            DocChange::Close { uri } => {
+                assert_eq!(Some(uri.clone()), uri_at_attach);
+            }
+            other => panic!("expected Close, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_tx_with_no_sink_does_not_panic_or_send() {
+        let (mut d, dir) = rust_doc("e.rs", "fn e() {}");
+        // No attach.
+        let len = d.buffer.len_chars();
+        let edit = replace_selection_tx(&d.buffer, &Selection::point(len), "Z");
+        d.apply_tx(edit);
+        assert!(!d.lsp_attached());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
