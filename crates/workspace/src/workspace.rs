@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use devix_collection::Hit;
-use devix_lsp::DocChange;
+use devix_lsp::LspCommand;
 use lsp_types::PositionEncodingKind;
 use ratatui::layout::Rect;
 use slotmap::{SecondaryMap, SlotMap};
@@ -78,7 +78,7 @@ pub struct Workspace {
 
 #[derive(Clone)]
 pub(crate) struct LspWiring {
-    pub sink: mpsc::UnboundedSender<DocChange>,
+    pub sink: mpsc::UnboundedSender<LspCommand>,
     pub encoding: PositionEncodingKind,
 }
 
@@ -118,7 +118,7 @@ impl Workspace {
     }
 
     /// Wire this workspace to an LSP coordinator. Stores the sink and
-    /// triggers `DocChange::Open` for every existing document with a known
+    /// triggers `LspCommand::Open` for every existing document with a known
     /// language. Subsequent `open_path_*` calls auto-attach.
     ///
     /// Idempotent in shape but not in side effects — calling twice with
@@ -126,7 +126,7 @@ impl Workspace {
     /// the old one); App doesn't do this.
     pub fn attach_lsp(
         &mut self,
-        sink: mpsc::UnboundedSender<DocChange>,
+        sink: mpsc::UnboundedSender<LspCommand>,
         encoding: PositionEncodingKind,
     ) {
         self.lsp = Some(LspWiring { sink: sink.clone(), encoding: encoding.clone() });

@@ -6,7 +6,7 @@
 //! - [`client`]    — `LspClient`: child spawn, reader/writer tasks, request
 //!   correlation, initialize handshake with utf-8 PositionEncoding negotiation.
 //! - [`coord`]     — `Coordinator`: one client per (workspace_root, language),
-//!   `DocChange` in / `LspEvent` out, lazy spawn via the `Spawner` trait.
+//!   `LspCommand` in / `LspEvent` out, lazy spawn via the `Spawner` trait.
 //! - [`translate`] — buffer-edit → LSP `TextDocumentContentChangeEvent`
 //!   translator (utf-8 / utf-16 / utf-32 aware, reverse-order multi-change).
 //!
@@ -21,7 +21,7 @@ pub mod translate;
 
 pub use client::{ClientNotification, LspClient};
 pub use coord::{
-    Coordinator, CoordinatorConfig, DocChange, LanguageConfig, LspEvent, Spawner,
+    Coordinator, CoordinatorConfig, LanguageConfig, LspCommand, LspEvent, Spawner,
     SubprocessSpawner, path_to_uri, uri_to_path,
 };
 pub use framing::{FrameReader, write_frame};

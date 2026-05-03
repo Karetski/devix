@@ -12,7 +12,7 @@ use std::sync::mpsc as std_mpsc;
 
 use anyhow::Result;
 use devix_buffer::{Buffer, Selection, Transaction};
-use devix_lsp::{DocChange, Edit as LspEdit, path_to_uri, translate_changes};
+use devix_lsp::{LspCommand, Edit as LspEdit, path_to_uri, translate_changes};
 use devix_syntax::{HighlightSpan, Highlighter, Language, input_edit_for_range};
 use lsp_types::{
     Diagnostic, DiagnosticSeverity, PositionEncodingKind, TextDocumentContentChangeEvent, Uri,
@@ -55,7 +55,7 @@ pub struct Document {
     /// `attach_lsp` has fired the `DocOpen` notification; `None` otherwise.
     /// Closing the channel (coordinator gone) is treated as detach — sends
     /// fall through silently rather than aborting the editor.
-    lsp_sink: Option<tokio_mpsc::UnboundedSender<DocChange>>,
+    lsp_sink: Option<tokio_mpsc::UnboundedSender<LspCommand>>,
     lsp_uri: Option<Uri>,
     /// Encoding negotiated with the server for this document's client. Only
     /// consulted while attached; defaults to utf-16 (the LSP fallback) when
@@ -223,11 +223,11 @@ impl Document {
     }
 
     /// Attach this document to the LSP coordinator. No-op if the document
-    /// has no path or no recognized language. Sends `DocChange::Open` with
+    /// has no path or no recognized language. Sends `LspCommand::Open` with
     /// the current full text on success.
     pub fn attach_lsp(
         &mut self,
-        sink: tokio_mpsc::UnboundedSender<DocChange>,
+        sink: tokio_mpsc::UnboundedSender<LspCommand>,
         encoding: PositionEncodingKind,
     ) {
         if self.lsp_attached() {
@@ -241,7 +241,7 @@ impl Document {
         // first didOpen, matching the LSP spec's monotonic-version contract
         // for a freshly opened document.
         self.lsp_version = 1;
-        let send = sink.send(DocChange::Open {
+        let send = sink.send(LspCommand::Open {
             uri: uri.clone(),
             language_id: lang.lsp_id().to_string(),
             version: self.lsp_version,
@@ -256,12 +256,12 @@ impl Document {
         self.lsp_encoding = encoding;
     }
 
-    /// Send `DocChange::Close` and clear the sink. Called from
+    /// Send `LspCommand::Close` and clear the sink. Called from
     /// `Workspace::try_remove_orphan_doc` before the Document is dropped.
     pub fn detach_lsp(&mut self) {
         let Some(sink) = self.lsp_sink.take() else { return };
         let Some(uri) = self.lsp_uri.take() else { return };
-        let _ = sink.send(DocChange::Close { uri });
+        let _ = sink.send(LspCommand::Close { uri });
     }
 
     pub fn diagnostics(&self) -> &[DocDiagnostic] {
@@ -296,7 +296,7 @@ impl Document {
         let Some(sink) = self.lsp_sink.as_ref() else { return };
         let Some(uri) = self.lsp_uri.clone() else { return };
         self.lsp_version += 1;
-        let _ = sink.send(DocChange::Change {
+        let _ = sink.send(LspCommand::Change {
             uri,
             version: self.lsp_version,
             changes: content_changes,
@@ -307,7 +307,7 @@ impl Document {
         let Some(sink) = self.lsp_sink.as_ref() else { return };
         let Some(uri) = self.lsp_uri.clone() else { return };
         self.lsp_version += 1;
-        let _ = sink.send(DocChange::Change {
+        let _ = sink.send(LspCommand::Change {
             uri,
             version: self.lsp_version,
             changes: vec![TextDocumentContentChangeEvent {
@@ -500,7 +500,7 @@ mod tests {
         let msgs = drain(&mut rx);
         assert_eq!(msgs.len(), 1);
         match &msgs[0] {
-            DocChange::Open { language_id, version, text, .. } => {
+            LspCommand::Open { language_id, version, text, .. } => {
                 assert_eq!(language_id, "rust");
                 assert_eq!(*version, 1);
                 assert_eq!(text, "fn main() {}");
@@ -538,7 +538,7 @@ mod tests {
         let msgs = drain(&mut rx);
         assert_eq!(msgs.len(), 1);
         match &msgs[0] {
-            DocChange::Change { version, changes, .. } => {
+            LspCommand::Change { version, changes, .. } => {
                 assert_eq!(*version, 2);
                 assert_eq!(changes.len(), 1);
                 let ev = &changes[0];
@@ -572,7 +572,7 @@ mod tests {
         let msgs = drain(&mut rx);
         assert_eq!(msgs.len(), 1);
         match &msgs[0] {
-            DocChange::Change { version, changes, .. } => {
+            LspCommand::Change { version, changes, .. } => {
                 assert_eq!(*version, 3);
                 assert_eq!(changes.len(), 1);
                 assert!(changes[0].range.is_none(), "full-text resync has no range");
@@ -596,7 +596,7 @@ mod tests {
         let msgs = drain(&mut rx);
         assert_eq!(msgs.len(), 1);
         match &msgs[0] {
-            DocChange::Close { uri } => {
+            LspCommand::Close { uri } => {
                 assert_eq!(Some(uri.clone()), uri_at_attach);
             }
             other => panic!("expected Close, got {other:?}"),

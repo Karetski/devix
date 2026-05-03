@@ -206,7 +206,7 @@ impl Workspace {
     }
 
     /// If no surviving view references `did`, drop the document and its
-    /// path index entry. Sends `DocChange::Close` to the LSP coordinator
+    /// path index entry. Sends `LspCommand::Close` to the LSP coordinator
     /// before the Document is removed.
     fn try_remove_orphan_doc(&mut self, did: DocId) {
         let still_used = self.views.values().any(|v| v.doc == did);

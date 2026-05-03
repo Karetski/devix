@@ -2,13 +2,15 @@
 //! `LspEvent`s into Document/StatusLine state each tick, mirroring
 //! [`crate::watcher::drain_disk_events`].
 //!
-//! Slice 1 surfaces `publishDiagnostics` (→ Document::set_diagnostics) and
-//! window/show|logMessage (→ status line). Hover, completion, and the
-//! request-shaped LSP traffic land on later slices.
+//! Slice 1 surfaced `publishDiagnostics` (→ Document::set_diagnostics) and
+//! window/show|logMessage (→ status line). Slice 2 plumbs hover and
+//! goto-definition responses end-to-end at the wire level; the App-side
+//! application of those responses (popup paint, cursor jump) lands in the
+//! UI commit.
 
 use anyhow::Result;
 use devix_lsp::{
-    Coordinator, CoordinatorConfig, DocChange, LanguageConfig, LspEvent, SubprocessSpawner,
+    Coordinator, CoordinatorConfig, LanguageConfig, LspCommand, LspEvent, SubprocessSpawner,
     uri_to_path,
 };
 use lsp_types::PositionEncodingKind;
@@ -31,14 +33,14 @@ pub struct LspWiring {
 
 /// Build the runtime, spawn the coordinator, and return the change sink +
 /// event receiver wrapper. Caller threads `sink` into `Workspace::attach_lsp`.
-pub fn setup_lsp() -> Result<(mpsc::UnboundedSender<DocChange>, PositionEncodingKind, LspWiring)> {
+pub fn setup_lsp() -> Result<(mpsc::UnboundedSender<LspCommand>, PositionEncodingKind, LspWiring)> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .thread_name("devix-lsp")
         .build()?;
 
-    let (changes_tx, changes_rx) = mpsc::unbounded_channel::<DocChange>();
+    let (changes_tx, changes_rx) = mpsc::unbounded_channel::<LspCommand>();
     let (events_tx, events_rx) = mpsc::unbounded_channel::<LspEvent>();
     let coord = Coordinator::new(default_config(), SubprocessSpawner);
     runtime.spawn(coord.run(changes_rx, events_tx));
@@ -96,6 +98,11 @@ pub fn drain_lsp_events(app: &mut App) {
                     app.status.set(format!("LSP error: {text}"));
                 }
             }
+            // Hover / goto-def responses arrive here. The App-side
+            // application (popup paint, cursor jump) lands with the UI
+            // commit; for now they're produced by coord but consumed
+            // nowhere — drop them on the floor.
+            LspEvent::HoverResponse { .. } | LspEvent::DefinitionResponse { .. } => {}
         }
     }
     if any {

@@ -1,23 +1,33 @@
 //! `Coordinator` — owns one `LspClient` per (workspace_root, language_id),
-//! routes per-document edits in, and emits a typed `LspEvent` stream out.
+//! routes per-document edits in, dispatches request-shaped commands (hover,
+//! goto-def) on background tasks, and emits a typed `LspEvent` stream out.
 //!
 //! Identity: documents are addressed by `lsp_types::Uri` end-to-end. The App
 //! is responsible for the `Uri ↔ workspace::DocId` mapping at the boundary,
 //! which keeps `devix-lsp` from depending on `devix-workspace`.
 //!
-//! Lifecycle: `LspClient`s are spawned lazily on first `DocChange::Open` for
+//! Lifecycle: `LspClient`s are spawned lazily on first `LspCommand::Open` for
 //! a (root, language) pair via the supplied `Spawner` trait. The default
 //! `SubprocessSpawner` shells out to the language's configured command;
 //! tests inject `FnSpawner` closures that wire up duplex streams instead.
+//!
+//! Requests use `Arc<LspClient>` so a hover/definition future can be spawned
+//! onto the runtime, await the response, and post it back through the same
+//! `LspEvent` channel as a `HoverResponse` / `DefinitionResponse`. The App
+//! correlates by `anchor_char` (the cursor position at request time),
+//! discarding stale answers whose anchor no longer matches.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    PublishDiagnosticsParams, TextDocumentContentChangeEvent, TextDocumentIdentifier,
-    TextDocumentItem, Uri, VersionedTextDocumentIdentifier,
+    GotoDefinitionParams, GotoDefinitionResponse, HoverContents, HoverParams, Location,
+    MarkedString, Position, PublishDiagnosticsParams, TextDocumentContentChangeEvent,
+    TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams, Uri,
+    VersionedTextDocumentIdentifier,
 };
 use tokio::sync::mpsc;
 
@@ -46,10 +56,11 @@ impl CoordinatorConfig {
     }
 }
 
-/// Inbound message from the App. The App produces these from Document
-/// lifecycle events (open, apply_tx, close) and the file's path → URI mapping.
+/// Inbound message from the App. Covers document lifecycle (open, change,
+/// close) and request-shaped traffic (hover, goto-def). Both flow through
+/// the same channel so producers don't need to track multiple sinks.
 #[derive(Debug)]
-pub enum DocChange {
+pub enum LspCommand {
     Open {
         uri: Uri,
         language_id: String,
@@ -65,6 +76,19 @@ pub enum DocChange {
         changes: Vec<TextDocumentContentChangeEvent>,
     },
     Close { uri: Uri },
+    /// Request hover info at `position`. The originating cursor offset is
+    /// echoed back through `anchor_char` on the `HoverResponse` so the App
+    /// can discard stale answers without an external request-id map.
+    Hover {
+        uri: Uri,
+        position: Position,
+        anchor_char: usize,
+    },
+    GotoDefinition {
+        uri: Uri,
+        position: Position,
+        anchor_char: usize,
+    },
 }
 
 /// Outbound event for the App to drain each frame.
@@ -73,6 +97,19 @@ pub enum LspEvent {
     Diagnostics(PublishDiagnosticsParams),
     ShowMessage { level: lsp_types::MessageType, text: String },
     LogMessage { level: lsp_types::MessageType, text: String },
+    /// Hover result. `contents` is empty when the server returned null or
+    /// the request errored — both surface as "no hover info" on the App
+    /// side, which is the same outcome.
+    HoverResponse {
+        uri: Uri,
+        anchor_char: usize,
+        contents: Vec<String>,
+    },
+    DefinitionResponse {
+        uri: Uri,
+        anchor_char: usize,
+        locations: Vec<Location>,
+    },
 }
 
 pub trait Spawner {
@@ -127,7 +164,9 @@ type ClientKey = (PathBuf, String);
 
 pub struct Coordinator<S: Spawner> {
     config: CoordinatorConfig,
-    clients: HashMap<ClientKey, LspClient>,
+    /// `Arc` so request futures can hold a handle while running on a
+    /// background task, independent of coord's mutation of the map.
+    clients: HashMap<ClientKey, Arc<LspClient>>,
     docs: HashMap<String, DocState>,
     spawner: S,
 }
@@ -143,27 +182,27 @@ impl<S: Spawner> Coordinator<S> {
     }
 
     /// Tied-to-channels pump. Owns:
-    /// - inbound `DocChange` (from App)
+    /// - inbound `LspCommand` (from App)
     /// - inbound `ClientNotification` (from every spawned client)
     /// - outbound `LspEvent` (to App)
     ///
-    /// Exits cleanly when the inbound `doc_changes` channel closes.
+    /// Exits cleanly when the inbound `commands` channel closes.
     pub async fn run(
         mut self,
-        mut doc_changes: mpsc::UnboundedReceiver<DocChange>,
+        mut commands: mpsc::UnboundedReceiver<LspCommand>,
         events: mpsc::UnboundedSender<LspEvent>,
     ) {
         let (notif_tx, mut notif_rx) = mpsc::unbounded_channel::<ClientNotification>();
         loop {
             tokio::select! {
                 biased;
-                // Match on the Option directly so a closed `doc_changes`
+                // Match on the Option directly so a closed `commands`
                 // breaks the loop. We can't rely on `else` — the local
                 // `notif_tx` keeps `notif_rx` open indefinitely, so the
                 // notification branch never disables itself.
-                change = doc_changes.recv() => {
-                    let Some(change) = change else { break };
-                    if let Err(e) = self.handle_doc_change(change, &notif_tx).await {
+                cmd = commands.recv() => {
+                    let Some(cmd) = cmd else { break };
+                    if let Err(e) = self.handle_command(cmd, &notif_tx, &events).await {
                         let _ = events.send(LspEvent::LogMessage {
                             level: lsp_types::MessageType::ERROR,
                             text: format!("LSP coordinator: {e:#}"),
@@ -179,13 +218,14 @@ impl<S: Spawner> Coordinator<S> {
         }
     }
 
-    async fn handle_doc_change(
+    async fn handle_command(
         &mut self,
-        change: DocChange,
+        cmd: LspCommand,
         notif_tx: &mpsc::UnboundedSender<ClientNotification>,
+        events: &mpsc::UnboundedSender<LspEvent>,
     ) -> Result<()> {
-        match change {
-            DocChange::Open {
+        match cmd {
+            LspCommand::Open {
                 uri,
                 language_id,
                 version,
@@ -206,7 +246,7 @@ impl<S: Spawner> Coordinator<S> {
                 let key = (root.clone(), lang.id.clone());
                 if !self.clients.contains_key(&key) {
                     let client = self.spawner.spawn(&lang, &root, notif_tx.clone()).await?;
-                    self.clients.insert(key.clone(), client);
+                    self.clients.insert(key.clone(), Arc::new(client));
                 }
                 let client = self.clients.get(&key).unwrap();
                 client.notify::<lsp_types::notification::DidOpenTextDocument>(
@@ -224,16 +264,8 @@ impl<S: Spawner> Coordinator<S> {
                     DocState { language_id: lang.id, root },
                 );
             }
-            DocChange::Change { uri, version, changes } => {
-                let state = self
-                    .docs
-                    .get(&uri_key(&uri))
-                    .ok_or_else(|| anyhow!("DocChange::Change for unknown uri {uri:?}"))?;
-                let key: ClientKey = (state.root.clone(), state.language_id.clone());
-                let client = self
-                    .clients
-                    .get(&key)
-                    .ok_or_else(|| anyhow!("no client for {key:?}"))?;
+            LspCommand::Change { uri, version, changes } => {
+                let client = self.client_for_uri(&uri)?;
                 client.notify::<lsp_types::notification::DidChangeTextDocument>(
                     DidChangeTextDocumentParams {
                         text_document: VersionedTextDocumentIdentifier { uri, version },
@@ -241,7 +273,7 @@ impl<S: Spawner> Coordinator<S> {
                     },
                 )?;
             }
-            DocChange::Close { uri } => {
+            LspCommand::Close { uri } => {
                 let Some(state) = self.docs.remove(&uri_key(&uri)) else {
                     return Ok(());
                 };
@@ -253,8 +285,72 @@ impl<S: Spawner> Coordinator<S> {
                     },
                 )?;
             }
+            LspCommand::Hover { uri, position, anchor_char } => {
+                let client = Arc::clone(self.client_for_uri(&uri)?);
+                let events = events.clone();
+                let uri_resp = uri.clone();
+                tokio::spawn(async move {
+                    let params = HoverParams {
+                        text_document_position_params: TextDocumentPositionParams {
+                            text_document: TextDocumentIdentifier { uri },
+                            position,
+                        },
+                        work_done_progress_params: Default::default(),
+                    };
+                    let contents = match client
+                        .request::<lsp_types::request::HoverRequest>(params)
+                        .await
+                    {
+                        Ok(Some(h)) => hover_contents_to_lines(h.contents),
+                        _ => Vec::new(),
+                    };
+                    let _ = events.send(LspEvent::HoverResponse {
+                        uri: uri_resp,
+                        anchor_char,
+                        contents,
+                    });
+                });
+            }
+            LspCommand::GotoDefinition { uri, position, anchor_char } => {
+                let client = Arc::clone(self.client_for_uri(&uri)?);
+                let events = events.clone();
+                let uri_resp = uri.clone();
+                tokio::spawn(async move {
+                    let params = GotoDefinitionParams {
+                        text_document_position_params: TextDocumentPositionParams {
+                            text_document: TextDocumentIdentifier { uri },
+                            position,
+                        },
+                        work_done_progress_params: Default::default(),
+                        partial_result_params: Default::default(),
+                    };
+                    let locations = match client
+                        .request::<lsp_types::request::GotoDefinition>(params)
+                        .await
+                    {
+                        Ok(Some(resp)) => goto_definition_to_locations(resp),
+                        _ => Vec::new(),
+                    };
+                    let _ = events.send(LspEvent::DefinitionResponse {
+                        uri: uri_resp,
+                        anchor_char,
+                        locations,
+                    });
+                });
+            }
         }
         Ok(())
+    }
+
+    fn client_for_uri(&self, uri: &Uri) -> Result<&Arc<LspClient>> {
+        let state = self
+            .docs
+            .get(&uri_key(uri))
+            .ok_or_else(|| anyhow!("LSP command for unknown uri {uri:?}"))?;
+        let key: ClientKey = (state.root.clone(), state.language_id.clone());
+        self.clients
+            .get(&key)
+            .ok_or_else(|| anyhow!("no client for {key:?}"))
     }
 }
 
@@ -276,6 +372,50 @@ fn translate_notification(n: ClientNotification) -> Option<LspEvent> {
         // (which arrives as a server→client *request*, handled by the client's
         // auto-reply path, not as a notification).
         _ => None,
+    }
+}
+
+/// Flatten `HoverContents` into a list of plain-text lines. Markdown markers
+/// pass through unrendered for slice 2; the popup widget treats each entry
+/// as a line and the user sees raw markdown. Real markdown rendering can
+/// land later without changing this signature.
+fn hover_contents_to_lines(c: HoverContents) -> Vec<String> {
+    fn marked_to_string(m: MarkedString) -> String {
+        match m {
+            MarkedString::String(s) => s,
+            MarkedString::LanguageString(ls) => ls.value,
+        }
+    }
+    let mut out: Vec<String> = match c {
+        HoverContents::Scalar(m) => vec![marked_to_string(m)],
+        HoverContents::Array(items) => items.into_iter().map(marked_to_string).collect(),
+        HoverContents::Markup(m) => vec![m.value],
+    };
+    // Split entries on newlines so the popup renders one line per row.
+    let mut lines = Vec::with_capacity(out.len());
+    for s in out.drain(..) {
+        for line in s.split('\n') {
+            lines.push(line.trim_end_matches('\r').to_string());
+        }
+    }
+    // Trim trailing blank lines so popups don't render an empty footer.
+    while matches!(lines.last(), Some(s) if s.is_empty()) {
+        lines.pop();
+    }
+    lines
+}
+
+fn goto_definition_to_locations(r: GotoDefinitionResponse) -> Vec<Location> {
+    match r {
+        GotoDefinitionResponse::Scalar(loc) => vec![loc],
+        GotoDefinitionResponse::Array(locs) => locs,
+        GotoDefinitionResponse::Link(links) => links
+            .into_iter()
+            .map(|l| Location {
+                uri: l.target_uri,
+                range: l.target_selection_range,
+            })
+            .collect(),
     }
 }
 
@@ -380,6 +520,12 @@ mod tests {
             let bytes = serde_json::to_vec(&n).unwrap();
             write_frame(&mut self.writer, &bytes).await.unwrap();
         }
+
+        async fn respond(&mut self, id: crate::jsonrpc::RequestId, result: serde_json::Value) {
+            let resp = serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result});
+            let bytes = serde_json::to_vec(&resp).unwrap();
+            write_frame(&mut self.writer, &bytes).await.unwrap();
+        }
     }
 
     fn build_pair(notif_tx: mpsc::UnboundedSender<ClientNotification>) -> (LspClient, FakeServer) {
@@ -413,13 +559,13 @@ mod tests {
     #[tokio::test]
     async fn open_change_close_roundtrip_to_one_client() {
         let (coord, mut servers_rx) = make_coord();
-        let (changes_tx, changes_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (events_tx, _events_rx) = mpsc::unbounded_channel();
-        let run_handle = tokio::spawn(coord.run(changes_rx, events_tx));
+        let run_handle = tokio::spawn(coord.run(cmd_rx, events_tx));
 
         let uri = Uri::from_str("file:///proj/src/main.rs").unwrap();
-        changes_tx
-            .send(DocChange::Open {
+        cmd_tx
+            .send(LspCommand::Open {
                 uri: uri.clone(),
                 language_id: "rust".into(),
                 version: 1,
@@ -434,8 +580,8 @@ mod tests {
         assert_eq!(m.params.as_ref().unwrap()["textDocument"]["uri"], uri.as_str());
         assert_eq!(m.params.as_ref().unwrap()["textDocument"]["text"], "fn main() {}");
 
-        changes_tx
-            .send(DocChange::Change {
+        cmd_tx
+            .send(LspCommand::Change {
                 uri: uri.clone(),
                 version: 2,
                 changes: vec![TextDocumentContentChangeEvent {
@@ -450,27 +596,27 @@ mod tests {
         assert_eq!(m.method.as_deref(), Some("textDocument/didChange"));
         assert_eq!(m.params.as_ref().unwrap()["textDocument"]["version"], 2);
 
-        changes_tx
-            .send(DocChange::Close { uri: uri.clone() })
+        cmd_tx
+            .send(LspCommand::Close { uri: uri.clone() })
             .unwrap();
 
         let m = server.recv().await;
         assert_eq!(m.method.as_deref(), Some("textDocument/didClose"));
 
-        drop(changes_tx);
+        drop(cmd_tx);
         run_handle.await.unwrap();
     }
 
     #[tokio::test]
     async fn diagnostics_from_server_translate_to_lsp_event() {
         let (coord, mut servers_rx) = make_coord();
-        let (changes_tx, changes_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
-        let run_handle = tokio::spawn(coord.run(changes_rx, events_tx));
+        let run_handle = tokio::spawn(coord.run(cmd_rx, events_tx));
 
         let uri = Uri::from_str("file:///proj/lib.rs").unwrap();
-        changes_tx
-            .send(DocChange::Open {
+        cmd_tx
+            .send(LspCommand::Open {
                 uri: uri.clone(),
                 language_id: "rust".into(),
                 version: 1,
@@ -505,20 +651,20 @@ mod tests {
             other => panic!("expected Diagnostics, got {other:?}"),
         }
 
-        drop(changes_tx);
+        drop(cmd_tx);
         run_handle.await.unwrap();
     }
 
     #[tokio::test]
     async fn second_open_in_same_root_reuses_client() {
         let (coord, mut servers_rx) = make_coord();
-        let (changes_tx, changes_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (events_tx, _events_rx) = mpsc::unbounded_channel();
-        let run_handle = tokio::spawn(coord.run(changes_rx, events_tx));
+        let run_handle = tokio::spawn(coord.run(cmd_rx, events_tx));
 
         for path in ["file:///proj/a.rs", "file:///proj/b.rs"] {
-            changes_tx
-                .send(DocChange::Open {
+            cmd_tx
+                .send(LspCommand::Open {
                     uri: Uri::from_str(path).unwrap(),
                     language_id: "rust".into(),
                     version: 1,
@@ -538,19 +684,19 @@ mod tests {
                    m2.params.as_ref().unwrap()["textDocument"]["uri"]);
         assert!(servers_rx.try_recv().is_err(), "second open should reuse the existing client");
 
-        drop(changes_tx);
+        drop(cmd_tx);
         run_handle.await.unwrap();
     }
 
     #[tokio::test]
     async fn unknown_language_emits_error_log() {
         let (coord, _servers_rx) = make_coord();
-        let (changes_tx, changes_rx) = mpsc::unbounded_channel();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
-        let run_handle = tokio::spawn(coord.run(changes_rx, events_tx));
+        let run_handle = tokio::spawn(coord.run(cmd_rx, events_tx));
 
-        changes_tx
-            .send(DocChange::Open {
+        cmd_tx
+            .send(LspCommand::Open {
                 uri: Uri::from_str("file:///proj/file.unknownlang").unwrap(),
                 language_id: "unknownlang".into(),
                 version: 1,
@@ -568,7 +714,121 @@ mod tests {
             other => panic!("expected LogMessage, got {other:?}"),
         }
 
-        drop(changes_tx);
+        drop(cmd_tx);
+        run_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn hover_request_pumps_response_back_through_events() {
+        let (coord, mut servers_rx) = make_coord();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let run_handle = tokio::spawn(coord.run(cmd_rx, events_tx));
+
+        let uri = Uri::from_str("file:///proj/h.rs").unwrap();
+        cmd_tx
+            .send(LspCommand::Open {
+                uri: uri.clone(),
+                language_id: "rust".into(),
+                version: 1,
+                text: "fn x() {}".into(),
+                root_hint: Some(PathBuf::from("/proj")),
+            })
+            .unwrap();
+        let mut server = servers_rx.recv().await.unwrap();
+        let _ = server.recv().await; // didOpen
+
+        cmd_tx
+            .send(LspCommand::Hover {
+                uri: uri.clone(),
+                position: Position { line: 0, character: 3 },
+                anchor_char: 3,
+            })
+            .unwrap();
+
+        let req = server.recv().await;
+        assert_eq!(req.method.as_deref(), Some("textDocument/hover"));
+        let id = req.id.expect("hover request has id");
+        server
+            .respond(
+                id,
+                serde_json::json!({
+                    "contents": {"kind": "plaintext", "value": "fn x()\nreturns ()"},
+                }),
+            )
+            .await;
+
+        let ev = events_rx.recv().await.expect("event");
+        match ev {
+            LspEvent::HoverResponse { uri: u, anchor_char, contents } => {
+                assert_eq!(u, uri);
+                assert_eq!(anchor_char, 3);
+                assert_eq!(contents, vec!["fn x()".to_string(), "returns ()".to_string()]);
+            }
+            other => panic!("expected HoverResponse, got {other:?}"),
+        }
+
+        drop(cmd_tx);
+        run_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn goto_definition_request_pumps_locations_back() {
+        let (coord, mut servers_rx) = make_coord();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let run_handle = tokio::spawn(coord.run(cmd_rx, events_tx));
+
+        let uri = Uri::from_str("file:///proj/g.rs").unwrap();
+        cmd_tx
+            .send(LspCommand::Open {
+                uri: uri.clone(),
+                language_id: "rust".into(),
+                version: 1,
+                text: "fn x() {}\nfn y() { x(); }".into(),
+                root_hint: Some(PathBuf::from("/proj")),
+            })
+            .unwrap();
+        let mut server = servers_rx.recv().await.unwrap();
+        let _ = server.recv().await;
+
+        cmd_tx
+            .send(LspCommand::GotoDefinition {
+                uri: uri.clone(),
+                position: Position { line: 1, character: 9 },
+                anchor_char: 19,
+            })
+            .unwrap();
+
+        let req = server.recv().await;
+        assert_eq!(req.method.as_deref(), Some("textDocument/definition"));
+        let id = req.id.expect("definition request has id");
+        server
+            .respond(
+                id,
+                serde_json::json!({
+                    "uri": uri.as_str(),
+                    "range": {
+                        "start": {"line": 0, "character": 3},
+                        "end":   {"line": 0, "character": 4},
+                    },
+                }),
+            )
+            .await;
+
+        let ev = events_rx.recv().await.expect("event");
+        match ev {
+            LspEvent::DefinitionResponse { uri: u, anchor_char, locations } => {
+                assert_eq!(u, uri);
+                assert_eq!(anchor_char, 19);
+                assert_eq!(locations.len(), 1);
+                assert_eq!(locations[0].uri, uri);
+                assert_eq!(locations[0].range.start, Position { line: 0, character: 3 });
+            }
+            other => panic!("expected DefinitionResponse, got {other:?}"),
+        }
+
+        drop(cmd_tx);
         run_handle.await.unwrap();
     }
 
@@ -596,5 +856,21 @@ mod tests {
         std::fs::write(&file, "").unwrap();
         assert!(resolve_root(&file, &["Cargo.toml".to_string()]).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hover_contents_markup_splits_on_newlines() {
+        let m = HoverContents::Markup(lsp_types::MarkupContent {
+            kind: lsp_types::MarkupKind::Markdown,
+            value: "fn x()\n\n```rust\nfn x() {}\n```".into(),
+        });
+        let lines = hover_contents_to_lines(m);
+        assert_eq!(lines, vec![
+            "fn x()".to_string(),
+            String::new(),
+            "```rust".to_string(),
+            "fn x() {}".to_string(),
+            "```".to_string(),
+        ]);
     }
 }
