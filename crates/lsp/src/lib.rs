@@ -21,8 +21,8 @@ pub mod translate;
 
 pub use client::{ClientNotification, LspClient};
 pub use coord::{
-    CompletionTrigger, Coordinator, CoordinatorConfig, LanguageConfig, LspCommand, LspEvent,
-    Spawner, SubprocessSpawner, path_to_uri, uri_to_path,
+    CompletionTrigger, Coordinator, CoordinatorConfig, FlatSymbol, LanguageConfig, LspCommand,
+    LspEvent, Spawner, SubprocessSpawner, path_to_uri, uri_to_path,
 };
 pub use framing::{FrameReader, write_frame};
 pub use jsonrpc::{Notification, Request, RequestId, ResponseError, ServerMessage, ServerMessageKind};

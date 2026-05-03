@@ -25,10 +25,11 @@ use anyhow::{Context, Result, anyhow};
 use lsp_types::{
     CompletionContext, CompletionItem, CompletionParams, CompletionResponse, CompletionTriggerKind,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    GotoDefinitionParams, GotoDefinitionResponse, HoverContents, HoverParams, Location,
-    MarkedString, Position, PublishDiagnosticsParams, TextDocumentContentChangeEvent,
+    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+    GotoDefinitionResponse, HoverContents, HoverParams, Location, MarkedString, Position,
+    PublishDiagnosticsParams, SymbolInformation, SymbolKind, TextDocumentContentChangeEvent,
     TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams, Uri,
-    VersionedTextDocumentIdentifier,
+    VersionedTextDocumentIdentifier, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 use tokio::sync::mpsc;
 
@@ -99,6 +100,14 @@ pub enum LspCommand {
         anchor_char: usize,
         trigger: CompletionTrigger,
     },
+    /// Request the document's symbol outline. `epoch` echoes back on the
+    /// response so the App can drop stale answers when the user closed
+    /// the picker / opened a different one.
+    DocumentSymbols { uri: Uri, epoch: u64 },
+    /// Request workspace-wide symbols matching `query`. Servers handle the
+    /// fuzzy matching server-side, so we re-issue on each query change
+    /// rather than client-filtering.
+    WorkspaceSymbols { query: String, epoch: u64 },
 }
 
 /// What initiated a completion request — passed through to the server's
@@ -141,6 +150,33 @@ pub enum LspEvent {
         /// cursor moves to a new context, when the App refetches anyway.
         is_incomplete: bool,
     },
+    /// Document symbol outline (flattened depth-first from any tree the
+    /// server returned). `depth` is 0 for top-level symbols and increments
+    /// per nesting level, so the renderer can indent.
+    DocumentSymbolsResponse {
+        uri: Uri,
+        epoch: u64,
+        symbols: Vec<FlatSymbol>,
+    },
+    /// Workspace-wide symbol search results. The server has already
+    /// filtered against the originating query; the App displays them as-is.
+    WorkspaceSymbolsResponse {
+        epoch: u64,
+        symbols: Vec<FlatSymbol>,
+    },
+}
+
+/// Symbol normalized for the App: name + kind + container hint + a
+/// resolvable location, ready to display in a list and jump on accept.
+/// Document symbols flatten any child tree depth-first, with `depth`
+/// driving indent in the renderer; workspace symbols always have depth 0.
+#[derive(Clone, Debug)]
+pub struct FlatSymbol {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub container: Option<String>,
+    pub location: Location,
+    pub depth: u16,
 }
 
 pub trait Spawner {
@@ -408,6 +444,63 @@ impl<S: Spawner> Coordinator<S> {
                     });
                 });
             }
+            LspCommand::DocumentSymbols { uri, epoch } => {
+                let client = Arc::clone(self.client_for_uri(&uri)?);
+                let events = events.clone();
+                let uri_resp = uri.clone();
+                tokio::spawn(async move {
+                    let params = DocumentSymbolParams {
+                        text_document: TextDocumentIdentifier { uri: uri.clone() },
+                        work_done_progress_params: Default::default(),
+                        partial_result_params: Default::default(),
+                    };
+                    let symbols = match client
+                        .request::<lsp_types::request::DocumentSymbolRequest>(params)
+                        .await
+                    {
+                        Ok(Some(r)) => document_symbol_response_flatten(r, &uri),
+                        _ => Vec::new(),
+                    };
+                    let _ = events.send(LspEvent::DocumentSymbolsResponse {
+                        uri: uri_resp,
+                        epoch,
+                        symbols,
+                    });
+                });
+            }
+            LspCommand::WorkspaceSymbols { query, epoch } => {
+                // workspace/symbol may be answered by *any* of the spawned
+                // clients (one per language). For slice 4 we route to the
+                // first client we have — sufficient for single-language
+                // workspaces; multi-language (e.g. rust + ts) merges land
+                // when we add more language configs in production.
+                let Some(client) = self.clients.values().next().cloned() else {
+                    let _ = events.send(LspEvent::WorkspaceSymbolsResponse {
+                        epoch,
+                        symbols: Vec::new(),
+                    });
+                    return Ok(());
+                };
+                let events = events.clone();
+                tokio::spawn(async move {
+                    let params = WorkspaceSymbolParams {
+                        query,
+                        work_done_progress_params: Default::default(),
+                        partial_result_params: Default::default(),
+                    };
+                    let symbols = match client
+                        .request::<lsp_types::request::WorkspaceSymbolRequest>(params)
+                        .await
+                    {
+                        Ok(Some(r)) => workspace_symbol_response_flatten(r),
+                        _ => Vec::new(),
+                    };
+                    let _ = events.send(LspEvent::WorkspaceSymbolsResponse {
+                        epoch,
+                        symbols,
+                    });
+                });
+            }
         }
         Ok(())
     }
@@ -482,6 +575,87 @@ fn completion_response_flatten(r: CompletionResponse) -> (Vec<CompletionItem>, b
     match r {
         CompletionResponse::Array(items) => (items, false),
         CompletionResponse::List(list) => (list.items, list.is_incomplete),
+    }
+}
+
+/// Walk a `DocumentSymbolResponse` (either flat `SymbolInformation`s or a
+/// nested `DocumentSymbol` tree) and produce a depth-first flat list. The
+/// renderer indents children by their `depth` field. `doc_uri` is needed
+/// because `DocumentSymbol` carries only a range — the location's URI has
+/// to come from the original request.
+fn document_symbol_response_flatten(r: DocumentSymbolResponse, doc_uri: &Uri) -> Vec<FlatSymbol> {
+    let mut out = Vec::new();
+    match r {
+        DocumentSymbolResponse::Flat(items) => {
+            for sym in items {
+                out.push(FlatSymbol {
+                    name: sym.name,
+                    kind: sym.kind,
+                    container: sym.container_name,
+                    location: sym.location,
+                    depth: 0,
+                });
+            }
+        }
+        DocumentSymbolResponse::Nested(items) => {
+            fn walk(out: &mut Vec<FlatSymbol>, sym: DocumentSymbol, depth: u16, uri: &Uri) {
+                out.push(FlatSymbol {
+                    name: sym.name,
+                    kind: sym.kind,
+                    container: None,
+                    location: Location {
+                        uri: uri.clone(),
+                        range: sym.selection_range,
+                    },
+                    depth,
+                });
+                if let Some(children) = sym.children {
+                    for c in children {
+                        walk(out, c, depth + 1, uri);
+                    }
+                }
+            }
+            for sym in items {
+                walk(&mut out, sym, 0, doc_uri);
+            }
+        }
+    }
+    out
+}
+
+fn workspace_symbol_response_flatten(r: WorkspaceSymbolResponse) -> Vec<FlatSymbol> {
+    match r {
+        WorkspaceSymbolResponse::Flat(items) => items
+            .into_iter()
+            .map(|s: SymbolInformation| FlatSymbol {
+                name: s.name,
+                kind: s.kind,
+                container: s.container_name,
+                location: s.location,
+                depth: 0,
+            })
+            .collect(),
+        WorkspaceSymbolResponse::Nested(items) => items
+            .into_iter()
+            .filter_map(|w| {
+                // Nested workspace symbols may carry a resolvable location
+                // (full Location) or a placeholder (just URI; the server
+                // expects a separate workspaceSymbol/resolve round-trip).
+                // Slice 4 only uses fully-resolved entries; pre-resolution
+                // entries get dropped silently.
+                let location = match w.location {
+                    lsp_types::OneOf::Left(loc) => loc,
+                    lsp_types::OneOf::Right(_) => return None,
+                };
+                Some(FlatSymbol {
+                    name: w.name,
+                    kind: w.kind,
+                    container: w.container_name,
+                    location,
+                    depth: 0,
+                })
+            })
+            .collect(),
     }
 }
 
@@ -973,6 +1147,134 @@ mod tests {
                 assert_eq!(items[1].label, "next");
             }
             other => panic!("expected CompletionResponse, got {other:?}"),
+        }
+
+        drop(cmd_tx);
+        run_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn document_symbols_request_flattens_nested_response() {
+        let (coord, mut servers_rx) = make_coord();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let run_handle = tokio::spawn(coord.run(cmd_rx, events_tx));
+
+        let uri = Uri::from_str("file:///proj/s.rs").unwrap();
+        cmd_tx
+            .send(LspCommand::Open {
+                uri: uri.clone(),
+                language_id: "rust".into(),
+                version: 1,
+                text: "fn outer() { fn inner() {} }".into(),
+                root_hint: Some(PathBuf::from("/proj")),
+            })
+            .unwrap();
+        let mut server = servers_rx.recv().await.unwrap();
+        let _ = server.recv().await;
+
+        cmd_tx
+            .send(LspCommand::DocumentSymbols { uri: uri.clone(), epoch: 7 })
+            .unwrap();
+
+        let req = server.recv().await;
+        assert_eq!(req.method.as_deref(), Some("textDocument/documentSymbol"));
+        let id = req.id.expect("documentSymbol request has id");
+
+        // Nested response: outer fn with one child (inner fn).
+        server
+            .respond(
+                id,
+                serde_json::json!([{
+                    "name": "outer",
+                    "kind": 12, // SymbolKind::FUNCTION
+                    "range":          { "start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 28} },
+                    "selectionRange": { "start": {"line": 0, "character": 3}, "end": {"line": 0, "character": 8} },
+                    "children": [{
+                        "name": "inner",
+                        "kind": 12,
+                        "range":          { "start": {"line": 0, "character": 13}, "end": {"line": 0, "character": 26} },
+                        "selectionRange": { "start": {"line": 0, "character": 16}, "end": {"line": 0, "character": 21} },
+                    }],
+                }]),
+            )
+            .await;
+
+        let ev = events_rx.recv().await.expect("event");
+        match ev {
+            LspEvent::DocumentSymbolsResponse { uri: u, epoch, symbols } => {
+                assert_eq!(u, uri);
+                assert_eq!(epoch, 7);
+                assert_eq!(symbols.len(), 2);
+                assert_eq!(symbols[0].name, "outer");
+                assert_eq!(symbols[0].depth, 0);
+                assert_eq!(symbols[1].name, "inner");
+                assert_eq!(symbols[1].depth, 1);
+                // Children inherit the doc's URI.
+                assert_eq!(symbols[1].location.uri, uri);
+            }
+            other => panic!("expected DocumentSymbolsResponse, got {other:?}"),
+        }
+
+        drop(cmd_tx);
+        run_handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn workspace_symbols_request_routes_to_first_client() {
+        let (coord, mut servers_rx) = make_coord();
+        let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let run_handle = tokio::spawn(coord.run(cmd_rx, events_tx));
+
+        // Open a doc to spawn the rust client.
+        let uri = Uri::from_str("file:///proj/w.rs").unwrap();
+        cmd_tx
+            .send(LspCommand::Open {
+                uri: uri.clone(),
+                language_id: "rust".into(),
+                version: 1,
+                text: String::new(),
+                root_hint: Some(PathBuf::from("/proj")),
+            })
+            .unwrap();
+        let mut server = servers_rx.recv().await.unwrap();
+        let _ = server.recv().await;
+
+        cmd_tx
+            .send(LspCommand::WorkspaceSymbols { query: "Foo".into(), epoch: 3 })
+            .unwrap();
+        let req = server.recv().await;
+        assert_eq!(req.method.as_deref(), Some("workspace/symbol"));
+        assert_eq!(req.params.as_ref().unwrap()["query"], "Foo");
+        let id = req.id.expect("workspace/symbol has id");
+
+        server
+            .respond(
+                id,
+                serde_json::json!([{
+                    "name": "FooStruct",
+                    "kind": 23, // SymbolKind::STRUCT
+                    "location": {
+                        "uri": "file:///proj/w.rs",
+                        "range": {
+                            "start": {"line": 1, "character": 0},
+                            "end":   {"line": 1, "character": 9},
+                        },
+                    },
+                }]),
+            )
+            .await;
+
+        let ev = events_rx.recv().await.expect("event");
+        match ev {
+            LspEvent::WorkspaceSymbolsResponse { epoch, symbols } => {
+                assert_eq!(epoch, 3);
+                assert_eq!(symbols.len(), 1);
+                assert_eq!(symbols[0].name, "FooStruct");
+                assert_eq!(symbols[0].kind, lsp_types::SymbolKind::STRUCT);
+            }
+            other => panic!("expected WorkspaceSymbolsResponse, got {other:?}"),
         }
 
         drop(cmd_tx);

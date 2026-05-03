@@ -116,6 +116,9 @@ pub fn drain_lsp_events(app: &mut App) {
                 let _ = is_incomplete; // slice 3 ignores
                 apply_completion_response(app, &uri, anchor_char, items);
             }
+            // Symbol responses: applied with the UI commit.
+            LspEvent::DocumentSymbolsResponse { .. }
+            | LspEvent::WorkspaceSymbolsResponse { .. } => {}
         }
     }
     app.dirty = true;
