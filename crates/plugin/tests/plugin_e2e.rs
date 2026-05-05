@@ -14,7 +14,7 @@ use devix_core::Pane;
 use devix_plugin::{
     LuaPane, PluginInput, PluginMsg, PluginRuntime, make_command_action, parse_chord,
 };
-use devix_surface::{Command, CommandId, CommandRegistry, Context, Keymap, SidebarSlot, StatusLine, Surface, Viewport};
+use devix_surface::{Command, CommandId, CommandRegistry, Context, Keymap, SidebarSlot, Surface, Viewport};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -96,13 +96,11 @@ fn hello_command_round_trips_through_registry_and_keymap() {
 
     let mut surface = Surface::open(None).unwrap();
     let mut clipboard: Option<arboard::Clipboard> = None;
-    let mut status = StatusLine::default();
     let mut quit = false;
     {
         let mut ctx = Context {
             surface: &mut surface,
             clipboard: &mut clipboard,
-            status: &mut status,
             quit: &mut quit,
             viewport: Viewport::default(),
             commands: &commands,
@@ -116,7 +114,7 @@ fn hello_command_round_trips_through_registry_and_keymap() {
     assert!(got.is_some(), "plugin should have produced a status message");
 
     drop(action);
-    let _ = (commands, keymap, surface, status, quit);
+    let _ = (commands, keymap, surface, quit);
 
     let mut commands = CommandRegistry::new();
     commands.register(Command {

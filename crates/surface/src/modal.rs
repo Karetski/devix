@@ -5,22 +5,11 @@
 //! responder chain — the dispatcher gives it first crack at every input
 //! event before the focused-leaf path. There is no closed `Overlay` enum
 //! and no per-modal type-tagging in the framework.
-//!
-//! Concrete modals (palette, symbol picker, future: file picker, project
-//! switcher, plugin pickers) own their state directly. `Pane::handle`
-//! does navigation and text input via internal mutation; close / accept /
-//! LSP-refetch happen through small "outcome" flags that the host drains
-//! after `handle` returns. This keeps the framework `&dyn Pane`-generic
-//! while still letting modal panes signal side effects that need
-//! surface-wide context (the active document, the LSP channel, the
-//! command registry).
 
 use std::any::Any;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use devix_core::{HandleCtx, Outcome, Pane, RenderCtx, Theme};
-use devix_lsp::FlatSymbol;
-use lsp_types::Uri;
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32String};
 use ratatui::Frame;
@@ -35,158 +24,28 @@ use crate::keymap::{Chord, Keymap};
 /// Side-effect requested by a modal Pane during input handling. The host
 /// reads and clears this after `Pane::handle` returns; modals signal
 /// what they cannot do themselves (close themselves out of the slot,
-/// invoke another command, request an LSP refetch).
-///
-/// `Pane::handle` is the input gate, but `Pane` is in `core` and cannot
-/// see the surface's `Context` — so close / accept / refetch are
-/// expressed as flags here, drained by the host with a single
-/// `as_any_mut().downcast_mut()` per-modal-type. Plugins contributing
-/// new modals expose their own `drain_outcome` and the host's drain
-/// logic grows by one branch.
+/// invoke another command).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ModalOutcome {
     None,
     Dismiss,
     Accept,
-    /// Surface symbols re-queries the LSP on every keystroke; the
-    /// modal Pane stores the new query locally, and the host fires the
-    /// `LspCommand::WorkspaceSymbols` request.
-    Refetch,
 }
 
 // ---------------------------------------------------------------------------
-// Symbol picker state (was: overlay::SymbolsState)
-// ---------------------------------------------------------------------------
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum SymbolsKind {
-    Document,
-    Surface,
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum SymbolsStatus {
-    /// Request in flight; the picker shows a placeholder row.
-    Pending,
-    /// Items are populated; navigating + accepting works normally.
-    Ready,
-}
-
-/// Symbol picker overlay state. Powers both `textDocument/documentSymbol`
-/// (Ctrl+O — local outline) and `surface/symbol` (Ctrl+Shift+O —
-/// project-wide search). Document mode populates `items` once and
-/// client-filters; surface mode re-fetches on every query change and
-/// overwrites `items` from the response.
-pub struct SymbolsState {
-    pub kind: SymbolsKind,
-    /// Bumped on every query change so stale responses can be discarded
-    /// when the user has typed past the issuing query.
-    pub epoch: u64,
-    /// Originating doc URI (for `Document` mode); `None` for surface.
-    pub origin_uri: Option<Uri>,
-    pub query: String,
-    pub items: Vec<FlatSymbol>,
-    /// Indices into `items`, ranked by current match score.
-    pub matches: Vec<usize>,
-    pub selected: usize,
-    pub status: SymbolsStatus,
-    matcher: Matcher,
-}
-
-impl SymbolsState {
-    pub fn new(kind: SymbolsKind, origin_uri: Option<Uri>) -> Self {
-        Self {
-            kind,
-            epoch: 1,
-            origin_uri,
-            query: String::new(),
-            items: Vec::new(),
-            matches: Vec::new(),
-            selected: 0,
-            status: SymbolsStatus::Pending,
-            matcher: Matcher::new(Config::DEFAULT),
-        }
-    }
-
-    pub fn matched_symbol(&self, match_idx: usize) -> Option<&FlatSymbol> {
-        self.matches.get(match_idx).and_then(|i| self.items.get(*i))
-    }
-
-    pub fn selected_symbol(&self) -> Option<&FlatSymbol> {
-        self.matched_symbol(self.selected)
-    }
-
-    /// Replace the populated list (typically from an LSP response).
-    pub fn set_items(&mut self, items: Vec<FlatSymbol>) {
-        self.items = items;
-        self.status = SymbolsStatus::Ready;
-        self.refilter();
-        self.selected = 0;
-    }
-
-    pub fn set_query(&mut self, q: String) {
-        if q == self.query {
-            return;
-        }
-        self.query = q;
-        self.epoch = self.epoch.wrapping_add(1);
-        self.refilter();
-        self.selected = 0;
-    }
-
-    pub fn move_selection(&mut self, delta: isize) {
-        if self.matches.is_empty() {
-            self.selected = 0;
-            return;
-        }
-        let len = self.matches.len() as isize;
-        let next = (self.selected as isize + delta).rem_euclid(len);
-        self.selected = next as usize;
-    }
-
-    fn refilter(&mut self) {
-        if self.query.is_empty() {
-            self.matches = (0..self.items.len()).collect();
-            return;
-        }
-        let pattern = Pattern::parse(&self.query, CaseMatching::Smart, Normalization::Smart);
-        let mut scored: Vec<(usize, u32)> = self
-            .items
-            .iter()
-            .enumerate()
-            .filter_map(|(i, sym)| {
-                let s = Utf32String::from(sym.name.as_str());
-                pattern
-                    .score(s.slice(..), &mut self.matcher)
-                    .map(|score| (i, score))
-            })
-            .collect();
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
-        self.matches = scored.into_iter().map(|(i, _)| i).collect();
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Palette state (was: overlay::PaletteState)
+// Palette state
 // ---------------------------------------------------------------------------
 
 pub struct PaletteState {
     query: String,
-    /// Cached `Utf32String` per registered command, indexed parallel to
-    /// `command_ids`. Built once at open; rebuilt only if the registry
-    /// changes (which won't happen mid-overlay in v1).
     haystack: Vec<Utf32String>,
     command_ids: Vec<CommandId>,
-    /// Filtered + scored view into `command_ids`. Each entry is an index back
-    /// into `command_ids`; the order is best-match-first.
     matches: Vec<usize>,
     selected: usize,
     matcher: Matcher,
 }
 
 impl PaletteState {
-    /// Snapshot the registry into the palette's haystack and start with an
-    /// empty query (which matches every command in registration order).
     pub fn from_registry(reg: &CommandRegistry) -> Self {
         let mut haystack = Vec::with_capacity(reg.len());
         let mut command_ids = Vec::with_capacity(reg.len());
@@ -222,7 +81,6 @@ impl PaletteState {
             .copied()
     }
 
-    /// Currently-highlighted command id, or `None` if there are no matches.
     pub fn selected_command_id(&self) -> Option<CommandId> {
         self.matched_command_id(self.selected)
     }
@@ -271,10 +129,6 @@ impl PaletteState {
 // PalettePane — owned modal Pane
 // ---------------------------------------------------------------------------
 
-/// Command palette as a modal Pane. Owns its state outright; the Theme,
-/// CommandRegistry, and Keymap are passed in through render context
-/// (host-resolved so the palette doesn't need to know how those are
-/// stored on the surface).
 pub struct PalettePane {
     pub state: PaletteState,
     outcome: ModalOutcome,
@@ -288,8 +142,6 @@ impl PalettePane {
         }
     }
 
-    /// Drain the side-effect flag set by `handle`. Returns the pending
-    /// outcome and resets it to `None`.
     pub fn drain_outcome(&mut self) -> ModalOutcome {
         std::mem::replace(&mut self.outcome, ModalOutcome::None)
     }
@@ -332,12 +184,6 @@ impl PalettePane {
 }
 
 impl Pane for PalettePane {
-    /// Stub; the host renders the palette via [`render_palette`] after
-    /// downcasting through [`Pane::as_any`]. Drawing the registered
-    /// commands needs the surface's `CommandRegistry` and `Keymap`,
-    /// which `core::RenderCtx` deliberately doesn't know about — keeping
-    /// `core` surface-agnostic. Plugins contributing self-contained
-    /// modals override this to render themselves.
     fn render(&self, _area: Rect, _ctx: &mut RenderCtx<'_, '_>) {}
 
     fn handle(&mut self, ev: &Event, _area: Rect, _ctx: &mut HandleCtx<'_>) -> Outcome {
@@ -368,373 +214,10 @@ impl Pane for PalettePane {
 }
 
 // ---------------------------------------------------------------------------
-// SymbolPickerPane — owned modal Pane
+// Render helpers
 // ---------------------------------------------------------------------------
 
-pub struct SymbolPickerPane {
-    pub state: SymbolsState,
-    outcome: ModalOutcome,
-}
-
-impl SymbolPickerPane {
-    pub fn new(kind: SymbolsKind, origin_uri: Option<Uri>) -> Self {
-        Self {
-            state: SymbolsState::new(kind, origin_uri),
-            outcome: ModalOutcome::None,
-        }
-    }
-
-    pub fn drain_outcome(&mut self) -> ModalOutcome {
-        std::mem::replace(&mut self.outcome, ModalOutcome::None)
-    }
-
-    fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Outcome {
-        match (code, mods) {
-            (KeyCode::Esc, _) => {
-                self.outcome = ModalOutcome::Dismiss;
-                Outcome::Consumed
-            }
-            (KeyCode::Enter, _) => {
-                self.outcome = ModalOutcome::Accept;
-                Outcome::Consumed
-            }
-            (KeyCode::Up, _) => {
-                self.state.move_selection(-1);
-                Outcome::Consumed
-            }
-            (KeyCode::Down, _) => {
-                self.state.move_selection(1);
-                Outcome::Consumed
-            }
-            (KeyCode::Backspace, _) => {
-                let mut q = self.state.query.clone();
-                q.pop();
-                self.state.set_query(q);
-                if self.state.kind == SymbolsKind::Surface {
-                    self.outcome = ModalOutcome::Refetch;
-                }
-                Outcome::Consumed
-            }
-            (KeyCode::Char(c), m)
-                if !m.contains(KeyModifiers::CONTROL) && !m.contains(KeyModifiers::ALT) =>
-            {
-                let mut q = self.state.query.clone();
-                q.push(c);
-                self.state.set_query(q);
-                if self.state.kind == SymbolsKind::Surface {
-                    self.outcome = ModalOutcome::Refetch;
-                }
-                Outcome::Consumed
-            }
-            _ => Outcome::Ignored,
-        }
-    }
-}
-
-impl Pane for SymbolPickerPane {
-    /// Stub; see [`PalettePane::render`] for the rationale. Host dispatch
-    /// in `app::render` downcasts and calls [`render_symbols`] with the
-    /// surface's [`Theme`].
-    fn render(&self, _area: Rect, _ctx: &mut RenderCtx<'_, '_>) {}
-
-    fn handle(&mut self, ev: &Event, _area: Rect, _ctx: &mut HandleCtx<'_>) -> Outcome {
-        match ev {
-            Event::Key(KeyEvent {
-                code,
-                modifiers,
-                kind,
-                ..
-            }) if matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
-                self.handle_key(*code, *modifiers)
-            }
-            _ => Outcome::Ignored,
-        }
-    }
-
-    fn is_focusable(&self) -> bool {
-        true
-    }
-
-    fn as_any(&self) -> Option<&dyn Any> {
-        Some(self)
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
-        Some(self)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Settings state (browser over the editor's introspectable surface)
-// ---------------------------------------------------------------------------
-
-/// One row in the settings list. Sections are flattened into a single
-/// scrollable list so navigation is a uniform `selected: usize` —
-/// section headers are rendered as non-focusable rows.
-///
-/// Entries store only a `CommandId`; label and chord are resolved against
-/// the registry + keymap at render time, mirroring [`PaletteState`]'s
-/// late-binding pattern. The host already owns those so we don't have
-/// to thread the keymap through `Context`.
-///
-/// Future sections (theme, loaded plugins, current language servers) drop
-/// in by extending [`SettingsState::from_registry`] — no new pane type
-/// needed.
-#[derive(Clone, Debug)]
-pub enum SettingsRow {
-    /// A category divider. Not selectable.
-    Header(String),
-    /// A row referencing a registered command. The renderer resolves
-    /// label + bound chord against the registry/keymap each frame.
-    Command(CommandId),
-}
-
-pub struct SettingsState {
-    rows: Vec<SettingsRow>,
-    selected: usize,
-}
-
-impl SettingsState {
-    /// Snapshot the registry into a sectioned list of rows. Walks
-    /// commands in registration order and groups by `Command.category`.
-    /// Built once on open — the registry doesn't mutate during a modal
-    /// session.
-    pub fn from_registry(reg: &CommandRegistry) -> Self {
-        let mut rows = Vec::with_capacity(reg.len() + 4);
-        let mut last_category: Option<&str> = None;
-
-        for cmd in reg.iter() {
-            let cat = cmd.category.unwrap_or("Misc");
-            if last_category != Some(cat) {
-                rows.push(SettingsRow::Header(cat.to_string()));
-                last_category = Some(cat);
-            }
-            rows.push(SettingsRow::Command(cmd.id));
-        }
-
-        // Open with the first selectable row pre-highlighted so the
-        // initial highlight isn't a section header.
-        let selected = rows
-            .iter()
-            .position(|r| matches!(r, SettingsRow::Command(_)))
-            .unwrap_or(0);
-        Self { rows, selected }
-    }
-
-    pub fn rows(&self) -> &[SettingsRow] {
-        &self.rows
-    }
-
-    pub fn selected(&self) -> usize {
-        self.selected
-    }
-
-    /// Step the selection by `delta` rows, skipping headers so the
-    /// highlight only ever lands on entries. Wraps at both ends.
-    pub fn move_selection(&mut self, delta: isize) {
-        if self.rows.is_empty() {
-            self.selected = 0;
-            return;
-        }
-        let entry_indices: Vec<usize> = self
-            .rows
-            .iter()
-            .enumerate()
-            .filter_map(|(i, r)| matches!(r, SettingsRow::Command(_)).then_some(i))
-            .collect();
-        if entry_indices.is_empty() {
-            return;
-        }
-        let cur = entry_indices
-            .iter()
-            .position(|i| *i == self.selected)
-            .unwrap_or(0) as isize;
-        let n = entry_indices.len() as isize;
-        let next = (cur + delta).rem_euclid(n);
-        self.selected = entry_indices[next as usize];
-    }
-}
-
-// ---------------------------------------------------------------------------
-// SettingsPane — owned modal Pane
-// ---------------------------------------------------------------------------
-
-/// Settings browser as a modal Pane. v1 is a read-only view onto the
-/// command registry + keymap; later sections (theme, plugins) extend
-/// [`SettingsState::from_registry`] and the same Pane keeps working.
-///
-/// Bound to `Ctrl+,` by default. Esc dismisses; Up/Down navigate;
-/// Enter is reserved (no-op in v1).
-pub struct SettingsPane {
-    pub state: SettingsState,
-    outcome: ModalOutcome,
-}
-
-impl SettingsPane {
-    pub fn from_registry(reg: &CommandRegistry) -> Self {
-        Self {
-            state: SettingsState::from_registry(reg),
-            outcome: ModalOutcome::None,
-        }
-    }
-
-    pub fn drain_outcome(&mut self) -> ModalOutcome {
-        std::mem::replace(&mut self.outcome, ModalOutcome::None)
-    }
-
-    fn handle_key(&mut self, code: KeyCode, _mods: KeyModifiers) -> Outcome {
-        match code {
-            KeyCode::Esc => {
-                self.outcome = ModalOutcome::Dismiss;
-                Outcome::Consumed
-            }
-            KeyCode::Up => {
-                self.state.move_selection(-1);
-                Outcome::Consumed
-            }
-            KeyCode::Down => {
-                self.state.move_selection(1);
-                Outcome::Consumed
-            }
-            _ => Outcome::Ignored,
-        }
-    }
-}
-
-impl Pane for SettingsPane {
-    /// Stub; host renders via [`render_settings`] after downcast — same
-    /// pattern as palette/symbols. Settings needs the theme; the chord
-    /// strings are baked into the row values at construction so the
-    /// renderer doesn't need the keymap a second time.
-    fn render(&self, _area: Rect, _ctx: &mut RenderCtx<'_, '_>) {}
-
-    fn handle(&mut self, ev: &Event, _area: Rect, _ctx: &mut HandleCtx<'_>) -> Outcome {
-        match ev {
-            Event::Key(KeyEvent {
-                code,
-                modifiers,
-                kind,
-                ..
-            }) if matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
-                self.handle_key(*code, *modifiers)
-            }
-            _ => Outcome::Ignored,
-        }
-    }
-
-    fn is_focusable(&self) -> bool {
-        true
-    }
-
-    fn as_any(&self) -> Option<&dyn Any> {
-        Some(self)
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
-        Some(self)
-    }
-}
-
-pub fn settings_area(parent: Rect) -> Rect {
-    palette_area(parent)
-}
-
-pub fn render_settings(
-    state: &SettingsState,
-    registry: &CommandRegistry,
-    keymap: &Keymap,
-    theme: &Theme,
-    area: Rect,
-    frame: &mut Frame<'_>,
-) {
-    Clear.render(area, frame.buffer_mut());
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Settings ")
-        .style(theme.text_style());
-    let inner = block.inner(area);
-    block.render(area, frame.buffer_mut());
-    if inner.width == 0 || inner.height == 0 {
-        return;
-    }
-
-    let visible = inner.height as usize;
-    if visible == 0 {
-        return;
-    }
-
-    let total = state.rows.len();
-    if total == 0 {
-        return;
-    }
-
-    // Anchor scroll so the highlighted row stays around the upper third —
-    // identical pattern to palette/symbols so navigation feels uniform.
-    let target_row = visible / 3;
-    let top = state
-        .selected
-        .saturating_sub(target_row)
-        .min(total.saturating_sub(visible.min(total)));
-
-    let select_style = theme.selection_style();
-    let dim = Style::default().add_modifier(Modifier::DIM);
-    let header_style = Style::default().add_modifier(Modifier::BOLD);
-
-    for row in 0..visible {
-        let idx = top + row;
-        if idx >= total {
-            break;
-        }
-        let row_rect = Rect {
-            x: inner.x,
-            y: inner.y + row as u16,
-            width: inner.width,
-            height: 1,
-        };
-        match &state.rows[idx] {
-            SettingsRow::Header(name) => {
-                Paragraph::new(Line::from(Span::styled(name.clone(), header_style)))
-                    .render(row_rect, frame.buffer_mut());
-            }
-            SettingsRow::Command(id) => {
-                let label = registry
-                    .get(*id)
-                    .map(|c| c.label)
-                    .unwrap_or("(unknown command)");
-                let value = keymap
-                    .chord_for(*id)
-                    .map(format_chord)
-                    .unwrap_or_else(|| "—".into());
-                let total_w = row_rect.width as usize;
-                let value_w = value.chars().count();
-                // Two-space indent per section; one cell of breathing
-                // room between label and value.
-                let left = format!("  {label}");
-                let left_max = total_w.saturating_sub(value_w + 1);
-                let left_trunc: String = left.chars().take(left_max).collect();
-                let pad = total_w.saturating_sub(left_trunc.chars().count() + value_w);
-                let is_sel = idx == state.selected;
-                let row_style = if is_sel { select_style } else { Style::default() };
-                let value_style = if is_sel { select_style } else { dim };
-                Paragraph::new(Line::from(vec![
-                    Span::styled(left_trunc, row_style),
-                    Span::styled(" ".repeat(pad), row_style),
-                    Span::styled(value, value_style),
-                ]))
-                .render(row_rect, frame.buffer_mut());
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Render helpers (centered floating box, query row, scored result list)
-// ---------------------------------------------------------------------------
-
-/// Compute the centered area the palette occupies inside `parent`. ~60% of
-/// width, capped to a usable height range so it never dominates a tall window
-/// or vanishes in a short one.
+/// Compute the centered area the palette occupies inside `parent`.
 pub fn palette_area(parent: Rect) -> Rect {
     let w = (parent.width as u32 * 60 / 100).clamp(40, 100) as u16;
     let w = w.min(parent.width);
@@ -748,10 +231,6 @@ pub fn palette_area(parent: Rect) -> Rect {
         width: w,
         height: h,
     }
-}
-
-pub fn symbols_area(parent: Rect) -> Rect {
-    palette_area(parent)
 }
 
 pub fn render_palette(
@@ -858,139 +337,6 @@ pub fn render_palette(
     }
 }
 
-pub fn render_symbols(state: &SymbolsState, theme: &Theme, area: Rect, frame: &mut Frame<'_>) {
-    Clear.render(area, frame.buffer_mut());
-
-    let title = match state.kind {
-        SymbolsKind::Document => " Document Symbols ",
-        SymbolsKind::Surface => " Surface Symbols ",
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .style(theme.text_style());
-    let inner = block.inner(area);
-    block.render(area, frame.buffer_mut());
-    if inner.width == 0 || inner.height == 0 {
-        return;
-    }
-
-    let query_row = Rect { height: 1, ..inner };
-    let query_text = format!("> {}", state.query);
-    Paragraph::new(query_text).render(query_row, frame.buffer_mut());
-
-    if inner.height <= 2 {
-        return;
-    }
-
-    let list_area = Rect {
-        y: inner.y + 2,
-        height: inner.height - 2,
-        ..inner
-    };
-
-    let visible = list_area.height as usize;
-    if visible == 0 {
-        return;
-    }
-
-    if matches!(state.status, SymbolsStatus::Pending) && state.items.is_empty() {
-        let row_rect = Rect { height: 1, ..list_area };
-        let dim = Style::default().add_modifier(Modifier::DIM);
-        Paragraph::new(Line::from(Span::styled("…", dim)))
-            .render(row_rect, frame.buffer_mut());
-        return;
-    }
-
-    let total = state.matches.len();
-    if total == 0 {
-        return;
-    }
-    let target_row = visible / 3;
-    let top = state
-        .selected
-        .saturating_sub(target_row)
-        .min(total.saturating_sub(visible.min(total)));
-
-    let select_style = theme.selection_style();
-    let dim = Style::default().add_modifier(Modifier::DIM);
-
-    for row in 0..visible {
-        let match_idx = top + row;
-        if match_idx >= total {
-            break;
-        }
-        let Some(sym) = state.matched_symbol(match_idx) else {
-            continue;
-        };
-
-        let row_rect = Rect {
-            x: list_area.x,
-            y: list_area.y + row as u16,
-            width: list_area.width,
-            height: 1,
-        };
-
-        let is_sel = match_idx == state.selected;
-        let row_style = if is_sel { select_style } else { Style::default() };
-
-        let kind_tag = symbol_kind_short(sym.kind);
-        let indent = "  ".repeat(sym.depth as usize);
-        let left = format!("{indent}[{kind_tag}] {name}", name = sym.name);
-        let right = sym.container.clone().unwrap_or_default();
-
-        let total_w = row_rect.width as usize;
-        let right_w = right.chars().count();
-        let left_max = if right_w == 0 {
-            total_w
-        } else {
-            total_w.saturating_sub(right_w + 1)
-        };
-        let left_trunc: String = left.chars().take(left_max).collect();
-        let pad = total_w.saturating_sub(left_trunc.chars().count() + right_w);
-        let right_style = if is_sel { row_style } else { dim };
-        Paragraph::new(Line::from(vec![
-            Span::styled(left_trunc, row_style),
-            Span::styled(" ".repeat(pad), row_style),
-            Span::styled(right, right_style),
-        ]))
-        .render(row_rect, frame.buffer_mut());
-    }
-}
-
-fn symbol_kind_short(k: lsp_types::SymbolKind) -> &'static str {
-    use lsp_types::SymbolKind;
-    match k {
-        SymbolKind::FILE => "file",
-        SymbolKind::MODULE => "mod",
-        SymbolKind::NAMESPACE => "ns",
-        SymbolKind::PACKAGE => "pkg",
-        SymbolKind::CLASS => "cls",
-        SymbolKind::METHOD => "fn",
-        SymbolKind::PROPERTY => "prop",
-        SymbolKind::FIELD => "field",
-        SymbolKind::CONSTRUCTOR => "ctor",
-        SymbolKind::ENUM => "enum",
-        SymbolKind::INTERFACE => "iface",
-        SymbolKind::FUNCTION => "fn",
-        SymbolKind::VARIABLE => "var",
-        SymbolKind::CONSTANT => "const",
-        SymbolKind::STRING => "str",
-        SymbolKind::NUMBER => "num",
-        SymbolKind::BOOLEAN => "bool",
-        SymbolKind::ARRAY => "arr",
-        SymbolKind::OBJECT => "obj",
-        SymbolKind::KEY => "key",
-        SymbolKind::NULL => "null",
-        SymbolKind::ENUM_MEMBER => "evar",
-        SymbolKind::STRUCT => "struct",
-        SymbolKind::EVENT => "event",
-        SymbolKind::OPERATOR => "op",
-        SymbolKind::TYPE_PARAMETER => "tparam",
-        _ => "sym",
-    }
-}
-
 /// Render `Chord` as a human-readable shortcut string ("Ctrl+Shift+P").
 pub fn format_chord(chord: Chord) -> String {
     let mut parts: Vec<String> = Vec::with_capacity(4);
@@ -1030,7 +376,6 @@ mod tests {
     use super::*;
     use crate::cmd::Quit;
     use crate::command::{Command, CommandId, CommandRegistry};
-    use std::str::FromStr;
     use std::sync::Arc;
 
     fn reg() -> CommandRegistry {
@@ -1089,48 +434,6 @@ mod tests {
         assert!(p.selected_command_id().is_none());
     }
 
-    fn flat(name: &str, kind: lsp_types::SymbolKind) -> FlatSymbol {
-        let uri = lsp_types::Uri::from_str("file:///x").unwrap();
-        FlatSymbol {
-            name: name.into(),
-            kind,
-            container: None,
-            location: lsp_types::Location {
-                uri,
-                range: lsp_types::Range::default(),
-            },
-            depth: 0,
-        }
-    }
-
-    #[test]
-    fn symbols_state_set_query_bumps_epoch() {
-        let mut s = SymbolsState::new(SymbolsKind::Surface, None);
-        let initial_epoch = s.epoch;
-        s.set_query("foo".into());
-        assert!(s.epoch > initial_epoch);
-        let after_first = s.epoch;
-        s.set_query("foo".into());
-        assert_eq!(s.epoch, after_first);
-    }
-
-    #[test]
-    fn symbols_state_refilters_by_match_score() {
-        let mut s = SymbolsState::new(SymbolsKind::Document, None);
-        s.set_items(vec![
-            flat("BarStruct", lsp_types::SymbolKind::STRUCT),
-            flat("FooBar", lsp_types::SymbolKind::FUNCTION),
-            flat("Foo", lsp_types::SymbolKind::FUNCTION),
-        ]);
-        s.set_query("Foo".into());
-        let head = s
-            .selected_symbol()
-            .expect("at least one match")
-            .name
-            .as_str();
-        assert!(head == "Foo" || head == "FooBar", "got {head}");
-    }
-
     #[test]
     fn palette_pane_arrow_keys_move_selection_and_consume() {
         let mut p = PalettePane::from_registry(&reg());
@@ -1166,20 +469,6 @@ mod tests {
     }
 
     #[test]
-    fn symbol_picker_workspace_typing_signals_refetch() {
-        let mut sp = SymbolPickerPane::new(SymbolsKind::Surface, None);
-        sp.handle_key(KeyCode::Char('f'), KeyModifiers::NONE);
-        assert_eq!(sp.drain_outcome(), ModalOutcome::Refetch);
-    }
-
-    #[test]
-    fn symbol_picker_document_typing_does_not_refetch() {
-        let mut sp = SymbolPickerPane::new(SymbolsKind::Document, None);
-        sp.handle_key(KeyCode::Char('f'), KeyModifiers::NONE);
-        assert_eq!(sp.drain_outcome(), ModalOutcome::None);
-    }
-
-    #[test]
     fn format_chord_letter() {
         let c = Chord::new(KeyCode::Char('p'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
         assert_eq!(format_chord(c), "Ctrl+Shift+P");
@@ -1189,78 +478,5 @@ mod tests {
     fn format_chord_named() {
         let c = Chord::new(KeyCode::PageUp, KeyModifiers::CONTROL);
         assert_eq!(format_chord(c), "Ctrl+PgUp");
-    }
-
-    fn settings_reg() -> CommandRegistry {
-        let mut r = CommandRegistry::new();
-        for (id, label, cat) in [
-            ("file.save", "Save", Some("File")),
-            ("edit.undo", "Undo", Some("Edit")),
-            ("edit.redo", "Redo", Some("Edit")),
-            ("app.quit", "Quit", Some("App")),
-        ] {
-            r.register(Command {
-                id: CommandId(id),
-                label,
-                category: cat,
-                action: Arc::new(Quit),
-            });
-        }
-        r
-    }
-
-    #[test]
-    fn settings_state_inserts_a_header_per_distinct_category() {
-        let s = SettingsState::from_registry(&settings_reg());
-        let headers: Vec<_> = s
-            .rows()
-            .iter()
-            .filter_map(|r| match r {
-                SettingsRow::Header(name) => Some(name.as_str()),
-                _ => None,
-            })
-            .collect();
-        // Three categories (File, Edit, App) → three headers, in
-        // registration order. Edit's two commands share the same header.
-        assert_eq!(headers, vec!["File", "Edit", "App"]);
-    }
-
-    #[test]
-    fn settings_state_initial_selection_skips_first_header() {
-        let s = SettingsState::from_registry(&settings_reg());
-        assert!(matches!(s.rows()[s.selected()], SettingsRow::Command(_)));
-    }
-
-    #[test]
-    fn settings_state_move_selection_skips_headers_and_wraps() {
-        let mut s = SettingsState::from_registry(&settings_reg());
-        // Walk forward through every command row; each step must land
-        // on a `Command`, never on a `Header`.
-        for _ in 0..10 {
-            s.move_selection(1);
-            assert!(
-                matches!(s.rows()[s.selected()], SettingsRow::Command(_)),
-                "selection landed on a header at idx {}",
-                s.selected(),
-            );
-        }
-    }
-
-    #[test]
-    fn settings_pane_esc_signals_dismiss() {
-        let mut p = SettingsPane::from_registry(&settings_reg());
-        let r = p.handle_key(KeyCode::Esc, KeyModifiers::NONE);
-        assert_eq!(r, Outcome::Consumed);
-        assert_eq!(p.drain_outcome(), ModalOutcome::Dismiss);
-    }
-
-    #[test]
-    fn settings_pane_arrow_keys_move_and_consume() {
-        let mut p = SettingsPane::from_registry(&settings_reg());
-        let initial = p.state.selected();
-        let r = p.handle_key(KeyCode::Down, KeyModifiers::NONE);
-        assert_eq!(r, Outcome::Consumed);
-        assert_ne!(p.state.selected(), initial);
-        assert_eq!(p.drain_outcome(), ModalOutcome::None);
     }
 }

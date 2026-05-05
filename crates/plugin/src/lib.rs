@@ -844,10 +844,8 @@ impl LuaAction {
 }
 
 impl<'a> Action<Context<'a>> for LuaAction {
-    fn invoke(&self, ctx: &mut Context<'a>) {
-        if self.sender.send(self.handle).is_err() {
-            ctx.status.set("plugin host has gone away");
-        }
+    fn invoke(&self, _ctx: &mut Context<'a>) {
+        let _ = self.sender.send(self.handle);
     }
 }
 

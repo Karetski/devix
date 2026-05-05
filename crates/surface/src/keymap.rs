@@ -127,17 +127,6 @@ pub fn default_keymap() -> Keymap {
     // Command palette
     k.bind_command(chord(ch('p'), C),                       cmd_id::PALETTE_OPEN);
 
-    // Settings (read-only browser over registered commands + bound chords;
-    // future sections cover theme + plugins).
-    k.bind_command(chord(ch(','), C),                       cmd_id::SETTINGS_OPEN);
-
-    // Language server
-    k.bind_command(chord(ch('i'), C),                       cmd_id::LSP_HOVER);
-    k.bind_command(chord(KeyCode::F(12), NONE),             cmd_id::LSP_GOTO_DEFINITION);
-    k.bind_command(chord(ch(' '), C),                       cmd_id::LSP_COMPLETION_TRIGGER);
-    k.bind_command(chord(ch('o'), C),                       cmd_id::LSP_DOCUMENT_SYMBOLS);
-    k.bind_command(chord(ch('o'), C | S),                   cmd_id::LSP_WORKSPACE_SYMBOLS);
-
     // ---- direct actions (continuous; not registry commands) ----
     // Motion — both extend variants per chord
     for &(extend, sm) in &[(false, NONE), (true, S)] {

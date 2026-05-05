@@ -30,20 +30,17 @@ pub fn drain_disk_events(app: &mut App) {
         .active_view()
         .map(|v| v.doc);
 
-    let mut active_dirty = false;
     for did in &affected {
         let doc = &mut app.surface.documents[*did];
         if doc.buffer.dirty() {
             doc.disk_changed_pending = true;
-            if Some(*did) == active_doc_id { active_dirty = true; }
         } else if Some(*did) == active_doc_id {
             // Active, clean: auto-reload via the standard action flow.
             run_command(app, Arc::new(cmd::ReloadFromDisk));
         } else {
-            // Background, clean: silently reload now (no prompt to show).
-            // Routes through Document so tree-sitter reparses and LSP gets a
-            // full-text resync — bypassing this and touching the buffer
-            // directly leaves stale highlight spans and a desynced server.
+            // Background, clean: silently reload now. Routes through
+            // Document so tree-sitter reparses; bypassing this leaves
+            // stale highlight spans.
             if app.surface.documents[*did].reload_from_disk().is_ok() {
                 let max = app.surface.documents[*did].buffer.len_chars();
                 for view in app.surface.views.values_mut() {
@@ -52,12 +49,8 @@ pub fn drain_disk_events(app: &mut App) {
                     }
                 }
             }
-            // On error, leave the buffer alone; nothing to surface.
         }
     }
 
-    if active_dirty {
-        app.status.set("Disk changed (buffer modified) · Ctrl+R reload, Ctrl+K keep");
-    }
     app.dirty = true;
 }

@@ -5,15 +5,6 @@ use ratatui::layout::Rect;
 use crate::command::CommandRegistry;
 use crate::surface::Surface;
 
-#[derive(Default)]
-pub struct StatusLine(Option<String>);
-
-impl StatusLine {
-    pub fn set(&mut self, s: impl Into<String>) { self.0 = Some(s.into()); }
-    pub fn clear(&mut self) { self.0 = None; }
-    pub fn get(&self) -> Option<&str> { self.0.as_deref() }
-}
-
 #[derive(Copy, Clone, Default)]
 pub struct Viewport {
     pub x: u16,
@@ -38,7 +29,6 @@ impl From<(Rect, u16)> for Viewport {
 pub struct Context<'a> {
     pub surface: &'a mut Surface,
     pub clipboard: &'a mut Option<arboard::Clipboard>,
-    pub status: &'a mut StatusLine,
     pub quit: &'a mut bool,
     pub viewport: Viewport,
     pub commands: &'a CommandRegistry,

@@ -4,7 +4,7 @@
 use devix_text::{Range, Selection, Transaction};
 use slotmap::new_key_type;
 
-use devix_editor::{CompletionState, DocId, HoverState};
+use devix_editor::DocId;
 
 new_key_type! { pub struct ViewId; }
 
@@ -32,16 +32,6 @@ pub struct View {
     /// applies layout-aware clamping via `devix_ui::layout` free functions.
     pub scroll: (u32, u32),
     pub scroll_mode: ScrollMode,
-    /// Active hover popup state, or `None` when no hover is in flight or
-    /// being shown. Cleared on cursor motion / edit (the dispatcher resets
-    /// this anywhere `target_col` is reset).
-    pub hover: Option<HoverState>,
-    /// Active completion popup, or `None` when no popup is in flight or
-    /// shown. Survives prefix-extending insertions (the popup re-filters
-    /// against the typed prefix); dismissed on cursor motion outside the
-    /// query span, on Esc, on accept, or on edits that aren't simple
-    /// trailing inserts/backspaces.
-    pub completion: Option<CompletionState>,
 }
 
 impl View {
@@ -52,8 +42,6 @@ impl View {
             target_col: None,
             scroll: (0, 0),
             scroll_mode: ScrollMode::Anchored,
-            hover: None,
-            completion: None,
         }
     }
 
@@ -76,28 +64,15 @@ impl View {
         if !sticky_col {
             self.target_col = None;
         }
-        // Any motion dismisses an open hover popup. Even within the same
-        // logical position, the user's intent on pressing a motion key is
-        // "move on", and an anchored popup would feel sticky.
-        self.hover = None;
-        // Cursor-key motion also dismisses completion. Typing-driven motion
-        // (InsertChar / DeleteBack) bypasses move_to and refilters instead.
-        self.completion = None;
-        // Cursor moved → next render must keep the cursor on screen. Wheel
-        // scrolls flip back to Free, so a deliberate scroll that's then
-        // followed by a key press doesn't get stuck in Free.
         self.scroll_mode = ScrollMode::Anchored;
     }
 
     /// Replace the selection and reset transient view state (sticky col,
-    /// hover, completion, scroll mode). Used by jump-style updates (undo,
-    /// redo, select-all, completion-accept) where the new position has no
-    /// continuity with prior state.
+    /// scroll mode). Used by jump-style updates (undo, redo, select-all)
+    /// where the new position has no continuity with prior state.
     pub fn adopt_selection(&mut self, sel: Selection) {
         self.selection = sel;
         self.target_col = None;
-        self.hover = None;
-        self.completion = None;
         self.scroll_mode = ScrollMode::Anchored;
     }
 

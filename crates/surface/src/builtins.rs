@@ -6,8 +6,6 @@
 
 use std::sync::Arc;
 
-use devix_lsp::CompletionTrigger;
-
 use crate::cmd::{self, EditorCommand};
 use crate::command::{Command, CommandId, CommandRegistry};
 use crate::layout::SidebarSlot;
@@ -46,15 +44,6 @@ pub const SIDEBAR_LEFT:        CommandId = CommandId("sidebar.toggle_left");
 pub const SIDEBAR_RIGHT:       CommandId = CommandId("sidebar.toggle_right");
 
 pub const APP_QUIT:            CommandId = CommandId("app.quit");
-
-pub const SETTINGS_OPEN:       CommandId = CommandId("settings.open");
-pub const SETTINGS_CLOSE:      CommandId = CommandId("settings.close");
-
-pub const LSP_HOVER:                  CommandId = CommandId("lsp.hover");
-pub const LSP_GOTO_DEFINITION:        CommandId = CommandId("lsp.goto_definition");
-pub const LSP_COMPLETION_TRIGGER:     CommandId = CommandId("lsp.completion.trigger");
-pub const LSP_DOCUMENT_SYMBOLS:       CommandId = CommandId("lsp.symbols.document");
-pub const LSP_WORKSPACE_SYMBOLS:      CommandId = CommandId("lsp.symbols.surface");
 
 pub fn register_builtins(reg: &mut CommandRegistry) {
     let r = |reg: &mut CommandRegistry,
@@ -99,15 +88,6 @@ pub fn register_builtins(reg: &mut CommandRegistry) {
     r(reg, SIDEBAR_RIGHT,     "Toggle Right Sidebar",     "View",    Arc::new(cmd::ToggleSidebar(SidebarSlot::Right)));
 
     r(reg, APP_QUIT,          "Quit",                     "App",     Arc::new(cmd::Quit));
-
-    r(reg, SETTINGS_OPEN,     "Open Settings",            "Settings", Arc::new(cmd::OpenSettings));
-    r(reg, SETTINGS_CLOSE,    "Close Settings",           "Settings", Arc::new(cmd::CloseSettings));
-
-    r(reg, LSP_HOVER,                "Show Hover Info",        "Language", Arc::new(cmd::Hover));
-    r(reg, LSP_GOTO_DEFINITION,      "Go to Definition",       "Language", Arc::new(cmd::GotoDefinition));
-    r(reg, LSP_COMPLETION_TRIGGER,   "Trigger Completion",     "Language", Arc::new(cmd::TriggerCompletion(CompletionTrigger::Manual)));
-    r(reg, LSP_DOCUMENT_SYMBOLS,     "Document Symbols",       "Language", Arc::new(cmd::ShowDocumentSymbols));
-    r(reg, LSP_WORKSPACE_SYMBOLS,    "Surface Symbols",      "Language", Arc::new(cmd::ShowWorkspaceSymbols));
 }
 
 pub fn build_registry() -> CommandRegistry {
@@ -126,7 +106,6 @@ mod tests {
         assert!(reg.get(FILE_SAVE).is_some());
         assert!(reg.get(PALETTE_OPEN).is_some());
         assert!(reg.get(SIDEBAR_RIGHT).is_some());
-        // Sanity: no duplicate-id collisions silently shrunk the registry.
         assert!(reg.len() >= 25);
     }
 }

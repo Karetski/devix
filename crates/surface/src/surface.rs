@@ -17,11 +17,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use devix_core::Pane;
-use devix_lsp::LspCommand;
-use lsp_types::PositionEncodingKind;
 use ratatui::layout::Rect;
 use slotmap::SlotMap;
-use tokio::sync::mpsc;
 
 use devix_editor::{DocId, Document};
 use crate::frame::{FrameId, mint_id};
@@ -94,17 +91,6 @@ pub struct Surface {
     pub focus: Vec<usize>,
     pub doc_index: HashMap<PathBuf, DocId>,
     pub render_cache: RenderCache,
-    /// LSP coordinator sink + the encoding it negotiated. Set via
-    /// `attach_lsp` after the App spawns the coordinator. New documents
-    /// created with a recognized language auto-attach; on `None` the
-    /// surface runs without LSP integration.
-    pub(crate) lsp: Option<LspChannel>,
-}
-
-#[derive(Clone)]
-pub(crate) struct LspChannel {
-    pub sink: mpsc::UnboundedSender<LspCommand>,
-    pub encoding: PositionEncodingKind,
 }
 
 impl Surface {
@@ -137,38 +123,7 @@ impl Surface {
             focus,
             doc_index,
             render_cache: RenderCache::default(),
-            lsp: None,
         })
-    }
-
-    /// Wire this surface to an LSP coordinator. Stores the sink and
-    /// triggers `LspCommand::Open` for every existing document with a known
-    /// language. Subsequent `open_path_*` calls auto-attach.
-    ///
-    /// Idempotent in shape but not in side effects — calling twice with
-    /// different sinks would re-open every doc on the new sink (and orphan
-    /// the old one); App doesn't do this.
-    pub fn attach_lsp(
-        &mut self,
-        sink: mpsc::UnboundedSender<LspCommand>,
-        encoding: PositionEncodingKind,
-    ) {
-        self.lsp = Some(LspChannel { sink: sink.clone(), encoding: encoding.clone() });
-        for (_, doc) in self.documents.iter_mut() {
-            doc.attach_lsp(sink.clone(), encoding.clone());
-        }
-    }
-
-    pub(crate) fn lsp_channel(&self) -> Option<LspChannel> {
-        self.lsp.clone()
-    }
-
-    /// Negotiated LSP position encoding, when the surface is attached.
-    /// Exposed so callers outside the surface crate (the App-side event
-    /// drain) can resolve LSP positions against ropes without having to
-    /// pull the private `LspChannel` shape.
-    pub fn lsp_encoding(&self) -> Option<PositionEncodingKind> {
-        self.lsp.as_ref().map(|w| w.encoding.clone())
     }
 
     pub fn active_view(&self) -> Option<&View> {
