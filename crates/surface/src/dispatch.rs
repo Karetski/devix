@@ -8,7 +8,7 @@
 //! delegate to — they're the bits of dispatch logic that benefit from
 //! sharing across multiple commands.
 
-use devix_text::{Buffer, Change, Range, Selection, Transaction, delete_range_tx, replace_selection_tx};
+use devix_text::{Buffer, Change, Range, Selection, Transaction, delete_each_tx, delete_range_tx, replace_selection_tx};
 use devix_lsp::{char_in_rope, position_in_rope};
 use lsp_types::CompletionTextEdit;
 
@@ -48,34 +48,78 @@ pub(crate) fn lsp_position_request(ws: &Surface) -> Option<LspPositionRequest> {
     Some(LspPositionRequest { vid, wiring, uri, position, head })
 }
 
-/// Apply a single-axis motion: pick the new char index from the active
-/// buffer + current head, then `move_to` it. Used by every cursor-key
-/// arm except the vertical pair (which threads `target_col`).
+/// Apply a single-axis motion to every range. The motion sees each
+/// range's head; with `extend`, only the head moves (anchor stays put);
+/// without it, the range collapses to the new head. The post-step
+/// selection is normalized so cursors that landed on the same position
+/// merge.
 pub(crate) fn move_to_with(
     cx: &mut Context<'_>,
     extend: bool,
-    motion: impl FnOnce(&Buffer, usize) -> usize,
+    motion: impl Fn(&Buffer, usize) -> usize,
 ) {
     let Some((_, vid, did)) = cx.surface.active_ids() else { return };
-    let head = cx.surface.views[vid].primary().head;
-    let to = motion(&cx.surface.documents[did].buffer, head);
-    cx.surface.views[vid].move_to(to, extend, false);
+    // Clone-then-write so we can borrow buffer immutably while transforming
+    // the selection. Selection is shallow (Vec of two-usize ranges).
+    let buf = &cx.surface.documents[did].buffer;
+    let mut sel = cx.surface.views[vid].selection.clone();
+    sel.transform(|r| {
+        let to = motion(buf, r.head);
+        r.put_head(to, extend)
+    });
+    sel.normalize();
+    let v = &mut cx.surface.views[vid];
+    v.selection = sel;
+    v.target_col = None;
+    v.hover = None;
+    v.completion = None;
+    v.scroll_mode = ScrollMode::Anchored;
 }
 
+/// Vertical motion. With a single cursor the sticky-column behavior on
+/// `View` keeps repeated Up/Down stable across short lines. With multi
+/// cursor the column is recomputed per-range each call — sticky-col across
+/// many cursors is a polish item, not a correctness one.
 pub(crate) fn move_vertical(cx: &mut Context<'_>, down: bool, extend: bool) {
     let Some((_, vid, did)) = cx.surface.active_ids() else { return };
-    let head = cx.surface.views[vid].primary().head;
-    let col = cx.surface.views[vid]
-        .target_col
-        .unwrap_or_else(|| cx.surface.documents[did].buffer.col_of_char(head));
-    let new = if down {
-        cx.surface.documents[did].buffer.move_down(head, Some(col))
+    let buf = &cx.surface.documents[did].buffer;
+    let single = !cx.surface.views[vid].selection.is_multi();
+    let sticky = cx.surface.views[vid].target_col;
+    let mut sel = cx.surface.views[vid].selection.clone();
+
+    // Track the primary's resolved column so the View's sticky col stays
+    // attached to the primary cursor (most-natural behavior — the cursor
+    // the user is "leading with" keeps the snap line).
+    let primary_idx = sel.primary_index();
+    let primary_col_for_sticky = if single {
+        Some(sticky.unwrap_or_else(|| buf.col_of_char(sel.primary().head)))
     } else {
-        cx.surface.documents[did].buffer.move_up(head, Some(col))
+        None
     };
+
+    let mut i = 0usize;
+    sel.transform(|r| {
+        let col = if i == primary_idx {
+            primary_col_for_sticky.unwrap_or_else(|| buf.col_of_char(r.head))
+        } else {
+            buf.col_of_char(r.head)
+        };
+        let new = if down {
+            buf.move_down(r.head, Some(col))
+        } else {
+            buf.move_up(r.head, Some(col))
+        };
+        i += 1;
+        r.put_head(new, extend)
+    });
+    sel.normalize();
+
     let v = &mut cx.surface.views[vid];
-    v.target_col = Some(col);
-    v.move_to(new, extend, true);
+    v.selection = sel;
+    v.target_col = primary_col_for_sticky;
+    v.hover = None;
+    v.completion = None;
+    v.scroll_mode = ScrollMode::Anchored;
 }
 
 pub(crate) fn replace_selection(cx: &mut Context<'_>, text: &str) {
@@ -93,24 +137,28 @@ pub(crate) fn replace_selection(cx: &mut Context<'_>, text: &str) {
     cx.status.clear();
 }
 
-pub(crate) fn delete_primary_or(
+/// Per-range delete. For each range: if non-empty, delete its span; if
+/// empty (point cursor), call `builder` to compute a 1-char-or-word span
+/// to delete (returning `None` skips that range — used at doc start/end).
+/// All resulting changes are bundled into one transaction so an undo
+/// reverts every cursor's deletion in one step.
+pub(crate) fn delete_each_or(
     cx: &mut Context<'_>,
-    builder: impl FnOnce(&Buffer, usize) -> Option<(usize, usize)>,
+    builder: impl Fn(&Buffer, usize) -> Option<(usize, usize)>,
 ) {
     let Some((_, vid, did)) = cx.surface.active_ids() else { return };
-    let prim = cx.surface.views[vid].primary();
-    let (start, end) = if !prim.is_empty() {
-        (prim.start(), prim.end())
-    } else {
-        let Some(span) = builder(&cx.surface.documents[did].buffer, prim.head) else { return };
-        if span.0 == span.1 { return; }
-        span
-    };
-    let tx = delete_range_tx(
-        &cx.surface.documents[did].buffer,
-        &cx.surface.views[vid].selection,
-        start, end,
-    );
+    let buf = &cx.surface.documents[did].buffer;
+    let sel = cx.surface.views[vid].selection.clone();
+    let tx = delete_each_tx(&sel, |r| {
+        if !r.is_empty() {
+            return Some((r.start(), r.end()));
+        }
+        let span = builder(buf, r.head)?;
+        if span.0 == span.1 { None } else { Some(span) }
+    });
+    if tx.changes.is_empty() {
+        return;
+    }
     let after = tx.selection_after.clone();
     cx.surface.documents[did].apply_tx(tx);
     let v = &mut cx.surface.views[vid];
@@ -121,7 +169,7 @@ pub(crate) fn delete_primary_or(
 
 /// Reset transient view state shared with `adopt_selection` *minus* the
 /// completion popup. Used by edit helpers (`replace_selection`,
-/// `delete_primary_or`) where the caller (InsertChar / DeleteBack) wants
+/// `delete_each_or`) where the caller (InsertChar / DeleteBack) wants
 /// to preserve completion across the edit and re-filter it afterward.
 fn reset_motion_state(v: &mut View) {
     v.target_col = None;

@@ -296,21 +296,23 @@ impl Buffer {
 // ---------------------------------------------------------------------------
 
 /// Build a transaction that, for each range in `before`, deletes the range's
-/// span and inserts `text` at its start. The resulting selection collapses
-/// each range to the end of its inserted text.
+/// span and inserts `text` at its start. Each range collapses to a point at
+/// the end of its inserted text. The primary tracks the input primary; the
+/// result is normalized so post-edit cursors that land at the same position
+/// merge.
 pub fn replace_selection_tx(_buf: &Buffer, before: &Selection, text: &str) -> Transaction {
     let mut changes = Vec::with_capacity(before.ranges().len());
-    let mut new_ranges: Vec<Range> = Vec::with_capacity(before.ranges().len());
+    let mut new_ranges: Vec<Range> = vec![Range::point(0); before.ranges().len()];
     let insert_chars = text.chars().count();
 
-    // ranges() are not guaranteed sorted in general, but Phase 2 only emits
-    // ascending single-range selections. Sort defensively in case multi-cursor
-    // arrives later.
+    // ranges() are not guaranteed sorted in general; sort by start so changes
+    // come out ascending (Transaction's contract). The original index threads
+    // through so `selection_after`'s primary still points at whichever range
+    // was the input primary.
     let mut ordered: Vec<(usize, Range)> = before.ranges().iter().copied().enumerate().collect();
     ordered.sort_by_key(|(_, r)| r.start());
 
     let mut net_shift: isize = 0;
-    let mut head_by_orig: Vec<(usize, usize)> = Vec::with_capacity(ordered.len());
     for (orig_idx, r) in &ordered {
         let start = r.start();
         let remove_len = r.len();
@@ -320,25 +322,17 @@ pub fn replace_selection_tx(_buf: &Buffer, before: &Selection, text: &str) -> Tr
             insert: text.to_string(),
         });
         let new_head = (start as isize + net_shift) as usize + insert_chars;
-        head_by_orig.push((*orig_idx, new_head));
+        new_ranges[*orig_idx] = Range::point(new_head);
         net_shift += insert_chars as isize - remove_len as isize;
     }
 
-    head_by_orig.sort_by_key(|(idx, _)| *idx);
-    for (_, head) in head_by_orig {
-        new_ranges.push(Range::point(head));
-    }
-    let after = Selection::single(new_ranges[before.primary_index()]);
-    // Promote first to primary for now; multi-range will need richer tracking.
-    let _ = new_ranges;
+    let after = Selection::with_ranges(new_ranges, before.primary_index());
 
     Transaction {
         changes,
         selection_before: before.clone(),
         selection_after: after,
     }
-    // Note: when multi-range edits land, build `after` from `new_ranges`, not
-    // just the primary. For now Phase 2 only ever has one range.
 }
 
 /// Delete `[start, end)` in chars and place the cursor at `start`.
@@ -350,6 +344,70 @@ pub fn delete_range_tx(_buf: &Buffer, before: &Selection, start: usize, end: usi
             remove_len: end - start,
             insert: String::new(),
         }],
+        selection_before: before.clone(),
+        selection_after: after,
+    }
+}
+
+/// Build a delete-only transaction with one change per range. `span_for`
+/// returns the pre-edit `(start, end)` to delete for each range, or `None`
+/// to leave that range in place. Empty ranges (point cursors) typically
+/// supply a 1-char span (Backspace, Delete); non-empty ranges supply
+/// their own bounds (cut). Spans must not overlap; the caller is
+/// responsible for that. Each input range maps to a point cursor at the
+/// post-shift start of its deletion (or its original head for `None`).
+pub fn delete_each_tx(
+    before: &Selection,
+    span_for: impl Fn(Range) -> Option<(usize, usize)>,
+) -> Transaction {
+    /// Per-range plan: original index, the range itself, and the span
+    /// (if any) to delete from it. Inlined as a struct so the working
+    /// vector type stays readable.
+    struct Plan {
+        orig_idx: usize,
+        range: Range,
+        span: Option<(usize, usize)>,
+    }
+    let n = before.ranges().len();
+    let mut per_range: Vec<Plan> = before
+        .ranges()
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(orig_idx, range)| Plan { orig_idx, range, span: span_for(range) })
+        .collect();
+    // Sort by the deletion start (or head for None entries) so changes go out
+    // ascending and net_shift accumulates left-to-right.
+    per_range.sort_by_key(|p| p.span.map(|(s, _)| s).unwrap_or(p.range.head));
+
+    let mut changes: Vec<Change> = Vec::with_capacity(n);
+    let mut new_ranges: Vec<Range> = vec![Range::point(0); n];
+    let mut net_shift: isize = 0;
+    for plan in per_range {
+        match plan.span {
+            Some((s, e)) if e > s => {
+                let remove_len = e - s;
+                changes.push(Change {
+                    start: s,
+                    remove_len,
+                    insert: String::new(),
+                });
+                let new_head = (s as isize + net_shift) as usize;
+                new_ranges[plan.orig_idx] = Range::point(new_head);
+                net_shift -= remove_len as isize;
+            }
+            _ => {
+                // No deletion for this range — its head shifts only by edits
+                // that started strictly before it.
+                let new_head = (plan.range.head as isize + net_shift) as usize;
+                new_ranges[plan.orig_idx] = Range::point(new_head);
+            }
+        }
+    }
+
+    let after = Selection::with_ranges(new_ranges, before.primary_index());
+    Transaction {
+        changes,
         selection_before: before.clone(),
         selection_after: after,
     }

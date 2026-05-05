@@ -96,6 +96,15 @@ pub fn render_editor(view: EditorView<'_>, area: Rect, frame: &mut Frame<'_>) ->
         frame.buffer_mut(),
     );
 
+    paint_extra_cursors(
+        view.buffer,
+        view.selection,
+        area,
+        gutter_width,
+        scroll_top,
+        frame.buffer_mut(),
+    );
+
     paint_diagnostics(
         view.diagnostics,
         area,
@@ -365,6 +374,44 @@ fn paint_line_span(
 // rendering would go. Keeps `Range` import meaningful when we extend.
 #[allow(dead_code)]
 fn paint_zero_width(_r: Range) {}
+
+/// Paint the head of every non-primary cursor as a reverse-video block.
+/// The terminal can place exactly one real cursor (the primary, via
+/// `Frame::set_cursor_position`); everything else gets a visible block so
+/// the user can still see where their cursors are. Empty ranges only —
+/// non-empty selection ranges already render via `paint_selection`.
+fn paint_extra_cursors(
+    buffer: &Buffer,
+    selection: &Selection,
+    area: Rect,
+    gutter_width: u16,
+    scroll_top: usize,
+    target: &mut RatBuffer,
+) {
+    if !selection.is_multi() {
+        return;
+    }
+    let visible_rows = area.height as usize;
+    let view_end = scroll_top.saturating_add(visible_rows);
+    let primary_idx = selection.primary_index();
+    let max_x = area.x + area.width;
+    let text_x = area.x + gutter_width;
+    let style = Style::default().add_modifier(Modifier::REVERSED);
+
+    for (i, range) in selection.ranges().iter().enumerate() {
+        if i == primary_idx { continue; }
+        if !range.is_empty() { continue; }
+        let line = buffer.line_of_char(range.head);
+        if line < scroll_top || line >= view_end { continue; }
+        let col = buffer.col_of_char(range.head);
+        let y = area.y + (line - scroll_top) as u16;
+        let x = text_x.saturating_add(col as u16);
+        if x >= max_x || y >= area.y + area.height { continue; }
+        if let Some(cell) = target.cell_mut((x, y)) {
+            cell.set_style(style);
+        }
+    }
+}
 
 /// Paint diagnostic ranges as colored underlines on the visible viewport.
 /// Multi-line diagnostics are flattened: each line in the range gets the

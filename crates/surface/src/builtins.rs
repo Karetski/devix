@@ -28,6 +28,9 @@ pub const EDIT_SELECT_ALL:     CommandId = CommandId("edit.select_all");
 pub const EDIT_COPY:           CommandId = CommandId("edit.copy");
 pub const EDIT_CUT:            CommandId = CommandId("edit.cut");
 pub const EDIT_PASTE:          CommandId = CommandId("edit.paste");
+pub const EDIT_ADD_CURSOR_ABOVE:  CommandId = CommandId("edit.add_cursor_above");
+pub const EDIT_ADD_CURSOR_BELOW:  CommandId = CommandId("edit.add_cursor_below");
+pub const EDIT_COLLAPSE_SELECTION: CommandId = CommandId("edit.collapse_selection");
 
 pub const TAB_NEW:             CommandId = CommandId("tab.new");
 pub const TAB_CLOSE:           CommandId = CommandId("tab.close");
@@ -75,6 +78,9 @@ pub fn register_builtins(reg: &mut CommandRegistry) {
     r(reg, EDIT_COPY,         "Copy",                     "Edit",    Arc::new(cmd::Copy));
     r(reg, EDIT_CUT,          "Cut",                      "Edit",    Arc::new(cmd::Cut));
     r(reg, EDIT_PASTE,        "Paste",                    "Edit",    Arc::new(cmd::Paste));
+    r(reg, EDIT_ADD_CURSOR_ABOVE,    "Add Cursor Above",   "Edit",    Arc::new(cmd::AddCursorAbove));
+    r(reg, EDIT_ADD_CURSOR_BELOW,    "Add Cursor Below",   "Edit",    Arc::new(cmd::AddCursorBelow));
+    r(reg, EDIT_COLLAPSE_SELECTION,  "Collapse Selection", "Edit",    Arc::new(cmd::CollapseSelection));
 
     r(reg, TAB_NEW,           "New Tab",                  "Tab",     Arc::new(cmd::NewTab));
     r(reg, TAB_CLOSE,         "Close Tab",                "Tab",     Arc::new(cmd::CloseTab));

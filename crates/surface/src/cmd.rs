@@ -483,7 +483,7 @@ impl<'a> Action<Context<'a>> for DeleteBack {
         } else {
             None
         };
-        crate::dispatch::delete_primary_or(ctx, |buf, head| {
+        crate::dispatch::delete_each_or(ctx, |buf, head| {
             if head == 0 {
                 return None;
             }
@@ -504,7 +504,7 @@ impl<'a> Action<Context<'a>> for DeleteForward {
     fn invoke(&self, ctx: &mut Context<'a>) {
         let word = self.word;
         crate::dispatch::dismiss_completion(ctx);
-        crate::dispatch::delete_primary_or(ctx, |buf, head| {
+        crate::dispatch::delete_each_or(ctx, |buf, head| {
             let len = buf.len_chars();
             if head >= len {
                 return None;
@@ -512,6 +512,74 @@ impl<'a> Action<Context<'a>> for DeleteForward {
             let end = if word { buf.word_right(head) } else { head + 1 };
             Some((head, end))
         });
+    }
+}
+
+// --- Multi-cursor ---------------------------------------------------------
+
+/// Add a point cursor one line above the primary head, at the same column
+/// (clamped to the new line's width). Repeated presses extend upward
+/// because `push_range` makes the new range the primary.
+pub struct AddCursorAbove;
+impl<'a> Action<Context<'a>> for AddCursorAbove {
+    fn invoke(&self, ctx: &mut Context<'a>) {
+        let Some((_, vid, did)) = ctx.surface.active_ids() else { return };
+        let buf = &ctx.surface.documents[did].buffer;
+        let head = ctx.surface.views[vid].primary().head;
+        let line = buf.line_of_char(head);
+        if line == 0 { return; }
+        let col = buf.col_of_char(head);
+        let new_line = line - 1;
+        let new_col = col.min(buf.line_len_chars(new_line));
+        let new_head = buf.line_start(new_line) + new_col;
+        let v = &mut ctx.surface.views[vid];
+        v.selection.push_range(devix_text::Range::point(new_head));
+        v.target_col = None;
+        v.hover = None;
+        v.completion = None;
+        v.scroll_mode = crate::view::ScrollMode::Anchored;
+    }
+}
+
+pub struct AddCursorBelow;
+impl<'a> Action<Context<'a>> for AddCursorBelow {
+    fn invoke(&self, ctx: &mut Context<'a>) {
+        let Some((_, vid, did)) = ctx.surface.active_ids() else { return };
+        let buf = &ctx.surface.documents[did].buffer;
+        let head = ctx.surface.views[vid].primary().head;
+        let line = buf.line_of_char(head);
+        let max_line = buf.line_count().saturating_sub(1);
+        if line >= max_line { return; }
+        let col = buf.col_of_char(head);
+        let new_line = line + 1;
+        let new_col = col.min(buf.line_len_chars(new_line));
+        let new_head = buf.line_start(new_line) + new_col;
+        let v = &mut ctx.surface.views[vid];
+        v.selection.push_range(devix_text::Range::point(new_head));
+        v.target_col = None;
+        v.hover = None;
+        v.completion = None;
+        v.scroll_mode = crate::view::ScrollMode::Anchored;
+    }
+}
+
+/// Esc-equivalent: drop secondary cursors back to the primary. With a
+/// single, non-empty range, collapse it to a point at the head — same
+/// "press Esc to deselect" UX modern editors share.
+pub struct CollapseSelection;
+impl<'a> Action<Context<'a>> for CollapseSelection {
+    fn invoke(&self, ctx: &mut Context<'a>) {
+        let Some((_, vid, _)) = ctx.surface.active_ids() else { return };
+        let v = &mut ctx.surface.views[vid];
+        if v.selection.is_multi() {
+            v.selection.collapse_to_primary();
+        } else {
+            v.selection.collapse();
+        }
+        v.target_col = None;
+        v.hover = None;
+        v.completion = None;
+        v.scroll_mode = crate::view::ScrollMode::Anchored;
     }
 }
 
@@ -854,6 +922,113 @@ mod tests {
                 .unwrap_or(false),
             "modal slot should hold a PalettePane",
         );
+    }
+
+    fn surface_with_text(text: &str) -> Surface {
+        use devix_text::{Selection, replace_selection_tx};
+        let mut ws = Surface::open(None).unwrap();
+        let did = ws.active_view().unwrap().doc;
+        let tx = replace_selection_tx(&ws.documents[did].buffer, &Selection::point(0), text);
+        ws.documents[did].buffer.apply(tx);
+        let vid = ws.active_ids().unwrap().1;
+        // Place primary at start so AddCursorBelow lands inside the buffer.
+        ws.views[vid].selection = Selection::point(0);
+        ws
+    }
+
+    #[test]
+    fn add_cursor_below_inserts_at_each_cursor() {
+        let mut ws = surface_with_text("aa\nbb\ncc");
+        let mut clipboard = None;
+        let mut status = StatusLine::default();
+        let mut quit = false;
+        let commands = CommandRegistry::default();
+        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut status, &mut quit, &commands);
+        AddCursorBelow.invoke(&mut ctx);
+        AddCursorBelow.invoke(&mut ctx);
+        // Now three point cursors at start of lines 0, 1, 2.
+        InsertChar('x').invoke(&mut ctx);
+        let did = ws.active_view().unwrap().doc;
+        assert_eq!(ws.documents[did].buffer.rope().to_string(), "xaa\nxbb\nxcc");
+        // All three cursors survived and advanced past the inserted char.
+        let vid = ws.active_ids().unwrap().1;
+        let sel = &ws.views[vid].selection;
+        assert_eq!(sel.len(), 3);
+        for r in sel.ranges() {
+            let buf = &ws.documents[did].buffer;
+            assert_eq!(buf.col_of_char(r.head), 1);
+        }
+    }
+
+    #[test]
+    fn add_cursor_above_at_line_zero_is_noop() {
+        let mut ws = surface_with_text("aa\nbb");
+        let mut clipboard = None;
+        let mut status = StatusLine::default();
+        let mut quit = false;
+        let commands = CommandRegistry::default();
+        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut status, &mut quit, &commands);
+        AddCursorAbove.invoke(&mut ctx);
+        let vid = ws.active_ids().unwrap().1;
+        assert_eq!(ws.views[vid].selection.len(), 1);
+    }
+
+    #[test]
+    fn motion_transforms_every_cursor() {
+        let mut ws = surface_with_text("aaaa\nbbbb");
+        let mut clipboard = None;
+        let mut status = StatusLine::default();
+        let mut quit = false;
+        let commands = CommandRegistry::default();
+        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut status, &mut quit, &commands);
+        AddCursorBelow.invoke(&mut ctx);
+        // Two cursors at line 0 col 0 and line 1 col 0.
+        MoveRight { extend: false }.invoke(&mut ctx);
+        MoveRight { extend: false }.invoke(&mut ctx);
+        let vid = ws.active_ids().unwrap().1;
+        let did = ws.views[vid].doc;
+        let buf = &ws.documents[did].buffer;
+        let cols: Vec<usize> = ws.views[vid]
+            .selection
+            .ranges()
+            .iter()
+            .map(|r| buf.col_of_char(r.head))
+            .collect();
+        assert_eq!(cols, vec![2, 2]);
+    }
+
+    #[test]
+    fn delete_back_removes_one_char_per_cursor() {
+        let mut ws = surface_with_text("aa\nbb");
+        let vid0 = ws.active_ids().unwrap().1;
+        // Set both cursors at end of each line.
+        ws.views[vid0].selection = devix_text::Selection::with_ranges(
+            vec![devix_text::Range::point(2), devix_text::Range::point(5)],
+            0,
+        );
+        let mut clipboard = None;
+        let mut status = StatusLine::default();
+        let mut quit = false;
+        let commands = CommandRegistry::default();
+        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut status, &mut quit, &commands);
+        DeleteBack { word: false }.invoke(&mut ctx);
+        let did = ws.active_view().unwrap().doc;
+        assert_eq!(ws.documents[did].buffer.rope().to_string(), "a\nb");
+    }
+
+    #[test]
+    fn collapse_selection_drops_secondary_cursors() {
+        let mut ws = surface_with_text("aa\nbb\ncc");
+        let mut clipboard = None;
+        let mut status = StatusLine::default();
+        let mut quit = false;
+        let commands = CommandRegistry::default();
+        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut status, &mut quit, &commands);
+        AddCursorBelow.invoke(&mut ctx);
+        AddCursorBelow.invoke(&mut ctx);
+        CollapseSelection.invoke(&mut ctx);
+        let vid = ws.active_ids().unwrap().1;
+        assert_eq!(ws.views[vid].selection.len(), 1);
     }
 
     #[test]

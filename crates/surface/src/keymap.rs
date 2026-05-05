@@ -105,6 +105,7 @@ pub fn default_keymap() -> Keymap {
     k.bind_command(chord(ch('x'), C),                       cmd_id::EDIT_CUT);
     k.bind_command(chord(ch('v'), C),                       cmd_id::EDIT_PASTE);
 
+
     k.bind_command(chord(ch('t'), C),                       cmd_id::TAB_NEW);
     k.bind_command(chord(ch('w'), C),                       cmd_id::TAB_CLOSE);
     k.bind_command(chord(ch('w'), C | S),                   cmd_id::TAB_FORCE_CLOSE);
@@ -183,10 +184,17 @@ pub fn default_keymap() -> Keymap {
     // chord-bound place that uses the slot enum.
     let _ = SidebarSlot::Left;
 
-    // Reserved (Phase 7 multicursor):
-    //   Shift + Ctrl + Up   → MulticursorAddAbove
-    //   Shift + Ctrl + Down → MulticursorAddBelow
-    // These chords currently fall through to MoveUp/MoveDown { extend: true }.
+    // Multi-cursor.
+    //
+    // `Shift+Ctrl+Up/Down` overrides the `MoveDocStart/End { extend: true }`
+    // bindings the loop above installed for those chords — extend-to-doc
+    // is still reachable via `Shift+Ctrl+Home/End`, which is the standard
+    // cross-platform chord. `Esc` collapses multi-cursor back to primary
+    // (and an active selection to a point) when no completion or modal is
+    // intercepting it.
+    k.bind_command(chord(KeyCode::Up,   C | S),             cmd_id::EDIT_ADD_CURSOR_ABOVE);
+    k.bind_command(chord(KeyCode::Down, C | S),             cmd_id::EDIT_ADD_CURSOR_BELOW);
+    k.bind_command(chord(KeyCode::Esc, NONE),               cmd_id::EDIT_COLLAPSE_SELECTION);
 
     k
 }
