@@ -9,8 +9,9 @@ pub mod status;
 pub mod tabstrip;
 
 pub use popup::{CompletionLine, Popup, PopupAnchor, PopupContent, render_popup};
-pub use sidebar::{SidebarInfo, render_sidebar};
-pub use status::{StatusInfo, render_status};
+pub use sidebar::{SidebarInfo, SidebarPane, render_sidebar};
+pub use status::{StatusInfo, StatusPane, render_status};
 pub use tabstrip::{
-    MIN_TAB_WIDTH, TabHit, TabInfo, TabStripRender, layout_tabstrip, render_tabstrip,
+    MIN_TAB_WIDTH, TabHit, TabInfo, TabStripPane, TabStripRender, layout_tabstrip,
+    render_tabstrip, tab_strip_layout,
 };

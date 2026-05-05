@@ -7,14 +7,13 @@ use anyhow::Result;
 use crossterm::event;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
-use devix_config::Theme;
+use devix_core::Theme;
 use devix_workspace::{
-    Action, CommandRegistry, Keymap, Overlay, StatusLine, Workspace, build_registry,
-    default_keymap,
+    CommandRegistry, Keymap, StatusLine, Workspace, build_registry, default_keymap,
 };
 
 use crate::clipboard;
-use crate::events::{handle_event, run_action};
+use crate::events::{handle_event, run_command};
 use crate::lsp::{LspWiring, drain_lsp_events, setup_lsp};
 use crate::render::render;
 use crate::watcher::drain_disk_events;
@@ -24,7 +23,6 @@ pub struct App {
     pub commands: CommandRegistry,
     pub keymap: Keymap,
     pub theme: Theme,
-    pub overlay: Option<Overlay>,
     pub status: StatusLine,
     pub quit: bool,
     pub clipboard: Option<arboard::Clipboard>,
@@ -59,7 +57,6 @@ impl App {
             commands: build_registry(),
             keymap: default_keymap(),
             theme: Theme::default(),
-            overlay: None,
             status: StatusLine::default(),
             quit: false,
             clipboard,
@@ -96,7 +93,7 @@ pub fn run<B: Backend>(terminal: &mut Terminal<B>, path: Option<PathBuf>) -> Res
 
         if app.pending_scroll != 0 {
             let delta = std::mem::take(&mut app.pending_scroll);
-            run_action(&mut app, Action::ScrollBy(delta));
+            run_command(&mut app, std::sync::Arc::new(devix_workspace::cmd::ScrollBy(delta)));
         }
     }
     Ok(())

@@ -1,8 +1,9 @@
 [package]
-name = "devix-config"
-edition.workspace = true
+name = "devix-core"
 version.workspace = true
+edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 ratatui.workspace = true
+crossterm.workspace = true

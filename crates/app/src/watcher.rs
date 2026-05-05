@@ -2,10 +2,12 @@
 //! module drains their receivers each tick and sets `disk_changed_pending`
 //! on the affected document.
 
-use devix_workspace::Action;
+use std::sync::Arc;
+
+use devix_workspace::cmd;
 
 use crate::app::App;
-use crate::events::run_action;
+use crate::events::run_command;
 
 pub fn drain_disk_events(app: &mut App) {
     // Phase 1: collect which DocIds saw events. Holding `&mut documents`
@@ -36,7 +38,7 @@ pub fn drain_disk_events(app: &mut App) {
             if Some(*did) == active_doc_id { active_dirty = true; }
         } else if Some(*did) == active_doc_id {
             // Active, clean: auto-reload via the standard action flow.
-            run_action(app, Action::ReloadFromDisk);
+            run_command(app, Arc::new(cmd::ReloadFromDisk));
         } else {
             // Background, clean: silently reload now (no prompt to show).
             // Routes through Document so tree-sitter reparses and LSP gets a

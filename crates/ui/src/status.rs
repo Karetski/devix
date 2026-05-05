@@ -3,6 +3,7 @@
 //! `StatusInfo` is built by the binary from its `App` state; this module knows
 //! nothing about `App`.
 
+use devix_core::{Event, HandleCtx, Outcome, Pane, RenderCtx};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
@@ -45,4 +46,22 @@ pub fn render_status(info: &StatusInfo<'_>, area: Rect, frame: &mut Frame<'_>) {
 
     let para = Paragraph::new(text).style(Style::default().bg(Color::DarkGray).fg(Color::White));
     frame.render_widget(para, area);
+}
+
+/// Phase-1 adapter: thin `Pane` wrapper over [`render_status`]. Borrows the
+/// info struct so callers can build it from per-frame state without
+/// allocating. Has no children and ignores events — the status line is
+/// purely cosmetic.
+pub struct StatusPane<'a> {
+    pub info: StatusInfo<'a>,
+}
+
+impl<'a> Pane for StatusPane<'a> {
+    fn render(&self, area: Rect, ctx: &mut RenderCtx<'_, '_>) {
+        render_status(&self.info, area, ctx.frame);
+    }
+
+    fn handle(&mut self, _ev: &Event, _area: Rect, _ctx: &mut HandleCtx<'_>) -> Outcome {
+        Outcome::Ignored
+    }
 }

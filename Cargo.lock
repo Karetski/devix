@@ -194,7 +194,7 @@ dependencies = [
  "arboard",
  "crossterm",
  "devix-buffer",
- "devix-config",
+ "devix-core",
  "devix-lsp",
  "devix-ui",
  "devix-views",
@@ -214,9 +214,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "devix-config"
+name = "devix-core"
 version = "0.1.0"
 dependencies = [
+ "crossterm",
  "ratatui",
 ]
 
@@ -249,10 +250,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "devix-plugin"
-version = "0.1.0"
-
-[[package]]
 name = "devix-syntax"
 version = "0.1.0"
 dependencies = [
@@ -267,7 +264,7 @@ dependencies = [
 name = "devix-ui"
 version = "0.1.0"
 dependencies = [
- "devix-config",
+ "devix-core",
  "ratatui",
 ]
 
@@ -277,7 +274,7 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "devix-buffer",
- "devix-config",
+ "devix-core",
  "devix-syntax",
  "devix-ui",
  "devix-workspace",
@@ -294,6 +291,7 @@ dependencies = [
  "arboard",
  "crossterm",
  "devix-buffer",
+ "devix-core",
  "devix-document",
  "devix-lsp",
  "devix-syntax",

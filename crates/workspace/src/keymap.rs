@@ -1,24 +1,24 @@
 //! Chord → command resolution.
 //!
 //! The keymap maps a [`Chord`] to either a [`CommandId`] (for discoverable,
-//! palette-listable commands registered in [`crate::commands`]) or directly
-//! to an [`Action`] (for continuously-fired actions like motion, character
-//! insertion, mouse — these never appear in the palette so they bypass the
-//! registry).
+//! palette-listable commands registered in [`crate::command`]) or directly
+//! to an `Arc<dyn EditorCommand>` (for continuously-fired actions like
+//! motion, character insertion, mouse — these never appear in the palette
+//! so they bypass the registry).
 //!
-//! The dispatcher only sees `Action`. The two-arm layering exists so the
-//! palette can show "Save File … Ctrl+S" by reverse-looking-up the chord
-//! bound to a command id, without polluting the command registry with
-//! continuous-action variants that nobody would ever search for.
+//! Phase 5: storage migrated from `Action` enum values to trait objects.
+//! `lookup` returns `Arc<dyn EditorCommand>` so the caller can drop the
+//! immutable keymap/registry borrow before invoking with `&mut Context`.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::action::Action;
-use crate::builtins as cmd;
+use crate::builtins as cmd_id;
+use crate::cmd::{self, EditorCommand};
 use crate::command::{CommandId, CommandRegistry};
-use crate::layout::Direction;
+use crate::layout::{Direction, SidebarSlot};
 
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
 pub struct Chord {
@@ -32,10 +32,9 @@ impl Chord {
     }
 }
 
-#[derive(Clone)]
 enum Binding {
     Command(CommandId),
-    Action(Action),
+    Action(Arc<dyn EditorCommand>),
 }
 
 pub struct Keymap {
@@ -58,11 +57,15 @@ impl Keymap {
         self.chord_for.entry(id).or_insert(chord);
     }
 
-    pub fn bind_action(&mut self, chord: Chord, action: Action) {
+    pub fn bind_action(&mut self, chord: Chord, action: Arc<dyn EditorCommand>) {
         self.bindings.insert(chord, Binding::Action(action));
     }
 
-    pub fn lookup(&self, chord: Chord, reg: &CommandRegistry) -> Option<Action> {
+    pub fn lookup(
+        &self,
+        chord: Chord,
+        reg: &CommandRegistry,
+    ) -> Option<Arc<dyn EditorCommand>> {
         match self.bindings.get(&chord)? {
             Binding::Command(id) => reg.resolve(*id),
             Binding::Action(a) => Some(a.clone()),
@@ -91,90 +94,94 @@ pub fn default_keymap() -> Keymap {
     let mut k = Keymap::new();
 
     // ---- registered commands (id-bound; palette can find them) ----
-    k.bind_command(chord(ch('q'), C),                       cmd::APP_QUIT);
-    k.bind_command(chord(ch('s'), C),                       cmd::FILE_SAVE);
+    k.bind_command(chord(ch('q'), C),                       cmd_id::APP_QUIT);
+    k.bind_command(chord(ch('s'), C),                       cmd_id::FILE_SAVE);
 
-    k.bind_command(chord(ch('z'), C),                       cmd::EDIT_UNDO);
-    k.bind_command(chord(ch('z'), C | S),                   cmd::EDIT_REDO);
-    k.bind_command(chord(ch('y'), C),                       cmd::EDIT_REDO);
-    k.bind_command(chord(ch('a'), C),                       cmd::EDIT_SELECT_ALL);
-    k.bind_command(chord(ch('c'), C),                       cmd::EDIT_COPY);
-    k.bind_command(chord(ch('x'), C),                       cmd::EDIT_CUT);
-    k.bind_command(chord(ch('v'), C),                       cmd::EDIT_PASTE);
+    k.bind_command(chord(ch('z'), C),                       cmd_id::EDIT_UNDO);
+    k.bind_command(chord(ch('z'), C | S),                   cmd_id::EDIT_REDO);
+    k.bind_command(chord(ch('y'), C),                       cmd_id::EDIT_REDO);
+    k.bind_command(chord(ch('a'), C),                       cmd_id::EDIT_SELECT_ALL);
+    k.bind_command(chord(ch('c'), C),                       cmd_id::EDIT_COPY);
+    k.bind_command(chord(ch('x'), C),                       cmd_id::EDIT_CUT);
+    k.bind_command(chord(ch('v'), C),                       cmd_id::EDIT_PASTE);
 
-    k.bind_command(chord(ch('t'), C),                       cmd::TAB_NEW);
-    k.bind_command(chord(ch('w'), C),                       cmd::TAB_CLOSE);
-    k.bind_command(chord(ch('w'), C | S),                   cmd::TAB_FORCE_CLOSE);
-    k.bind_command(chord(KeyCode::Char('['), C | S),        cmd::TAB_PREV);
-    k.bind_command(chord(KeyCode::Char(']'), C | S),        cmd::TAB_NEXT);
+    k.bind_command(chord(ch('t'), C),                       cmd_id::TAB_NEW);
+    k.bind_command(chord(ch('w'), C),                       cmd_id::TAB_CLOSE);
+    k.bind_command(chord(ch('w'), C | S),                   cmd_id::TAB_FORCE_CLOSE);
+    k.bind_command(chord(KeyCode::Char('['), C | S),        cmd_id::TAB_PREV);
+    k.bind_command(chord(KeyCode::Char(']'), C | S),        cmd_id::TAB_NEXT);
     // macOS Terminal.app drops the SHIFT bit on Ctrl+Shift+symbol and
     // delivers the shifted character with CTRL alone (Shift+[ = {).
-    k.bind_command(chord(KeyCode::Char('{'), C),            cmd::TAB_PREV);
-    k.bind_command(chord(KeyCode::Char('}'), C),            cmd::TAB_NEXT);
-    k.bind_command(chord(KeyCode::PageUp, C),               cmd::TAB_PREV);
-    k.bind_command(chord(KeyCode::PageDown, C),             cmd::TAB_NEXT);
+    k.bind_command(chord(KeyCode::Char('{'), C),            cmd_id::TAB_PREV);
+    k.bind_command(chord(KeyCode::Char('}'), C),            cmd_id::TAB_NEXT);
+    k.bind_command(chord(KeyCode::PageUp, C),               cmd_id::TAB_PREV);
+    k.bind_command(chord(KeyCode::PageDown, C),             cmd_id::TAB_NEXT);
 
-    k.bind_command(chord(ch('\\'), C),                      cmd::SPLIT_VERTICAL);
-    k.bind_command(chord(ch('-'), C),                       cmd::SPLIT_HORIZONTAL);
+    k.bind_command(chord(ch('\\'), C),                      cmd_id::SPLIT_VERTICAL);
+    k.bind_command(chord(ch('-'), C),                       cmd_id::SPLIT_HORIZONTAL);
 
-    k.bind_command(chord(ch('b'), C),                       cmd::SIDEBAR_LEFT);
-    k.bind_command(chord(ch('b'), C | A),                   cmd::SIDEBAR_RIGHT);
+    k.bind_command(chord(ch('b'), C),                       cmd_id::SIDEBAR_LEFT);
+    k.bind_command(chord(ch('b'), C | A),                   cmd_id::SIDEBAR_RIGHT);
 
     // Command palette
-    k.bind_command(chord(ch('p'), C | S),                   cmd::PALETTE_OPEN);
+    k.bind_command(chord(ch('p'), C | S),                   cmd_id::PALETTE_OPEN);
 
     // Language server
-    k.bind_command(chord(ch('i'), C),                       cmd::LSP_HOVER);
-    k.bind_command(chord(KeyCode::F(12), NONE),             cmd::LSP_GOTO_DEFINITION);
-    k.bind_command(chord(ch(' '), C),                       cmd::LSP_COMPLETION_TRIGGER);
-    k.bind_command(chord(ch('o'), C),                       cmd::LSP_DOCUMENT_SYMBOLS);
-    k.bind_command(chord(ch('o'), C | S),                   cmd::LSP_WORKSPACE_SYMBOLS);
+    k.bind_command(chord(ch('i'), C),                       cmd_id::LSP_HOVER);
+    k.bind_command(chord(KeyCode::F(12), NONE),             cmd_id::LSP_GOTO_DEFINITION);
+    k.bind_command(chord(ch(' '), C),                       cmd_id::LSP_COMPLETION_TRIGGER);
+    k.bind_command(chord(ch('o'), C),                       cmd_id::LSP_DOCUMENT_SYMBOLS);
+    k.bind_command(chord(ch('o'), C | S),                   cmd_id::LSP_WORKSPACE_SYMBOLS);
 
     // ---- direct actions (continuous; not registry commands) ----
     // Motion — both extend variants per chord
     for &(extend, sm) in &[(false, NONE), (true, S)] {
-        k.bind_action(chord(KeyCode::Left,  C | sm), Action::MoveLineStart { extend });
-        k.bind_action(chord(KeyCode::Right, C | sm), Action::MoveLineEnd   { extend });
-        k.bind_action(chord(KeyCode::Up,    C | sm), Action::MoveDocStart  { extend });
-        k.bind_action(chord(KeyCode::Down,  C | sm), Action::MoveDocEnd    { extend });
+        k.bind_action(chord(KeyCode::Left,  C | sm), Arc::new(cmd::MoveLineStart { extend }));
+        k.bind_action(chord(KeyCode::Right, C | sm), Arc::new(cmd::MoveLineEnd   { extend }));
+        k.bind_action(chord(KeyCode::Up,    C | sm), Arc::new(cmd::MoveDocStart  { extend }));
+        k.bind_action(chord(KeyCode::Down,  C | sm), Arc::new(cmd::MoveDocEnd    { extend }));
 
-        k.bind_action(chord(KeyCode::Left,  A | sm), Action::MoveWordLeft  { extend });
-        k.bind_action(chord(KeyCode::Right, A | sm), Action::MoveWordRight { extend });
+        k.bind_action(chord(KeyCode::Left,  A | sm), Arc::new(cmd::MoveWordLeft  { extend }));
+        k.bind_action(chord(KeyCode::Right, A | sm), Arc::new(cmd::MoveWordRight { extend }));
 
-        k.bind_action(chord(KeyCode::Left,  sm), Action::MoveLeft  { extend });
-        k.bind_action(chord(KeyCode::Right, sm), Action::MoveRight { extend });
-        k.bind_action(chord(KeyCode::Up,    sm), Action::MoveUp    { extend });
-        k.bind_action(chord(KeyCode::Down,  sm), Action::MoveDown  { extend });
+        k.bind_action(chord(KeyCode::Left,  sm), Arc::new(cmd::MoveLeft  { extend }));
+        k.bind_action(chord(KeyCode::Right, sm), Arc::new(cmd::MoveRight { extend }));
+        k.bind_action(chord(KeyCode::Up,    sm), Arc::new(cmd::MoveUp    { extend }));
+        k.bind_action(chord(KeyCode::Down,  sm), Arc::new(cmd::MoveDown  { extend }));
 
-        k.bind_action(chord(KeyCode::Home,     sm), Action::MoveLineStart { extend });
-        k.bind_action(chord(KeyCode::End,      sm), Action::MoveLineEnd   { extend });
-        k.bind_action(chord(KeyCode::PageUp,   sm), Action::PageUp        { extend });
-        k.bind_action(chord(KeyCode::PageDown, sm), Action::PageDown      { extend });
+        k.bind_action(chord(KeyCode::Home,     sm), Arc::new(cmd::MoveLineStart { extend }));
+        k.bind_action(chord(KeyCode::End,      sm), Arc::new(cmd::MoveLineEnd   { extend }));
+        k.bind_action(chord(KeyCode::PageUp,   sm), Arc::new(cmd::PageUp        { extend }));
+        k.bind_action(chord(KeyCode::PageDown, sm), Arc::new(cmd::PageDown      { extend }));
 
         // Ctrl+Home / Ctrl+End — fallback for Ctrl+Up / Ctrl+Down which macOS
         // swallows for Mission Control unless those system shortcuts are off.
-        k.bind_action(chord(KeyCode::Home, C | sm), Action::MoveDocStart { extend });
-        k.bind_action(chord(KeyCode::End,  C | sm), Action::MoveDocEnd   { extend });
+        k.bind_action(chord(KeyCode::Home, C | sm), Arc::new(cmd::MoveDocStart { extend }));
+        k.bind_action(chord(KeyCode::End,  C | sm), Arc::new(cmd::MoveDocEnd   { extend }));
     }
 
     // ESC b / ESC f for Option+Left/Right on terminals (macOS Terminal.app)
     // that emit the legacy meta encoding. No shift bit in that encoding.
-    k.bind_action(chord(ch('b'), A), Action::MoveWordLeft  { extend: false });
-    k.bind_action(chord(ch('f'), A), Action::MoveWordRight { extend: false });
+    k.bind_action(chord(ch('b'), A), Arc::new(cmd::MoveWordLeft  { extend: false }));
+    k.bind_action(chord(ch('f'), A), Arc::new(cmd::MoveWordRight { extend: false }));
 
     // Directional focus traversal
-    k.bind_action(chord(KeyCode::Left,  C | A), Action::FocusDir(Direction::Left));
-    k.bind_action(chord(KeyCode::Right, C | A), Action::FocusDir(Direction::Right));
-    k.bind_action(chord(KeyCode::Up,    C | A), Action::FocusDir(Direction::Up));
-    k.bind_action(chord(KeyCode::Down,  C | A), Action::FocusDir(Direction::Down));
+    k.bind_action(chord(KeyCode::Left,  C | A), Arc::new(cmd::FocusDir(Direction::Left)));
+    k.bind_action(chord(KeyCode::Right, C | A), Arc::new(cmd::FocusDir(Direction::Right)));
+    k.bind_action(chord(KeyCode::Up,    C | A), Arc::new(cmd::FocusDir(Direction::Up)));
+    k.bind_action(chord(KeyCode::Down,  C | A), Arc::new(cmd::FocusDir(Direction::Down)));
 
     // Edits
-    k.bind_action(chord(KeyCode::Backspace, NONE), Action::DeleteBack    { word: false });
-    k.bind_action(chord(KeyCode::Backspace, A),    Action::DeleteBack    { word: true  });
-    k.bind_action(chord(KeyCode::Delete,    NONE), Action::DeleteForward { word: false });
-    k.bind_action(chord(KeyCode::Delete,    A),    Action::DeleteForward { word: true  });
-    k.bind_action(chord(KeyCode::Enter,     NONE), Action::InsertNewline);
-    k.bind_action(chord(KeyCode::Tab,       NONE), Action::InsertTab);
+    k.bind_action(chord(KeyCode::Backspace, NONE), Arc::new(cmd::DeleteBack    { word: false }));
+    k.bind_action(chord(KeyCode::Backspace, A),    Arc::new(cmd::DeleteBack    { word: true  }));
+    k.bind_action(chord(KeyCode::Delete,    NONE), Arc::new(cmd::DeleteForward { word: false }));
+    k.bind_action(chord(KeyCode::Delete,    A),    Arc::new(cmd::DeleteForward { word: true  }));
+    k.bind_action(chord(KeyCode::Enter,     NONE), Arc::new(cmd::InsertNewline));
+    k.bind_action(chord(KeyCode::Tab,       NONE), Arc::new(cmd::InsertTab));
+
+    // Bind each `SidebarSlot` so the keymap stays self-contained — the only
+    // chord-bound place that uses the slot enum.
+    let _ = SidebarSlot::Left;
 
     // Reserved (Phase 7 multicursor):
     //   Shift + Ctrl + Up   → MulticursorAddAbove

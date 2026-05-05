@@ -11,7 +11,7 @@ use devix_lsp::{
     Coordinator, CoordinatorConfig, LanguageConfig, LspCommand, LspEvent, SubprocessSpawner,
     char_in_rope, uri_to_path,
 };
-use devix_workspace::{CompletionStatus, HoverStatus, Overlay, refilter_completion};
+use devix_workspace::{CompletionStatus, HoverStatus, SymbolPickerPane, refilter_completion};
 use lsp_types::{CompletionItem, Location, PositionEncodingKind};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
@@ -127,9 +127,9 @@ pub fn drain_lsp_events(app: &mut App) {
     app.dirty = true;
 }
 
-/// Match the response against the open `Overlay::Symbols` if its epoch is
-/// still current. Document-mode responses also verify `origin_uri` so a
-/// closed-then-reopened picker on a different doc doesn't accidentally
+/// Match the response against the open `SymbolPickerPane` if its epoch
+/// is still current. Document-mode responses also verify `origin_uri` so
+/// a closed-then-reopened picker on a different doc doesn't accidentally
 /// adopt a stale list.
 fn apply_symbols_response(
     app: &mut App,
@@ -137,12 +137,13 @@ fn apply_symbols_response(
     epoch: u64,
     symbols: Vec<devix_lsp::FlatSymbol>,
 ) {
-    let Some(Overlay::Symbols(state)) = app.overlay.as_mut() else { return };
-    if state.epoch != epoch { return; }
+    let Some(any) = app.workspace.modal.as_mut().and_then(|m| m.as_any_mut()) else { return };
+    let Some(pane) = any.downcast_mut::<SymbolPickerPane>() else { return };
+    if pane.state.epoch != epoch { return; }
     if let Some(uri) = response_uri {
-        if state.origin_uri.as_ref() != Some(&uri) { return; }
+        if pane.state.origin_uri.as_ref() != Some(&uri) { return; }
     }
-    state.set_items(symbols);
+    pane.state.set_items(symbols);
 }
 
 /// Match the response to a view whose `completion.anchor_char` equals the
@@ -249,13 +250,11 @@ fn apply_definition_response(
         }
     }
     if let Some(vid) = hit {
-        if let Some(fid) = frame_owning_view(&app.workspace, vid) {
+        if let Some((fid, idx)) = frame_owning_view(&app.workspace, vid) {
             app.workspace.focus_frame(fid);
             // Best-effort: select the matching tab so the focused view is
             // the one we hit.
-            if let Some(idx) = app.workspace.frames[fid].tabs.iter().position(|&v| v == vid) {
-                app.workspace.activate_tab(fid, idx);
-            }
+            app.workspace.activate_tab(fid, idx);
         }
         position_cursor_at(app, vid, target_pos);
         return;
@@ -270,10 +269,15 @@ fn apply_definition_response(
     }
 }
 
-fn frame_owning_view(ws: &devix_workspace::Workspace, vid: devix_workspace::ViewId) -> Option<devix_workspace::FrameId> {
-    for (fid, frame) in ws.frames.iter() {
-        if frame.tabs.contains(&vid) {
-            return Some(fid);
+fn frame_owning_view(
+    ws: &devix_workspace::Workspace,
+    vid: devix_workspace::ViewId,
+) -> Option<(devix_workspace::FrameId, usize)> {
+    for fid in devix_workspace::frame_ids(ws.root.as_ref()) {
+        if let Some(frame) = devix_workspace::find_frame(ws.root.as_ref(), fid) {
+            if let Some(idx) = frame.tabs.iter().position(|&v| v == vid) {
+                return Some((fid, idx));
+            }
         }
     }
     None

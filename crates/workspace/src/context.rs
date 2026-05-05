@@ -3,7 +3,6 @@
 use ratatui::layout::Rect;
 
 use crate::command::CommandRegistry;
-use crate::overlay::Overlay;
 use crate::workspace::Workspace;
 
 #[derive(Default)]
@@ -43,5 +42,4 @@ pub struct Context<'a> {
     pub quit: &'a mut bool,
     pub viewport: Viewport,
     pub commands: &'a CommandRegistry,
-    pub overlay: &'a mut Option<Overlay>,
 }

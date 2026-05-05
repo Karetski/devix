@@ -19,9 +19,12 @@ use ratatui::widgets::{Paragraph, Widget};
 use ropey::Rope;
 
 use devix_buffer::{Buffer, Range, Selection};
-use devix_config::Theme;
+use devix_core::{Event, HandleCtx, Outcome, Pane, RenderCtx, Theme};
 use devix_syntax::HighlightSpan;
-use devix_workspace::DocDiagnostic;
+use devix_ui::{CompletionLine, Popup, PopupAnchor, PopupContent, render_popup};
+use devix_workspace::{
+    CompletionState, CompletionStatus, DocDiagnostic, HoverState, HoverStatus,
+};
 use lsp_types::DiagnosticSeverity;
 use ratatui::style::Color;
 
@@ -119,6 +122,155 @@ pub fn render_editor(view: EditorView<'_>, area: Rect, frame: &mut Frame<'_>) ->
     };
 
     EditorRenderResult { cursor_screen, gutter_width }
+}
+
+/// Phase-2 of the architecture refactor: the editor body as a `Pane`.
+///
+/// `EditorPane` owns borrowed inputs to a single render — the same fields
+/// `EditorView` carries, plus everything that used to be inlined in
+/// `app::render::paint_frame` (active-frame cursor placement, optional
+/// hover/completion children). Borrowed for now because the view/document
+/// state still lives in `Workspace`; Phase 3's layout-tree migration will
+/// shrink that god-object and let `EditorPane` hold the state directly.
+///
+/// Hover and completion render as child `Pane`s underneath. Their anchors
+/// derive from the cursor position the editor renderer reports, so the
+/// child paints stay in lockstep with the parent's layout.
+pub struct EditorPane<'a> {
+    pub buffer: &'a Buffer,
+    pub selection: &'a Selection,
+    pub scroll: (u32, u32),
+    pub theme: &'a Theme,
+    /// Owned (not borrowed) so a parent composite — `TabbedPane` —
+    /// can store an `EditorPane` as a field without a self-referential
+    /// borrow against a sibling `Vec<HighlightSpan>`. The cost is one
+    /// `Vec<HighlightSpan>` move per frame, which is dominated by the
+    /// tree-sitter query that produced the spans.
+    pub highlights: Vec<HighlightSpan>,
+    pub diagnostics: &'a [DocDiagnostic],
+    /// True only for the workspace's focused frame. Drives the terminal
+    /// cursor (`Frame::set_cursor_position`); inactive editor panes paint
+    /// their text but do not steal the cursor.
+    pub active: bool,
+    pub hover: Option<&'a HoverState>,
+    pub completion: Option<&'a CompletionState>,
+}
+
+impl<'a> Pane for EditorPane<'a> {
+    fn render(&self, area: Rect, ctx: &mut RenderCtx<'_, '_>) {
+        let view = EditorView {
+            buffer: self.buffer,
+            selection: self.selection,
+            scroll: self.scroll,
+            theme: self.theme,
+            highlights: &self.highlights,
+            diagnostics: self.diagnostics,
+        };
+        let r = render_editor(view, area, ctx.frame);
+        if self.active {
+            if let Some((x, y)) = r.cursor_screen {
+                ctx.frame.set_cursor_position((x, y));
+            }
+        }
+        // Hover and completion children paint anchored at the cursor cell.
+        // Both vanish silently when the cursor isn't on screen — there's no
+        // useful place to anchor them otherwise.
+        let Some((cx, cy)) = r.cursor_screen else { return };
+        if let Some(state) = self.hover {
+            HoverPane { state, theme: self.theme, anchor: (cx, cy) }.render(area, ctx);
+        }
+        // Completion paints after hover so a (rare) overlap renders the
+        // completion popup on top — typing dismisses hover before the
+        // request can land, but resilience is cheap.
+        if let Some(state) = self.completion {
+            CompletionPane { state, theme: self.theme, anchor: (cx, cy) }.render(area, ctx);
+        }
+    }
+
+    fn handle(&mut self, _ev: &Event, _area: Rect, _ctx: &mut HandleCtx<'_>) -> Outcome {
+        // Phase 2 keeps event routing in the legacy dispatcher; Phase 5
+        // (Action-as-trait) is when click/drag/scroll handling moves here.
+        Outcome::Ignored
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+}
+
+/// Hover popup as a child `Pane`. Owns no transient state of its own —
+/// the `HoverState` it renders lives on the parent `View` until the
+/// dispatcher dismisses it (cursor motion, edit, Esc).
+pub struct HoverPane<'a> {
+    pub state: &'a HoverState,
+    pub theme: &'a Theme,
+    pub anchor: (u16, u16),
+}
+
+impl<'a> Pane for HoverPane<'a> {
+    fn render(&self, area: Rect, ctx: &mut RenderCtx<'_, '_>) {
+        let lines: Vec<String> = match &self.state.status {
+            HoverStatus::Pending => vec!["…".to_string()],
+            HoverStatus::Ready(text) if !text.is_empty() => text.clone(),
+            _ => Vec::new(),
+        };
+        if lines.is_empty() {
+            return;
+        }
+        let popup = Popup::with_default_size(
+            PopupAnchor { col: self.anchor.0, row: self.anchor.1 },
+            PopupContent::Text(&lines),
+        );
+        let _ = render_popup(&popup, self.theme, area, ctx.frame);
+    }
+
+    fn handle(&mut self, _ev: &Event, _area: Rect, _ctx: &mut HandleCtx<'_>) -> Outcome {
+        Outcome::Ignored
+    }
+}
+
+/// Completion popup as a child `Pane`. As with `HoverPane`, the underlying
+/// `CompletionState` is parent-owned; this struct just paints it.
+pub struct CompletionPane<'a> {
+    pub state: &'a CompletionState,
+    pub theme: &'a Theme,
+    pub anchor: (u16, u16),
+}
+
+impl<'a> Pane for CompletionPane<'a> {
+    fn render(&self, area: Rect, ctx: &mut RenderCtx<'_, '_>) {
+        match &self.state.status {
+            CompletionStatus::Pending => {
+                let lines = vec!["…".to_string()];
+                let popup = Popup::with_default_size(
+                    PopupAnchor { col: self.anchor.0, row: self.anchor.1 },
+                    PopupContent::Text(&lines),
+                );
+                let _ = render_popup(&popup, self.theme, area, ctx.frame);
+            }
+            CompletionStatus::Ready if !self.state.filtered.is_empty() => {
+                let lines: Vec<CompletionLine<'_>> = self
+                    .state
+                    .filtered
+                    .iter()
+                    .map(|&i| CompletionLine {
+                        label: self.state.items[i].label.as_str(),
+                        detail: self.state.items[i].detail.as_deref(),
+                    })
+                    .collect();
+                let popup = Popup::with_default_size(
+                    PopupAnchor { col: self.anchor.0, row: self.anchor.1 },
+                    PopupContent::CompletionList { items: &lines, selected: self.state.selected },
+                );
+                let _ = render_popup(&popup, self.theme, area, ctx.frame);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle(&mut self, _ev: &Event, _area: Rect, _ctx: &mut HandleCtx<'_>) -> Outcome {
+        Outcome::Ignored
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

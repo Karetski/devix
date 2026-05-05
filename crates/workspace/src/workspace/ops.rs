@@ -1,17 +1,26 @@
 //! Mutating operations on a Workspace: tabs, frames/splits, sidebars,
 //! file-open routing. Kept separate from focus/hit-test so each concern stays
 //! reviewable on its own.
+//!
+//! Phase 3c write-side: layout mutations rewrite `Workspace.root`
+//! directly via `crate::tree::mutate` helpers — no `Node` enum, no
+//! `sync_root` rebuild. The structural Pane tree is the source of truth.
 
 use std::path::PathBuf;
 
 use anyhow::Result;
+use devix_core::Pane;
 
 use devix_document::{DocId, Document};
-use crate::frame::Frame;
-use crate::layout::{Axis, Node, SidebarSlot};
+use crate::frame::mint_id;
+use crate::layout::{Axis, SidebarSlot};
+use crate::tree::{
+    LayoutFrame, LayoutSidebar, LayoutSplit, LeafId, find_frame, find_frame_mut, frame_ids,
+    mutate, pane_leaf_id,
+};
 use crate::view::{ScrollMode, View, ViewId};
 
-use super::{LeafRef, Workspace, canonicalize_or_keep};
+use super::{Workspace, canonicalize_or_keep};
 
 impl Workspace {
     /// Open a fresh empty buffer in a new tab on the active frame.
@@ -19,7 +28,7 @@ impl Workspace {
         let Some(fid) = self.active_frame() else { return };
         let did = self.documents.insert(Document::empty());
         let vid = self.views.insert(View::new(did));
-        let frame = &mut self.frames[fid];
+        let Some(frame) = find_frame_mut(&mut self.root, fid) else { return };
         frame.tabs.push(vid);
         let new_idx = frame.tabs.len() - 1;
         frame.set_active(new_idx);
@@ -28,16 +37,25 @@ impl Workspace {
     /// Returns false if the active doc is dirty; the caller should warn.
     pub fn close_active_tab(&mut self, force: bool) -> bool {
         let Some(fid) = self.active_frame() else { return false };
-        let frame = &self.frames[fid];
+        let Some(frame) = find_frame(self.root.as_ref(), fid) else { return false };
         let Some(vid) = frame.active_view() else { return false };
         let did = self.views[vid].doc;
         if !force && self.documents[did].buffer.dirty() { return false; }
 
-        let frame = &mut self.frames[fid];
+        // After this point we mutate. Re-borrow mutably; the immutable
+        // `frame` ref above is dropped.
+        let frame = match find_frame_mut(&mut self.root, fid) {
+            Some(f) => f,
+            None => return false,
+        };
         if frame.tabs.len() == 1 {
             // Last tab in the frame: replace with a fresh scratch view.
             let new_did = self.documents.insert(Document::empty());
             let new_vid = self.views.insert(View::new(new_did));
+            let frame = match find_frame_mut(&mut self.root, fid) {
+                Some(f) => f,
+                None => return false,
+            };
             frame.tabs[0] = new_vid;
             frame.set_active(0);
             self.views.remove(vid);
@@ -56,7 +74,7 @@ impl Workspace {
 
     pub fn next_tab(&mut self) {
         let Some(fid) = self.active_frame() else { return };
-        let frame = &mut self.frames[fid];
+        let Some(frame) = find_frame_mut(&mut self.root, fid) else { return };
         if frame.tabs.is_empty() { return; }
         let next = (frame.active_tab + 1) % frame.tabs.len();
         frame.set_active(next);
@@ -64,7 +82,7 @@ impl Workspace {
 
     pub fn prev_tab(&mut self) {
         let Some(fid) = self.active_frame() else { return };
-        let frame = &mut self.frames[fid];
+        let Some(frame) = find_frame_mut(&mut self.root, fid) else { return };
         if frame.tabs.is_empty() { return; }
         let prev = (frame.active_tab + frame.tabs.len() - 1) % frame.tabs.len();
         frame.set_active(prev);
@@ -92,11 +110,14 @@ impl Workspace {
         let Some(fid) = self.active_frame() else {
             return Err(anyhow::anyhow!("no active frame to open path into"));
         };
-        let Some(old_view) = self.frames[fid].active_view() else {
+        let Some(old_view) = find_frame(self.root.as_ref(), fid).and_then(|f| f.active_view())
+        else {
             return Err(anyhow::anyhow!("active frame has no tabs"));
         };
         let new_view = self.views.insert(View::new(did));
-        let frame = &mut self.frames[fid];
+        let Some(frame) = find_frame_mut(&mut self.root, fid) else {
+            return Err(anyhow::anyhow!("active frame disappeared"));
+        };
         frame.tabs[frame.active_tab] = new_view;
         let old_doc = self.views[old_view].doc;
         self.views.remove(old_view);
@@ -108,39 +129,47 @@ impl Workspace {
     /// The resulting Split with a single child collapses to that child.
     /// No-op when only one frame remains anywhere in the tree.
     pub fn close_active_frame(&mut self) {
-        if self.frames.len() <= 1 { return; }
+        if frame_ids(self.root.as_ref()).len() <= 1 { return; }
         let Some(fid) = self.active_frame() else { return };
         let path = self.focus.clone();
         if path.is_empty() { return; } // root is a single Frame; same as len==1
 
-        let (parent_path, leaf_idx) = path.split_at(path.len() - 1);
-        let leaf_idx = leaf_idx[0];
-        let Some(parent) = node_at_mut(&mut self.layout, parent_path) else { return };
-        if let Node::Split { children, .. } = parent {
-            children.remove(leaf_idx);
+        // Snapshot the dying frame's tabs *before* the structural mutation
+        // drops the LayoutFrame. After `remove_at` the frame is gone — its
+        // owned `tabs` Vec went with it.
+        let dying_views: Vec<ViewId> = find_frame(self.root.as_ref(), fid)
+            .map(|f| f.tabs.clone())
+            .unwrap_or_default();
+
+        if !mutate::remove_at(&mut self.root, &path) {
+            return;
         }
-        self.layout.collapse_singleton_splits();
-        let frame = self.frames.remove(fid).expect("frame existed");
-        for vid in frame.tabs {
+        mutate::collapse_singletons(&mut self.root);
+        for vid in dying_views {
             let did = self.views[vid].doc;
             self.views.remove(vid);
             self.try_remove_orphan_doc(did);
         }
         // Re-anchor focus to the first remaining frame, deepest path.
-        self.focus = first_frame_path(&self.layout);
+        self.focus = first_frame_path(self.root.as_ref());
     }
 
     /// Replace the focused Frame leaf with a Split containing two frames:
     /// the original frame, plus a new frame whose first tab clones the active view.
     pub fn split_active(&mut self, axis: Axis) {
-        let Some(focus_path) = (if matches!(self.layout.leaf_at(&self.focus), Some(LeafRef::Frame(_))) {
-            Some(self.focus.clone())
-        } else { None }) else { return };
-
         let Some(active_fid) = self.active_frame() else { return };
+        let focus_path = self.focus.clone();
+
+        // Snapshot the active frame's state — both its current tab list
+        // (which the new LayoutFrame will inherit) and its active view —
+        // before we mutate the tree.
+        let Some(active_frame) = find_frame(self.root.as_ref(), active_fid) else { return };
+        let original_tabs = active_frame.tabs.clone();
+        let original_active_tab = active_frame.active_tab;
+        let original_scroll = active_frame.tab_strip_scroll;
+        let Some(active_view_id) = active_frame.active_view() else { return };
 
         let cloned_view = {
-            let Some(active_view_id) = self.frames[active_fid].active_view() else { return };
             let v = &self.views[active_view_id];
             View {
                 doc: v.doc,
@@ -153,54 +182,67 @@ impl Workspace {
             }
         };
         let new_view_id = self.views.insert(cloned_view);
-        let new_frame_id = self.frames.insert(Frame::with_view(new_view_id));
+        let new_frame_id = mint_id();
 
-        let new_node = Node::Split {
+        let original_replaced = LayoutFrame {
+            frame: active_fid,
+            tabs: original_tabs,
+            active_tab: original_active_tab,
+            tab_strip_scroll: original_scroll,
+            recenter_active: true,
+        };
+        let new_split: Box<dyn Pane> = Box::new(LayoutSplit {
             axis,
             children: vec![
-                (Node::Frame(active_fid), 1),
-                (Node::Frame(new_frame_id), 1),
+                (Box::new(original_replaced), 1),
+                (Box::new(LayoutFrame::with_view(new_frame_id, new_view_id)), 1),
             ],
-        };
-        self.layout.replace_leaf_at(&focus_path, new_node);
+        });
+        if !mutate::replace_at(&mut self.root, &focus_path, new_split) {
+            return;
+        }
         let mut new_focus = focus_path;
         new_focus.push(1);
         self.focus = new_focus;
     }
 
     pub fn toggle_sidebar(&mut self, slot: SidebarSlot) {
-        // Lift the layout root into a horizontal Split if it isn't one.
-        if !matches!(&self.layout, Node::Split { axis: Axis::Horizontal, .. }) {
-            use slotmap::Key;
-            let inner = std::mem::replace(
-                &mut self.layout,
-                Node::Frame(crate::frame::FrameId::null()),
-            );
-            self.layout = Node::Split {
-                axis: Axis::Horizontal,
-                children: vec![(inner, 80)],
-            };
+        // Lift the root into a horizontal Split if it isn't one.
+        let needs_lift = !root_is_horizontal_split(self.root.as_ref());
+        if needs_lift {
+            mutate::lift_into_horizontal_split(&mut self.root);
             // The focus path now needs a leading 0 (the editor body is child 0).
             let mut new_focus = vec![0];
             new_focus.extend(self.focus.iter().copied());
             self.focus = new_focus;
         }
-        let Node::Split { children, .. } = &mut self.layout else {
-            unreachable!("we just lifted the root into a horizontal Split")
-        };
 
-        let existing = children.iter().position(|(c, _)| matches!(c, Node::Sidebar(s) if *s == slot));
+        let split = self
+            .root
+            .as_any_mut()
+            .and_then(|a| a.downcast_mut::<LayoutSplit>())
+            .expect("root is a horizontal LayoutSplit after lift");
+
+        let existing = split.children.iter().position(|(c, _)| {
+            c.as_any()
+                .and_then(|a| a.downcast_ref::<LayoutSidebar>())
+                .map(|s| s.slot == slot)
+                .unwrap_or(false)
+        });
         if let Some(i) = existing {
-            children.remove(i);
+            split.children.remove(i);
             if let Some(top) = self.focus.first_mut() {
                 if *top >= i && *top > 0 { *top -= 1; }
             }
         } else {
             let insert_at = match slot {
                 SidebarSlot::Left => 0,
-                SidebarSlot::Right => children.len(),
+                SidebarSlot::Right => split.children.len(),
             };
-            children.insert(insert_at, (Node::Sidebar(slot), 20));
+            split.children.insert(
+                insert_at,
+                (Box::new(LayoutSidebar { slot }), 20),
+            );
             if let Some(top) = self.focus.first_mut() {
                 if *top >= insert_at { *top += 1; }
             }
@@ -225,34 +267,33 @@ impl Workspace {
     }
 }
 
-fn node_at_mut<'a>(node: &'a mut Node, path: &[usize]) -> Option<&'a mut Node> {
-    let mut n = node;
-    for &i in path {
-        match n {
-            Node::Split { children, .. } => {
-                n = &mut children.get_mut(i)?.0;
-            }
-            _ => return None,
-        }
-    }
-    Some(n)
+/// Is the structural root a horizontal `LayoutSplit`? Used by
+/// `toggle_sidebar` to decide whether to lift before inserting.
+fn root_is_horizontal_split(root: &dyn Pane) -> bool {
+    root.as_any()
+        .and_then(|a| a.downcast_ref::<LayoutSplit>())
+        .map(|s| s.axis == Axis::Horizontal)
+        .unwrap_or(false)
 }
 
-fn first_frame_path(node: &Node) -> Vec<usize> {
-    fn go(node: &Node, path: &mut Vec<usize>) -> bool {
-        match node {
-            Node::Frame(_) => true,
-            Node::Sidebar(_) => false, // skip sidebars when picking a default
-            Node::Split { children, .. } => {
-                for (i, (child, _)) in children.iter().enumerate() {
-                    path.push(i);
-                    if go(child, path) { return true; }
-                    path.pop();
-                }
-                false
+/// Path to the first focusable Frame leaf in tree order. Sidebars are
+/// skipped — picking a sidebar as the default focus would surprise the
+/// user after closing a split.
+fn first_frame_path(root: &dyn Pane) -> Vec<usize> {
+    fn go(pane: &dyn Pane, path: &mut Vec<usize>) -> bool {
+        if let Some(LeafId::Frame(_)) = pane_leaf_id(pane) {
+            return true;
+        }
+        if let Some(split) = pane.as_any().and_then(|a| a.downcast_ref::<LayoutSplit>()) {
+            for (i, (child, _)) in split.children.iter().enumerate() {
+                path.push(i);
+                if go(child.as_ref(), path) { return true; }
+                path.pop();
             }
         }
+        false
     }
     let mut p = Vec::new();
-    if go(node, &mut p) { p } else { Vec::new() }
+    if go(root, &mut p) { p } else { Vec::new() }
 }
+

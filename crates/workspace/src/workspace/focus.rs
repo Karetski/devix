@@ -1,17 +1,28 @@
 //! Focus traversal: directional moves across the layout tree, plus the
 //! geometry-aware "step into the closest sibling" picker that makes
 //! Ctrl+Alt+Arrow feel right when leaves are unevenly sized.
+//!
+//! Phase 3c: walks the structural `Workspace.root` Pane tree via
+//! `core::walk::pane_at_path` + downcasts, instead of matching on the
+//! legacy `Node` enum. Geometry still comes from the cached frame /
+//! sidebar rects — the cache is the only thing that knows how splits
+//! were laid out at the last render.
 
+use devix_core::{Pane, pane_at_path};
 use ratatui::layout::Rect;
 
 use crate::frame::FrameId;
-use crate::layout::{Axis, Direction, Node, SidebarSlot};
+use crate::layout::{Axis, Direction, SidebarSlot};
+use crate::tree::{LayoutFrame, LayoutSidebar, LayoutSplit};
 
 use super::{LeafRef, RenderCache, Workspace};
 
 impl Workspace {
     pub fn focus_dir(&mut self, dir: Direction) {
-        if let Some(target_path) = compute_focus_target(&self.layout, &self.focus, dir, &self.render_cache) {
+        let area = root_area(&self.render_cache);
+        if let Some(target_path) =
+            compute_focus_target(self.root.as_ref(), area, &self.focus, dir, &self.render_cache)
+        {
             self.focus = target_path;
             return;
         }
@@ -22,7 +33,7 @@ impl Workspace {
             _ => None,
         };
         if let Some(slot) = needed {
-            if let Some(path) = find_sidebar(&self.layout, slot) {
+            if let Some(path) = find_sidebar(self.root.as_ref(), area, slot) {
                 self.focus = path;
             }
         }
@@ -31,7 +42,8 @@ impl Workspace {
     /// Move focus to `frame`'s leaf, if it exists in the layout tree. Returns
     /// true on success.
     pub fn focus_frame(&mut self, frame: FrameId) -> bool {
-        if let Some(path) = path_to_leaf(&self.layout, LeafRef::Frame(frame)) {
+        let area = root_area(&self.render_cache);
+        if let Some(path) = path_to_leaf(self.root.as_ref(), area, LeafRef::Frame(frame)) {
             self.focus = path;
             true
         } else {
@@ -40,18 +52,39 @@ impl Workspace {
     }
 }
 
+/// Total area covered by the cached leaves. The render cache is populated
+/// after every paint, so this is exact for the geometry the user sees.
+fn root_area(cache: &RenderCache) -> Rect {
+    let rects: Vec<Rect> = cache
+        .frame_rects
+        .values()
+        .copied()
+        .chain(cache.sidebar_rects.values().copied())
+        .chain(cache.tab_strips.values().map(|s| s.strip_rect))
+        .collect();
+    if rects.is_empty() {
+        return Rect::default();
+    }
+    let x = rects.iter().map(|r| r.x).min().unwrap();
+    let y = rects.iter().map(|r| r.y).min().unwrap();
+    let x_end = rects.iter().map(|r| r.x + r.width).max().unwrap();
+    let y_end = rects.iter().map(|r| r.y + r.height).max().unwrap();
+    Rect { x, y, width: x_end - x, height: y_end - y }
+}
+
 fn compute_focus_target(
-    layout: &Node,
+    root: &dyn Pane,
+    area: Rect,
     focus: &[usize],
     dir: Direction,
     cache: &RenderCache,
 ) -> Option<Vec<usize>> {
     let needed_axis = match dir {
         Direction::Left | Direction::Right => Axis::Horizontal,
-        Direction::Up   | Direction::Down  => Axis::Vertical,
+        Direction::Up | Direction::Down => Axis::Vertical,
     };
     let step: isize = match dir {
-        Direction::Left | Direction::Up   => -1,
+        Direction::Left | Direction::Up => -1,
         Direction::Right | Direction::Down => 1,
     };
 
@@ -59,16 +92,16 @@ fn compute_focus_target(
     // can step in `step` direction.
     let mut path = focus.to_vec();
     while !path.is_empty() {
-        let parent_path = path[..path.len() - 1].to_vec();
+        let parent_path: Vec<usize> = path[..path.len() - 1].to_vec();
         let child_idx = *path.last().unwrap();
-        let parent = node_at(layout, &parent_path)?;
-        if let Node::Split { axis, children } = parent {
-            if *axis == needed_axis {
+        let (_, parent_pane) = pane_at_path(root, area, &parent_path)?;
+        if let Some(split) = parent_pane.as_any().and_then(|a| a.downcast_ref::<LayoutSplit>()) {
+            if split.axis == needed_axis {
                 let next = child_idx as isize + step;
-                if next >= 0 && (next as usize) < children.len() {
+                if next >= 0 && (next as usize) < split.children.len() {
                     let mut new_path = parent_path;
                     new_path.push(next as usize);
-                    return Some(walk_into(layout, new_path, dir, focus, cache));
+                    return Some(walk_into(root, area, new_path, dir, focus, cache));
                 }
             }
         }
@@ -78,29 +111,38 @@ fn compute_focus_target(
 }
 
 fn walk_into(
-    layout: &Node,
+    root: &dyn Pane,
+    root_area: Rect,
     mut path: Vec<usize>,
     dir: Direction,
     source_path: &[usize],
     cache: &RenderCache,
 ) -> Vec<usize> {
     loop {
-        let n = match node_at(layout, &path) {
-            Some(n) => n,
-            None => return path,
+        let Some((_, pane)) = pane_at_path(root, root_area, &path) else {
+            return path;
         };
-        match n {
-            Node::Frame(_) | Node::Sidebar(_) => return path,
-            Node::Split { axis, children } => {
-                let pick = pick_closest_child(layout, &path, *axis, children.len(), dir, source_path, cache);
-                path.push(pick);
-            }
-        }
+        let Some(split) = pane.as_any().and_then(|a| a.downcast_ref::<LayoutSplit>()) else {
+            return path;
+        };
+        let pick = pick_closest_child(
+            root,
+            root_area,
+            &path,
+            split.axis,
+            split.children.len(),
+            dir,
+            source_path,
+            cache,
+        );
+        path.push(pick);
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pick_closest_child(
-    layout: &Node,
+    root: &dyn Pane,
+    root_area: Rect,
     parent_path: &[usize],
     axis: Axis,
     n_children: usize,
@@ -108,8 +150,10 @@ fn pick_closest_child(
     source_path: &[usize],
     cache: &RenderCache,
 ) -> usize {
-    if n_children == 0 { return 0; }
-    let source_rect = leaf_rect_for(layout, source_path, cache);
+    if n_children == 0 {
+        return 0;
+    }
+    let source_rect = leaf_rect_for(root, root_area, source_path, cache);
     let Some(src) = source_rect else {
         // Fallback when no rect cached yet: pick the side adjacent to the move.
         return match (axis, dir) {
@@ -127,88 +171,108 @@ fn pick_closest_child(
     for i in 0..n_children {
         let mut child_path = parent_path.to_vec();
         child_path.push(i);
-        let Some(rect) = first_leaf_rect(layout, &child_path, cache) else { continue };
+        let Some(rect) = first_leaf_rect(root, root_area, &child_path, cache) else { continue };
         let d = match axis {
             Axis::Horizontal => (rect.y as i32 + rect.height as i32 / 2 - centre_y as i32).abs(),
             Axis::Vertical => (rect.x as i32 + rect.width as i32 / 2 - centre_x as i32).abs(),
         };
-        if d < best_d { best_d = d; best = i; }
+        if d < best_d {
+            best_d = d;
+            best = i;
+        }
     }
     best
 }
 
-fn leaf_rect_for(layout: &Node, path: &[usize], cache: &RenderCache) -> Option<Rect> {
-    match layout.leaf_at(path)? {
-        LeafRef::Frame(id) => cache.frame_rects.get(id).copied(),
+fn leaf_rect_for(
+    root: &dyn Pane,
+    root_area: Rect,
+    path: &[usize],
+    cache: &RenderCache,
+) -> Option<Rect> {
+    let (_, pane) = pane_at_path(root, root_area, path)?;
+    pane_to_leaf_ref(pane).and_then(|leaf| leaf_rect(leaf, cache))
+}
+
+fn first_leaf_rect(
+    root: &dyn Pane,
+    root_area: Rect,
+    path: &[usize],
+    cache: &RenderCache,
+) -> Option<Rect> {
+    // Walk into the deepest leaf along the leftmost child at each split.
+    let mut p = path.to_vec();
+    loop {
+        let (_, pane) = pane_at_path(root, root_area, &p)?;
+        if pane
+            .as_any()
+            .map(|a| a.downcast_ref::<LayoutSplit>().is_some())
+            .unwrap_or(false)
+        {
+            p.push(0);
+            continue;
+        }
+        return leaf_rect_for(root, root_area, &p, cache);
+    }
+}
+
+/// Recover a `LeafRef` from a structural Pane leaf via `as_any` downcast.
+fn pane_to_leaf_ref(pane: &dyn Pane) -> Option<LeafRef> {
+    let any = pane.as_any()?;
+    if let Some(f) = any.downcast_ref::<LayoutFrame>() {
+        return Some(LeafRef::Frame(f.frame));
+    }
+    if let Some(s) = any.downcast_ref::<LayoutSidebar>() {
+        return Some(LeafRef::Sidebar(s.slot));
+    }
+    None
+}
+
+fn leaf_rect(leaf: LeafRef, cache: &RenderCache) -> Option<Rect> {
+    match leaf {
+        LeafRef::Frame(id) => cache.frame_rects.get(&id).copied(),
         LeafRef::Sidebar(slot) => cache.sidebar_rects.get(&slot).copied(),
     }
 }
 
-fn first_leaf_rect(layout: &Node, path: &[usize], cache: &RenderCache) -> Option<Rect> {
-    fn descend<'a>(node: &'a Node, path: &mut Vec<usize>) -> &'a Node {
-        match node {
-            Node::Split { children, .. } if !children.is_empty() => {
-                path.push(0);
-                descend(&children[0].0, path)
+fn find_sidebar(root: &dyn Pane, area: Rect, slot: SidebarSlot) -> Option<Vec<usize>> {
+    fn go(pane: &dyn Pane, area: Rect, slot: SidebarSlot, out: &mut Vec<usize>) -> bool {
+        if let Some(s) = pane.as_any().and_then(|a| a.downcast_ref::<LayoutSidebar>()) {
+            if s.slot == slot {
+                return true;
             }
-            other => other,
         }
-    }
-    let mut p = path.to_vec();
-    let root = node_at(layout, &p)?;
-    let _final_node = descend(root, &mut p);
-    leaf_rect_for(layout, &p, cache)
-}
-
-pub(super) fn node_at<'a>(node: &'a Node, path: &[usize]) -> Option<&'a Node> {
-    let mut n = node;
-    for &i in path {
-        match n {
-            Node::Split { children, .. } => n = &children.get(i)?.0,
-            _ => return None,
-        }
-    }
-    Some(n)
-}
-
-fn find_sidebar(node: &Node, slot: SidebarSlot) -> Option<Vec<usize>> {
-    fn go(node: &Node, slot: SidebarSlot, out: &mut Vec<usize>) -> bool {
-        match node {
-            Node::Sidebar(s) if *s == slot => true,
-            Node::Split { children, .. } => {
-                for (i, (c, _)) in children.iter().enumerate() {
-                    out.push(i);
-                    if go(c, slot, out) { return true; }
-                    out.pop();
-                }
-                false
+        for (i, (child_rect, child)) in pane.children(area).into_iter().enumerate() {
+            out.push(i);
+            if go(child, child_rect, slot, out) {
+                return true;
             }
-            _ => false,
-        }
-    }
-    let mut p = Vec::new();
-    if go(node, slot, &mut p) { Some(p) } else { None }
-}
-
-pub(super) fn path_to_leaf(node: &Node, target: LeafRef) -> Option<Vec<usize>> {
-    fn matches(node: &Node, target: LeafRef) -> bool {
-        match (node, target) {
-            (Node::Frame(a), LeafRef::Frame(b)) => *a == b,
-            (Node::Sidebar(a), LeafRef::Sidebar(b)) => *a == b,
-            _ => false,
-        }
-    }
-    fn go(node: &Node, target: LeafRef, out: &mut Vec<usize>) -> bool {
-        if matches(node, target) { return true; }
-        if let Node::Split { children, .. } = node {
-            for (i, (c, _)) in children.iter().enumerate() {
-                out.push(i);
-                if go(c, target, out) { return true; }
-                out.pop();
-            }
+            out.pop();
         }
         false
     }
     let mut p = Vec::new();
-    if go(node, target, &mut p) { Some(p) } else { None }
+    if go(root, area, slot, &mut p) { Some(p) } else { None }
+}
+
+/// Find the path to a `LeafRef` by walking the structural Pane tree.
+/// Returns the sequence of `children()` indices that lead to the target.
+pub(super) fn path_to_leaf(root: &dyn Pane, area: Rect, target: LeafRef) -> Option<Vec<usize>> {
+    fn go(pane: &dyn Pane, area: Rect, target: LeafRef, out: &mut Vec<usize>) -> bool {
+        if let Some(leaf) = pane_to_leaf_ref(pane) {
+            if leaf == target {
+                return true;
+            }
+        }
+        for (i, (child_rect, child)) in pane.children(area).into_iter().enumerate() {
+            out.push(i);
+            if go(child, child_rect, target, out) {
+                return true;
+            }
+            out.pop();
+        }
+        false
+    }
+    let mut p = Vec::new();
+    if go(root, area, target, &mut p) { Some(p) } else { None }
 }

@@ -4,9 +4,11 @@
 //! continuously-fired actions are dispatched directly via the keymap and
 //! never appear in the palette.
 
+use std::sync::Arc;
+
 use devix_lsp::CompletionTrigger;
 
-use crate::action::Action;
+use crate::cmd::{self, EditorCommand};
 use crate::command::{Command, CommandId, CommandRegistry};
 use crate::layout::SidebarSlot;
 
@@ -49,47 +51,51 @@ pub const LSP_DOCUMENT_SYMBOLS:       CommandId = CommandId("lsp.symbols.documen
 pub const LSP_WORKSPACE_SYMBOLS:      CommandId = CommandId("lsp.symbols.workspace");
 
 pub fn register_builtins(reg: &mut CommandRegistry) {
-    let r = |reg: &mut CommandRegistry, id, label, category, action| {
+    let r = |reg: &mut CommandRegistry,
+             id,
+             label,
+             category,
+             action: Arc<dyn EditorCommand>| {
         reg.register(Command { id, label, category: Some(category), action });
     };
 
-    r(reg, PALETTE_OPEN,      "Open Command Palette",     "Palette", Action::OpenPalette);
-    r(reg, PALETTE_CLOSE,     "Close Command Palette",    "Palette", Action::ClosePalette);
-    r(reg, PALETTE_MOVE_DOWN, "Palette: Next Match",      "Palette", Action::PaletteMove(1));
-    r(reg, PALETTE_MOVE_UP,   "Palette: Previous Match",  "Palette", Action::PaletteMove(-1));
-    r(reg, PALETTE_ACCEPT,    "Palette: Accept Selection","Palette", Action::PaletteAccept);
+    r(reg, PALETTE_OPEN,      "Open Command Palette",     "Palette", Arc::new(cmd::OpenPalette));
+    r(reg, PALETTE_CLOSE,     "Close Command Palette",    "Palette", Arc::new(cmd::ClosePalette));
+    r(reg, PALETTE_MOVE_DOWN, "Palette: Next Match",      "Palette", Arc::new(cmd::PaletteMove(1)));
+    r(reg, PALETTE_MOVE_UP,   "Palette: Previous Match",  "Palette", Arc::new(cmd::PaletteMove(-1)));
+    r(reg, PALETTE_ACCEPT,    "Palette: Accept Selection","Palette", Arc::new(cmd::PaletteAccept));
 
-    r(reg, FILE_SAVE,         "Save File",                "File",    Action::Save);
-    r(reg, FILE_RELOAD,       "Reload from Disk",         "File",    Action::ReloadFromDisk);
-    r(reg, FILE_KEEP_BUFFER,  "Keep Buffer (Ignore Disk Change)", "File", Action::KeepBufferIgnoreDisk);
+    r(reg, FILE_SAVE,         "Save File",                "File",    Arc::new(cmd::Save));
+    r(reg, FILE_RELOAD,       "Reload from Disk",         "File",    Arc::new(cmd::ReloadFromDisk));
+    r(reg, FILE_KEEP_BUFFER,  "Keep Buffer (Ignore Disk Change)", "File", Arc::new(cmd::KeepBufferIgnoreDisk));
 
-    r(reg, EDIT_UNDO,         "Undo",                     "Edit",    Action::Undo);
-    r(reg, EDIT_REDO,         "Redo",                     "Edit",    Action::Redo);
-    r(reg, EDIT_SELECT_ALL,   "Select All",               "Edit",    Action::SelectAll);
-    r(reg, EDIT_COPY,         "Copy",                     "Edit",    Action::Copy);
-    r(reg, EDIT_CUT,          "Cut",                      "Edit",    Action::Cut);
-    r(reg, EDIT_PASTE,        "Paste",                    "Edit",    Action::Paste);
+    r(reg, EDIT_UNDO,         "Undo",                     "Edit",    Arc::new(cmd::Undo));
+    r(reg, EDIT_REDO,         "Redo",                     "Edit",    Arc::new(cmd::Redo));
+    r(reg, EDIT_SELECT_ALL,   "Select All",               "Edit",    Arc::new(cmd::SelectAll));
+    r(reg, EDIT_COPY,         "Copy",                     "Edit",    Arc::new(cmd::Copy));
+    r(reg, EDIT_CUT,          "Cut",                      "Edit",    Arc::new(cmd::Cut));
+    r(reg, EDIT_PASTE,        "Paste",                    "Edit",    Arc::new(cmd::Paste));
 
-    r(reg, TAB_NEW,           "New Tab",                  "Tab",     Action::NewTab);
-    r(reg, TAB_CLOSE,         "Close Tab",                "Tab",     Action::CloseTab);
-    r(reg, TAB_FORCE_CLOSE,   "Close Tab (Discard Changes)", "Tab",  Action::ForceCloseTab);
-    r(reg, TAB_NEXT,          "Next Tab",                 "Tab",     Action::NextTab);
-    r(reg, TAB_PREV,          "Previous Tab",             "Tab",     Action::PrevTab);
+    r(reg, TAB_NEW,           "New Tab",                  "Tab",     Arc::new(cmd::NewTab));
+    r(reg, TAB_CLOSE,         "Close Tab",                "Tab",     Arc::new(cmd::CloseTab));
+    r(reg, TAB_FORCE_CLOSE,   "Close Tab (Discard Changes)", "Tab",  Arc::new(cmd::ForceCloseTab));
+    r(reg, TAB_NEXT,          "Next Tab",                 "Tab",     Arc::new(cmd::NextTab));
+    r(reg, TAB_PREV,          "Previous Tab",             "Tab",     Arc::new(cmd::PrevTab));
 
-    r(reg, SPLIT_VERTICAL,    "Split Vertical",           "Split",   Action::SplitVertical);
-    r(reg, SPLIT_HORIZONTAL,  "Split Horizontal",         "Split",   Action::SplitHorizontal);
-    r(reg, SPLIT_CLOSE,       "Close Split",              "Split",   Action::CloseFrame);
+    r(reg, SPLIT_VERTICAL,    "Split Vertical",           "Split",   Arc::new(cmd::SplitVertical));
+    r(reg, SPLIT_HORIZONTAL,  "Split Horizontal",         "Split",   Arc::new(cmd::SplitHorizontal));
+    r(reg, SPLIT_CLOSE,       "Close Split",              "Split",   Arc::new(cmd::CloseFrame));
 
-    r(reg, SIDEBAR_LEFT,      "Toggle Left Sidebar",      "View",    Action::ToggleSidebar(SidebarSlot::Left));
-    r(reg, SIDEBAR_RIGHT,     "Toggle Right Sidebar",     "View",    Action::ToggleSidebar(SidebarSlot::Right));
+    r(reg, SIDEBAR_LEFT,      "Toggle Left Sidebar",      "View",    Arc::new(cmd::ToggleSidebar(SidebarSlot::Left)));
+    r(reg, SIDEBAR_RIGHT,     "Toggle Right Sidebar",     "View",    Arc::new(cmd::ToggleSidebar(SidebarSlot::Right)));
 
-    r(reg, APP_QUIT,          "Quit",                     "App",     Action::Quit);
+    r(reg, APP_QUIT,          "Quit",                     "App",     Arc::new(cmd::Quit));
 
-    r(reg, LSP_HOVER,                "Show Hover Info",        "Language", Action::Hover);
-    r(reg, LSP_GOTO_DEFINITION,      "Go to Definition",       "Language", Action::GotoDefinition);
-    r(reg, LSP_COMPLETION_TRIGGER,   "Trigger Completion",     "Language", Action::TriggerCompletion(CompletionTrigger::Manual));
-    r(reg, LSP_DOCUMENT_SYMBOLS,     "Document Symbols",       "Language", Action::ShowDocumentSymbols);
-    r(reg, LSP_WORKSPACE_SYMBOLS,    "Workspace Symbols",      "Language", Action::ShowWorkspaceSymbols);
+    r(reg, LSP_HOVER,                "Show Hover Info",        "Language", Arc::new(cmd::Hover));
+    r(reg, LSP_GOTO_DEFINITION,      "Go to Definition",       "Language", Arc::new(cmd::GotoDefinition));
+    r(reg, LSP_COMPLETION_TRIGGER,   "Trigger Completion",     "Language", Arc::new(cmd::TriggerCompletion(CompletionTrigger::Manual)));
+    r(reg, LSP_DOCUMENT_SYMBOLS,     "Document Symbols",       "Language", Arc::new(cmd::ShowDocumentSymbols));
+    r(reg, LSP_WORKSPACE_SYMBOLS,    "Workspace Symbols",      "Language", Arc::new(cmd::ShowWorkspaceSymbols));
 }
 
 pub fn build_registry() -> CommandRegistry {

@@ -14,6 +14,7 @@
 //!    `clip_left > 0` use `Paragraph::scroll` to show the right portion of a
 //!    partially-visible tab.
 
+use devix_core::{Event, HandleCtx, Outcome, Pane, RenderCtx};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -85,6 +86,32 @@ pub fn layout_tabstrip(
     }
 }
 
+/// Read-only layout pass: emits the same `(hits, content_width)` that
+/// `render_tabstrip` would, without painting. The cache-population walk
+/// in the binary uses this to pre-fill `RenderCache.tab_strips` so the
+/// paint walk can stay pure (`Pane::render(&self)`).
+pub fn tab_strip_layout(
+    tabs: &[TabInfo],
+    active: usize,
+    scroll: (u32, u32),
+    area: Rect,
+) -> (Vec<TabHit>, u32) {
+    if tabs.is_empty() || area.width == 0 || area.height == 0 {
+        return (Vec::new(), 0);
+    }
+    let active = active.min(tabs.len() - 1);
+    let _ = active; // active is consumed by render only via styling; layout is symmetric.
+    let widths = pick_widths(tabs, area.width);
+    let layout = LinearLayout::horizontal(widths, 1).with_spacing(1);
+    let content = layout.content_size();
+    let pass = CollectionPass::new(&layout, scroll, area);
+    let hits: Vec<TabHit> = pass
+        .visible_items()
+        .map(|(idx, geom)| TabHit { idx, rect: geom.screen })
+        .collect();
+    (hits, content.0)
+}
+
 pub fn render_tabstrip(
     tabs: &[TabInfo],
     active: usize,
@@ -140,6 +167,35 @@ pub fn render_tabstrip(
     }
 
     TabStripRender { hits, content_width: content.0 }
+}
+
+/// `Pane` wrapper around [`render_tabstrip`].
+///
+/// Owns its `tabs` Vec (instead of borrowing) so a parent composite —
+/// `TabbedPane` — can store a `TabStripPane` as a field without a
+/// self-referential borrow against a sibling Vec. The cost is one
+/// `Vec<TabInfo>` move per frame, which is dominated by the per-tab
+/// label allocation that produced it.
+///
+/// Today's Phase-3a scaffolding still discards the `TabStripRender`
+/// result; click-on-tab dispatch flows through the legacy
+/// `render_cache.tab_strips` path. Phase 3c will let the strip Pane
+/// expose tab cells as `children()` so hit-testing falls out of the
+/// generic walker.
+pub struct TabStripPane {
+    pub tabs: Vec<TabInfo>,
+    pub active: usize,
+    pub scroll: (u32, u32),
+}
+
+impl Pane for TabStripPane {
+    fn render(&self, area: Rect, ctx: &mut RenderCtx<'_, '_>) {
+        let _ = render_tabstrip(&self.tabs, self.active, self.scroll, area, ctx.frame);
+    }
+
+    fn handle(&mut self, _ev: &Event, _area: Rect, _ctx: &mut HandleCtx<'_>) -> Outcome {
+        Outcome::Ignored
+    }
 }
 
 /// Decide the cell width for each tab in the strip:

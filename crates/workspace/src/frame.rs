@@ -1,57 +1,34 @@
-//! Frame = editor tab group: a strip of tabs plus an active index.
-//! Each tab is a ViewId.
+//! `FrameId` — a stable identifier for an editor frame.
+//!
+//! Phase 3c follow-up: frames now own their state directly on
+//! `LayoutFrame` (in `crate::tree`); there's no `Frame` struct or
+//! `Workspace.frames` slotmap any more. `FrameId` survives because the
+//! render cache (`render_cache.frame_rects`, `tab_strips`) keys against
+//! it across renders — the layout tree's pointer identity is too
+//! fragile for that role (refs move on tree mutation).
+//!
+//! Ids are minted via a process-wide monotonic counter. Single-process
+//! editor — no need for slotmap recycling. The counter starts at 1 so
+//! the slotmap-style "null" pattern (id == 0) keeps working as a
+//! sentinel if we ever need it.
 
-use slotmap::new_key_type;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::view::ViewId;
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
+pub struct FrameId(u64);
 
-new_key_type! { pub struct FrameId; }
+static NEXT: AtomicU64 = AtomicU64::new(1);
 
-pub struct Frame {
-    pub tabs: Vec<ViewId>,
-    pub active_tab: usize,
-    /// Scroll offset for this frame's tab strip, in cells. Owned here so it
-    /// survives across renders / resizes. The render layer (which has the
-    /// layout) does the math; this is plain data.
-    pub tab_strip_scroll: (u32, u32),
-    /// One-shot signal asking the next tab-strip render to scroll the active
-    /// tab into view. Set by mutators that change `active_tab` (keyboard nav,
-    /// new tab, close), cleared by the renderer once consumed. Click-to-select
-    /// intentionally leaves it false so the strip stays put under the cursor.
-    pub recenter_active: bool,
+/// Mint a fresh `FrameId`. Process-monotonic; never recycled.
+pub fn mint_id() -> FrameId {
+    FrameId(NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
-impl Frame {
-    pub fn with_view(view: ViewId) -> Self {
-        Self {
-            tabs: vec![view],
-            active_tab: 0,
-            tab_strip_scroll: (0, 0),
-            recenter_active: true,
-        }
-    }
-
-    /// Activate a tab and request scroll-to-visible. Use for keyboard nav and
-    /// tab-mutating operations (new/close) where the strip should follow.
-    pub fn set_active(&mut self, idx: usize) {
-        if idx < self.tabs.len() {
-            self.active_tab = idx;
-        }
-        self.recenter_active = true;
-    }
-
-    /// Activate a tab without disturbing scroll. Use for click activation —
-    /// the user already pointed at the tab they want.
-    pub fn select_visible(&mut self, idx: usize) {
-        if idx < self.tabs.len() {
-            self.active_tab = idx;
-        }
-    }
-
-    /// Returns None if `tabs` is empty or `active_tab` is out of bounds.
-    /// Construction via `with_view` guarantees a valid index, but tab-mutating
-    /// callers must restore the invariant after every change.
-    pub fn active_view(&self) -> Option<ViewId> {
-        self.tabs.get(self.active_tab).copied()
+impl FrameId {
+    /// Sentinel "no frame" id — useful for placeholder values during a
+    /// take-and-replace mutation step. Distinct from every minted id
+    /// because [`mint_id`] starts at 1.
+    pub fn null() -> Self {
+        FrameId(0)
     }
 }

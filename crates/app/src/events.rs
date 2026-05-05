@@ -1,10 +1,14 @@
-//! Input events: KeyEvent → Chord → Action via keymap; MouseEvent → Action
-//! directly. The disk-pending input gate is enforced here.
+//! Input events: KeyEvent → Chord → command via keymap; MouseEvent →
+//! command directly. The disk-pending input gate is enforced here.
+
+use std::sync::Arc;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind};
+use devix_core::HandleCtx;
 use devix_workspace::{
-    Action, Context, Overlay, TabStripHit, Viewport, chord_from_key, dispatch,
+    Context, EditorCommand, ModalOutcome, PalettePane, SymbolPickerPane, TabStripHit, Viewport,
+    chord_from_key, cmd,
 };
 
 use crate::app::App;
@@ -14,7 +18,7 @@ pub fn handle_event(ev: Event, app: &mut App) {
         Event::Key(KeyEvent { code, modifiers, kind, .. })
             if kind == KeyEventKind::Press || kind == KeyEventKind::Repeat =>
         {
-            handle_key(code, modifiers, app);
+            handle_key(ev, code, modifiers, app);
         }
         Event::Mouse(me) => handle_mouse(me, app),
         Event::Resize(_, _) => app.dirty = true,
@@ -22,18 +26,14 @@ pub fn handle_event(ev: Event, app: &mut App) {
     }
 }
 
-pub fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
-    // Overlay takes input first. The palette consumes its navigation keys
-    // (arrows / Enter / Esc / Backspace / printable chars) and only falls
-    // through for chords it doesn't care about — letting Ctrl+S still save
-    // even with the palette open would be surprising, so palette mode is
-    // input-modal: any unhandled key is silently ignored.
-    if matches!(app.overlay, Some(Overlay::Palette(_))) {
-        handle_palette_key(code, mods, app);
-        return;
-    }
-    if matches!(app.overlay, Some(Overlay::Symbols(_))) {
-        handle_symbols_key(code, mods, app);
+pub fn handle_key(ev: Event, code: KeyCode, mods: KeyModifiers, app: &mut App) {
+    // Modal at the head of the responder chain. The modal Pane's `handle`
+    // does navigation/typing internally; close / accept / LSP-refetch
+    // come back as flags drained via `ModalOutcome`. Any keys it doesn't
+    // claim are silently swallowed — modal mode is input-modal: letting
+    // Ctrl+S still save with the palette open would be surprising.
+    if app.workspace.modal.is_some() {
+        dispatch_modal_event(app, &ev);
         return;
     }
 
@@ -44,8 +44,8 @@ pub fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
             _ => None,
         };
         match lower {
-            Some('r') => { run_action(app, Action::ReloadFromDisk); return; }
-            Some('k') => { run_action(app, Action::KeepBufferIgnoreDisk); return; }
+            Some('r') => { run_command(app, Arc::new(cmd::ReloadFromDisk)); return; }
+            Some('k') => { run_command(app, Arc::new(cmd::KeepBufferIgnoreDisk)); return; }
             _ => {}
         }
     }
@@ -56,26 +56,26 @@ pub fn handle_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
     // re-filter the popup post-dispatch.
     if completion_open(app) {
         match (code, mods) {
-            (KeyCode::Esc, _) => { run_action(app, Action::CompletionDismiss); return; }
+            (KeyCode::Esc, _) => { run_command(app, Arc::new(cmd::CompletionDismiss)); return; }
             (KeyCode::Tab, _) | (KeyCode::Enter, _) => {
-                run_action(app, Action::CompletionAccept);
+                run_command(app, Arc::new(cmd::CompletionAccept));
                 return;
             }
-            (KeyCode::Up, _) => { run_action(app, Action::CompletionMove(-1)); return; }
-            (KeyCode::Down, _) => { run_action(app, Action::CompletionMove(1)); return; }
+            (KeyCode::Up, _) => { run_command(app, Arc::new(cmd::CompletionMove(-1))); return; }
+            (KeyCode::Down, _) => { run_command(app, Arc::new(cmd::CompletionMove(1))); return; }
             _ => {}
         }
     }
 
     let chord = chord_from_key(code, mods);
     if let Some(action) = app.keymap.lookup(chord, &app.commands) {
-        run_action(app, action);
+        run_command(app, action);
         return;
     }
 
     if let KeyCode::Char(c) = code {
         if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::ALT) {
-            run_action(app, Action::InsertChar(c));
+            run_command(app, Arc::new(cmd::InsertChar(c)));
         }
     }
 }
@@ -87,71 +87,78 @@ fn completion_open(app: &App) -> bool {
         .unwrap_or(false)
 }
 
-fn handle_symbols_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
-    match (code, mods) {
-        (KeyCode::Esc, _) => run_action(app, Action::CloseSymbols),
-        (KeyCode::Enter, _) => run_action(app, Action::SymbolsAccept),
-        (KeyCode::Up, _) => run_action(app, Action::SymbolsMove(-1)),
-        (KeyCode::Down, _) => run_action(app, Action::SymbolsMove(1)),
-        (KeyCode::Backspace, _) => {
-            let mut q = current_symbols_query(app).to_string();
-            q.pop();
-            run_action(app, Action::SymbolsSetQuery(q));
+/// Hand `ev` to the modal Pane via `Pane::handle`, then drain any
+/// side-effect outcome (close / accept / refetch) the modal signaled.
+/// The drain step is the one place the host has to know about specific
+/// modal types — palette accepts dispatch the chosen command; symbols
+/// accepts jump to the picked location; refetch re-queries the LSP.
+fn dispatch_modal_event(app: &mut App, ev: &Event) {
+    {
+        let modal = app
+            .workspace
+            .modal
+            .as_mut()
+            .expect("dispatch_modal_event requires a modal");
+        let mut hctx = HandleCtx::default();
+        let _ = modal.handle(ev, ratatui::layout::Rect::default(), &mut hctx);
+    }
+
+    let outcome = drain_modal_outcome(app);
+    match outcome {
+        ModalOutcome::Dismiss => run_command(app, Arc::new(cmd::CloseModal)),
+        ModalOutcome::Accept => {
+            // Type-specific accept: palette resolves+invokes the chosen
+            // command; symbols jumps to the picked location.
+            let action: Arc<dyn EditorCommand> = if modal_is::<PalettePane>(app) {
+                Arc::new(cmd::PaletteAccept)
+            } else if modal_is::<SymbolPickerPane>(app) {
+                Arc::new(cmd::SymbolsAccept)
+            } else {
+                Arc::new(cmd::CloseModal)
+            };
+            run_command(app, action);
         }
-        (KeyCode::Char(c), m)
-            if !m.contains(KeyModifiers::CONTROL) && !m.contains(KeyModifiers::ALT) =>
-        {
-            let mut q = current_symbols_query(app).to_string();
-            q.push(c);
-            run_action(app, Action::SymbolsSetQuery(q));
+        ModalOutcome::Refetch => run_command(app, Arc::new(cmd::RefetchWorkspaceSymbols)),
+        ModalOutcome::None => {
+            app.dirty = true;
         }
-        _ => {}
     }
 }
 
-fn current_symbols_query(app: &App) -> &str {
-    match &app.overlay {
-        Some(Overlay::Symbols(s)) => &s.query,
-        _ => "",
-    }
+fn modal_is<T: 'static>(app: &App) -> bool {
+    app.workspace
+        .modal
+        .as_ref()
+        .and_then(|m| m.as_any())
+        .map(|a| a.is::<T>())
+        .unwrap_or(false)
 }
 
-fn handle_palette_key(code: KeyCode, mods: KeyModifiers, app: &mut App) {
-    match (code, mods) {
-        (KeyCode::Esc, _) => run_action(app, Action::ClosePalette),
-        (KeyCode::Enter, _) => run_action(app, Action::PaletteAccept),
-        (KeyCode::Up, _) => run_action(app, Action::PaletteMove(-1)),
-        (KeyCode::Down, _) => run_action(app, Action::PaletteMove(1)),
-        (KeyCode::Backspace, _) => {
-            let mut q = current_palette_query(app).to_string();
-            q.pop();
-            run_action(app, Action::PaletteSetQuery(q));
-        }
-        (KeyCode::Char(c), m)
-            if !m.contains(KeyModifiers::CONTROL) && !m.contains(KeyModifiers::ALT) =>
-        {
-            let mut q = current_palette_query(app).to_string();
-            q.push(c);
-            run_action(app, Action::PaletteSetQuery(q));
-        }
-        _ => {}
+fn drain_modal_outcome(app: &mut App) -> ModalOutcome {
+    let Some(any) = app
+        .workspace
+        .modal
+        .as_mut()
+        .and_then(|m| m.as_any_mut())
+    else {
+        return ModalOutcome::None;
+    };
+    if let Some(p) = any.downcast_mut::<PalettePane>() {
+        return p.drain_outcome();
     }
-}
-
-fn current_palette_query(app: &App) -> &str {
-    match &app.overlay {
-        Some(Overlay::Palette(p)) => p.query(),
-        _ => "",
+    if let Some(s) = any.downcast_mut::<SymbolPickerPane>() {
+        return s.drain_outcome();
     }
+    ModalOutcome::None
 }
 
 pub fn handle_mouse(me: MouseEvent, app: &mut App) {
-    // Overlay swallows mouse so clicks never reach the editor or tab strip.
-    // Left-click dismisses the palette (matches most editors' click-out UX);
-    // mouse-driven row selection is a future polish item.
-    if matches!(app.overlay, Some(Overlay::Palette(_))) {
+    // Modal swallows mouse so clicks never reach the editor or tab strip.
+    // Left-click dismisses (matches most editors' click-out UX); modal-
+    // specific mouse handling is a future polish item.
+    if app.workspace.modal.is_some() {
         if matches!(me.kind, MouseEventKind::Down(MouseButton::Left)) {
-            run_action(app, Action::ClosePalette);
+            run_command(app, Arc::new(cmd::CloseModal));
         }
         return;
     }
@@ -166,14 +173,14 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
             }
             app.workspace.focus_at_screen(me.column, me.row);
             let extend = me.modifiers.contains(KeyModifiers::SHIFT);
-            run_action(app, Action::ClickAt {
+            run_command(app, Arc::new(cmd::ClickAt {
                 col: me.column, row: me.row, extend,
-            });
+            }));
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            run_action(app, Action::DragAt {
+            run_command(app, Arc::new(cmd::DragAt {
                 col: me.column, row: me.row,
-            });
+            }));
         }
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
             // Wheel over a *scrollable* tab strip scrolls the strip
@@ -213,16 +220,14 @@ fn handle_tab_strip_click(app: &mut App, hit: TabStripHit) {
     app.dirty = true;
 }
 
-pub fn run_action(app: &mut App, action: Action) {
+pub fn run_command(app: &mut App, action: Arc<dyn EditorCommand>) {
     // Resolve the viewport against the *currently focused* frame at dispatch
     // time. Mouse handlers update focus before calling this, so reading from
-    // the render cache here picks up the new frame's body rect — using cached
-    // last-render values would translate clicks against the previously-active
-    // frame.
+    // the render cache here picks up the new frame's body rect.
     let rect = app
         .workspace
         .active_frame()
-        .and_then(|fid| app.workspace.render_cache.frame_rects.get(fid).copied())
+        .and_then(|fid| app.workspace.render_cache.frame_rects.get(&fid).copied())
         .unwrap_or_default();
     let gutter_width = app
         .workspace
@@ -244,14 +249,10 @@ pub fn run_action(app: &mut App, action: Action) {
         quit: &mut app.quit,
         viewport,
         commands: &app.commands,
-        overlay: &mut app.overlay,
     };
-    dispatch(action, &mut cx);
+    // Phase 5: every command flows through `core::Action::invoke`. The old
+    // `dispatch(Action, ...)` enum match is no longer in the input path.
+    action.invoke(&mut cx);
 
-    // scroll_mode is owned by the dispatch arms now. Cursor-moving actions
-    // route through View::move_to (which sets Anchored); ScrollBy sets Free
-    // explicitly. Actions that don't touch the cursor leave it alone — so a
-    // wheel-scroll followed by Save no longer snaps the viewport back to
-    // the cursor on the next frame.
     app.dirty = true;
 }

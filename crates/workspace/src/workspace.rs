@@ -16,15 +16,19 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use devix_core::Pane;
 use devix_lsp::LspCommand;
 use lsp_types::PositionEncodingKind;
 use ratatui::layout::Rect;
-use slotmap::{SecondaryMap, SlotMap};
+use slotmap::SlotMap;
 use tokio::sync::mpsc;
 
 use devix_document::{DocId, Document};
-use crate::frame::{Frame, FrameId};
-use crate::layout::{Node, SidebarSlot};
+use crate::frame::{FrameId, mint_id};
+use crate::layout::SidebarSlot;
+use crate::tree::{LayoutFrame, LeafId, find_frame, pane_at_indices, pane_leaf_id};
+#[cfg(test)]
+use crate::tree::{find_frame_mut, frame_ids};
 use crate::view::{View, ViewId};
 
 mod focus;
@@ -58,9 +62,9 @@ pub struct TabStripCache {
 
 #[derive(Default)]
 pub struct RenderCache {
-    pub frame_rects: SecondaryMap<FrameId, Rect>,
+    pub frame_rects: HashMap<FrameId, Rect>,
     pub sidebar_rects: HashMap<SidebarSlot, Rect>,
-    pub tab_strips: SecondaryMap<FrameId, TabStripCache>,
+    pub tab_strips: HashMap<FrameId, TabStripCache>,
 }
 
 /// What was hit by a click on the tab-strip overlay.
@@ -72,8 +76,21 @@ pub enum TabStripHit {
 pub struct Workspace {
     pub documents: SlotMap<DocId, Document>,
     pub views: SlotMap<ViewId, View>,
-    pub frames: SlotMap<FrameId, Frame>,
-    pub layout: Node,
+    /// Structural Pane tree — the layout source of truth, and **also**
+    /// the only place per-frame state lives now. `LayoutFrame` owns its
+    /// `tabs`/`active_tab`/`tab_strip_scroll`/`recenter_active`
+    /// directly. Lookups by `FrameId` go through tree walks
+    /// (`find_frame` / `find_frame_mut`); they're O(tree-size) which is
+    /// fine at TUI scales.
+    pub root: Box<dyn Pane>,
+    /// Head of the responder chain. When `Some`, the modal Pane gets
+    /// first crack at every input event before the focused-leaf path,
+    /// and paints last (z-top). Concrete modals (`PalettePane`,
+    /// `SymbolPickerPane`, future plugin pickers) own their state
+    /// outright and live here for the duration of their session. The
+    /// framework is generic over `&dyn Pane`; there is no closed enum
+    /// of modal kinds.
+    pub modal: Option<Box<dyn Pane>>,
     pub focus: Vec<usize>,
     pub doc_index: HashMap<PathBuf, DocId>,
     pub render_cache: RenderCache,
@@ -96,7 +113,6 @@ impl Workspace {
     pub fn open(path: Option<PathBuf>) -> Result<Self> {
         let mut documents: SlotMap<DocId, Document> = SlotMap::with_key();
         let mut views: SlotMap<ViewId, View> = SlotMap::with_key();
-        let mut frames: SlotMap<FrameId, Frame> = SlotMap::with_key();
         let mut doc_index = HashMap::new();
 
         let doc_id = match path {
@@ -109,15 +125,15 @@ impl Workspace {
             None => documents.insert(Document::empty()),
         };
         let view_id = views.insert(View::new(doc_id));
-        let frame_id = frames.insert(Frame::with_view(view_id));
-        let layout = Node::Frame(frame_id);
+        let frame_id = mint_id();
+        let root: Box<dyn Pane> = Box::new(LayoutFrame::with_view(frame_id, view_id));
         let focus = vec![]; // root is the frame leaf itself
 
         Ok(Self {
             documents,
             views,
-            frames,
-            layout,
+            root,
+            modal: None,
             focus,
             doc_index,
             render_cache: RenderCache::default(),
@@ -157,20 +173,21 @@ impl Workspace {
 
     pub fn active_view(&self) -> Option<&View> {
         let frame_id = self.active_frame()?;
-        let view_id = self.frames[frame_id].active_view()?;
+        let view_id = find_frame(self.root.as_ref(), frame_id)?.active_view()?;
         self.views.get(view_id)
     }
 
     pub fn active_view_mut(&mut self) -> Option<&mut View> {
         let frame_id = self.active_frame()?;
-        let view_id = self.frames[frame_id].active_view()?;
+        let view_id = find_frame(self.root.as_ref(), frame_id)?.active_view()?;
         self.views.get_mut(view_id)
     }
 
     pub fn active_frame(&self) -> Option<FrameId> {
-        match self.layout.leaf_at(&self.focus)? {
-            LeafRef::Frame(id) => Some(id),
-            LeafRef::Sidebar(_) => None,
+        let pane = pane_at_indices(self.root.as_ref(), &self.focus)?;
+        match pane_leaf_id(pane)? {
+            LeafId::Frame(id) => Some(id),
+            LeafId::Sidebar(_) => None,
         }
     }
 
@@ -188,7 +205,7 @@ impl Workspace {
     /// so callers can take disjoint &mut borrows on the underlying slot-maps.
     pub fn active_ids(&self) -> Option<(FrameId, ViewId, DocId)> {
         let frame_id = self.active_frame()?;
-        let view_id = self.frames[frame_id].active_view()?;
+        let view_id = find_frame(self.root.as_ref(), frame_id)?.active_view()?;
         let doc_id = self.views[view_id].doc;
         Some((frame_id, view_id, doc_id))
     }
@@ -205,7 +222,7 @@ mod tests {
     #[test]
     fn fresh_workspace_has_one_frame_one_view() {
         let ws = Workspace::open(None).unwrap();
-        assert_eq!(ws.frames.len(), 1);
+        assert_eq!(frame_ids(ws.root.as_ref()).len(), 1);
         assert_eq!(ws.views.len(), 1);
         assert_eq!(ws.documents.len(), 1);
         assert!(ws.active_view().is_some());
@@ -217,8 +234,9 @@ mod tests {
         let original_view = ws.active_view().unwrap().doc;
 
         ws.new_tab();
-        assert_eq!(ws.frames.values().next().unwrap().tabs.len(), 2);
-        assert_eq!(ws.frames.values().next().unwrap().active_tab, 1);
+        let fid = ws.active_frame().unwrap();
+        assert_eq!(find_frame(ws.root.as_ref(), fid).unwrap().tabs.len(), 2);
+        assert_eq!(find_frame(ws.root.as_ref(), fid).unwrap().active_tab, 1);
 
         assert!(ws.close_active_tab(false));
         let active = ws.active_view().unwrap();
@@ -229,7 +247,8 @@ mod tests {
     fn close_last_tab_leaves_a_scratch_tab() {
         let mut ws = Workspace::open(None).unwrap();
         assert!(ws.close_active_tab(false));
-        let frame = ws.frames.values().next().unwrap();
+        let fid = ws.active_frame().unwrap();
+        let frame = find_frame(ws.root.as_ref(), fid).unwrap();
         assert_eq!(frame.tabs.len(), 1);
         let v = ws.active_view().unwrap();
         assert!(ws.documents[v.doc].buffer.path().is_none());
@@ -268,12 +287,12 @@ mod tests {
         let mut ws = Workspace::open(None).unwrap();
         let original_fid = ws.active_frame().unwrap();
         ws.split_active(crate::layout::Axis::Horizontal);
-        assert_eq!(ws.frames.len(), 2);
+        assert_eq!(frame_ids(ws.root.as_ref()).len(), 2);
         let new_fid = ws.active_frame().unwrap();
         assert_ne!(original_fid, new_fid);
 
-        let Some(orig_view_id) = ws.frames[original_fid].active_view() else { panic!("original frame has no active view"); };
-        let Some(new_view_id) = ws.frames[new_fid].active_view() else { panic!("new frame has no active view"); };
+        let Some(orig_view_id) = find_frame(ws.root.as_ref(), original_fid).and_then(|f| f.active_view()) else { panic!("original frame has no active view"); };
+        let Some(new_view_id) = find_frame(ws.root.as_ref(), new_fid).and_then(|f| f.active_view()) else { panic!("new frame has no active view"); };
         let original_doc = ws.views[orig_view_id].doc;
         let new_doc = ws.views[new_view_id].doc;
         assert_eq!(original_doc, new_doc, "split clones view, shares document");
@@ -282,24 +301,33 @@ mod tests {
     #[test]
     fn closing_one_split_child_collapses_back_to_single_frame() {
         use crate::layout::Axis;
+        use crate::tree::LayoutFrame;
         let mut ws = Workspace::open(None).unwrap();
         ws.split_active(Axis::Horizontal);
-        assert_eq!(ws.frames.len(), 2);
+        assert_eq!(frame_ids(ws.root.as_ref()).len(), 2);
         ws.close_active_frame();
-        assert_eq!(ws.frames.len(), 1);
-        assert!(matches!(ws.layout, Node::Frame(_)), "single frame at root");
+        assert_eq!(frame_ids(ws.root.as_ref()).len(), 1);
+        let any = ws.root.as_any().expect("structural root has Any");
+        assert!(any.downcast_ref::<LayoutFrame>().is_some(), "single frame at root");
     }
 
     #[test]
     fn toggle_left_sidebar_adds_then_removes_it() {
+        use crate::tree::LayoutSplit;
         let mut ws = Workspace::open(None).unwrap();
         ws.toggle_sidebar(SidebarSlot::Left);
-        let n = match &ws.layout { Node::Split { children, .. } => children.len(), _ => 0 };
-        assert_eq!(n, 2, "split has editor + left sidebar");
+        let split = ws
+            .root
+            .as_any()
+            .and_then(|a| a.downcast_ref::<LayoutSplit>())
+            .expect("root lifted to a Split");
+        assert_eq!(split.children.len(), 2, "split has editor + left sidebar");
 
         ws.toggle_sidebar(SidebarSlot::Left);
-        let collapsed = matches!(&ws.layout, Node::Split { .. } | Node::Frame(_));
-        assert!(collapsed);
+        // After removal, root may have collapsed or stayed a single-child
+        // split-wrapper; both are valid outcomes (the architecture doesn't
+        // require auto-collapse of toggle-removal).
+        assert!(ws.root.as_any().is_some());
     }
 
     #[test]
@@ -321,13 +349,15 @@ mod tests {
     #[test]
     fn focus_dir_left_at_edge_with_sidebar_enters_sidebar() {
         use crate::layout::Direction;
+        use crate::tree::{LeafId, pane_at_indices, pane_leaf_id};
         let mut ws = Workspace::open(None).unwrap();
         ws.toggle_sidebar(SidebarSlot::Left);
         ws.focus_dir(Direction::Left);
-        assert!(matches!(
-            ws.layout.leaf_at(&ws.focus),
-            Some(LeafRef::Sidebar(SidebarSlot::Left))
-        ));
+        let pane = pane_at_indices(ws.root.as_ref(), &ws.focus).expect("focus resolves");
+        assert_eq!(
+            pane_leaf_id(pane),
+            Some(LeafId::Sidebar(SidebarSlot::Left)),
+        );
     }
 
     #[test]
@@ -354,33 +384,41 @@ mod tests {
     #[test]
     fn closing_focused_sidebar_lands_focus_on_a_frame() {
         use crate::layout::Direction;
+        use crate::tree::{LeafId, pane_at_indices, pane_leaf_id};
         let mut ws = Workspace::open(None).unwrap();
         ws.toggle_sidebar(SidebarSlot::Left);
         ws.focus_dir(Direction::Left);
-        assert!(matches!(
-            ws.layout.leaf_at(&ws.focus),
-            Some(LeafRef::Sidebar(SidebarSlot::Left))
-        ));
+        let pane = pane_at_indices(ws.root.as_ref(), &ws.focus).expect("focus resolves");
+        assert_eq!(
+            pane_leaf_id(pane),
+            Some(LeafId::Sidebar(SidebarSlot::Left)),
+        );
         ws.toggle_sidebar(SidebarSlot::Left);
+        let pane = pane_at_indices(ws.root.as_ref(), &ws.focus).expect("focus resolves");
         assert!(
-            matches!(ws.layout.leaf_at(&ws.focus), Some(LeafRef::Frame(_))),
-            "after sidebar removal, focus should resolve to a Frame leaf"
+            matches!(pane_leaf_id(pane), Some(LeafId::Frame(_))),
+            "after sidebar removal, focus should resolve to a Frame leaf",
         );
     }
 
     #[test]
     fn closing_one_of_three_split_children_keeps_two_remaining() {
-        use crate::layout::{Axis, Node};
+        use crate::layout::Axis;
+        use crate::tree::{LayoutSplit, LeafId, pane_at_indices, pane_leaf_id};
         let mut ws = Workspace::open(None).unwrap();
         ws.split_active(Axis::Horizontal);
         ws.split_active(Axis::Horizontal);
-        assert_eq!(ws.frames.len(), 3);
+        assert_eq!(frame_ids(ws.root.as_ref()).len(), 3);
 
         ws.close_active_frame();
-        assert_eq!(ws.frames.len(), 2);
-        let has_split = matches!(&ws.layout, Node::Split { .. });
-        assert!(has_split, "two frames should be in a Split, not a flat Frame leaf");
-        assert!(matches!(ws.layout.leaf_at(&ws.focus), Some(LeafRef::Frame(_))));
+        assert_eq!(frame_ids(ws.root.as_ref()).len(), 2);
+        let any = ws.root.as_any().expect("root has Any");
+        assert!(
+            any.downcast_ref::<LayoutSplit>().is_some(),
+            "two frames should be in a Split, not a flat Frame leaf",
+        );
+        let pane = pane_at_indices(ws.root.as_ref(), &ws.focus).expect("focus resolves");
+        assert!(matches!(pane_leaf_id(pane), Some(LeafId::Frame(_))));
     }
 
     #[test]
@@ -437,9 +475,9 @@ mod tests {
         ws.new_tab();
         let fid = ws.active_frame().unwrap();
         ws.activate_tab(fid, 0);
-        assert_eq!(ws.frames[fid].active_tab, 0);
+        assert_eq!(find_frame(ws.root.as_ref(), fid).unwrap().active_tab, 0);
         ws.activate_tab(fid, 99);
-        assert_eq!(ws.frames[fid].active_tab, 2);
+        assert_eq!(find_frame(ws.root.as_ref(), fid).unwrap().active_tab, 2);
     }
 
     #[test]
@@ -452,9 +490,9 @@ mod tests {
             hits: Vec::new(),
         });
         ws.scroll_tab_strip(fid, 100);
-        assert_eq!(ws.frames[fid].tab_strip_scroll.0, 30, "clamped to 50 - 20");
+        assert_eq!(find_frame(ws.root.as_ref(), fid).unwrap().tab_strip_scroll.0, 30, "clamped to 50 - 20");
         ws.scroll_tab_strip(fid, -1000);
-        assert_eq!(ws.frames[fid].tab_strip_scroll.0, 0, "clamped at 0");
+        assert_eq!(find_frame(ws.root.as_ref(), fid).unwrap().tab_strip_scroll.0, 0, "clamped at 0");
     }
 
     #[test]
@@ -467,7 +505,7 @@ mod tests {
             hits: Vec::new(),
         });
         ws.scroll_tab_strip(fid, 5);
-        assert_eq!(ws.frames[fid].tab_strip_scroll.0, 0);
+        assert_eq!(find_frame(ws.root.as_ref(), fid).unwrap().tab_strip_scroll.0, 0);
     }
 
     #[test]
@@ -488,14 +526,14 @@ mod tests {
         let mut ws = Workspace::open(None).unwrap();
         ws.new_tab();
         let fid = ws.active_frame().unwrap();
-        ws.frames[fid].recenter_active = false;
+        find_frame_mut(&mut ws.root, fid).unwrap().recenter_active = false;
 
         ws.next_tab();
-        assert!(ws.frames[fid].recenter_active, "keyboard nav requests scroll-into-view");
+        assert!(find_frame(ws.root.as_ref(), fid).unwrap().recenter_active, "keyboard nav requests scroll-into-view");
 
-        ws.frames[fid].recenter_active = false;
+        find_frame_mut(&mut ws.root, fid).unwrap().recenter_active = false;
         ws.activate_tab(fid, 0);
-        assert!(!ws.frames[fid].recenter_active,
+        assert!(!find_frame(ws.root.as_ref(), fid).unwrap().recenter_active,
             "click activation must not request scroll — strip stays put");
     }
 
@@ -505,9 +543,9 @@ mod tests {
         ws.new_tab();
         ws.new_tab();
         let fid = ws.active_frame().unwrap();
-        ws.frames[fid].tab_strip_scroll.0 = 7;
+        find_frame_mut(&mut ws.root, fid).unwrap().tab_strip_scroll.0 = 7;
         ws.activate_tab(fid, 0);
-        assert_eq!(ws.frames[fid].tab_strip_scroll.0, 7,
+        assert_eq!(find_frame(ws.root.as_ref(), fid).unwrap().tab_strip_scroll.0, 7,
             "click-to-activate must not relayout the strip");
     }
 

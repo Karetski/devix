@@ -11,7 +11,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
 
-use devix_config::Theme;
+use devix_core::Theme;
 
 /// Cell the popup attaches to. The renderer prefers placing the box one row
 /// below `(col, row)` (so it doesn't cover the symbol the user is pointing
