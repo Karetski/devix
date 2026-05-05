@@ -18,7 +18,7 @@ use crate::tree::{
     LayoutFrame, LayoutSidebar, LayoutSplit, LeafId, find_frame, find_frame_mut, frame_ids,
     mutate, pane_leaf_id,
 };
-use devix_view::{ScrollMode, View, ViewId};
+use crate::view::{ScrollMode, View, ViewId};
 
 use super::{Surface, canonicalize_or_keep};
 

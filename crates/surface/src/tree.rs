@@ -79,7 +79,7 @@ impl Pane for LayoutSplit {
 /// are minted via `crate::frame::mint_id()`.
 pub struct LayoutFrame {
     pub frame: FrameId,
-    pub tabs: Vec<devix_view::ViewId>,
+    pub tabs: Vec<crate::view::ViewId>,
     pub active_tab: usize,
     /// Scroll offset for this frame's tab strip, in cells.
     pub tab_strip_scroll: (u32, u32),
@@ -90,7 +90,7 @@ pub struct LayoutFrame {
 }
 
 impl LayoutFrame {
-    pub fn with_view(frame: FrameId, view: devix_view::ViewId) -> Self {
+    pub fn with_view(frame: FrameId, view: crate::view::ViewId) -> Self {
         Self {
             frame,
             tabs: vec![view],
@@ -118,7 +118,7 @@ impl LayoutFrame {
     }
 
     /// Returns `None` if `tabs` is empty or `active_tab` is out of bounds.
-    pub fn active_view(&self) -> Option<devix_view::ViewId> {
+    pub fn active_view(&self) -> Option<crate::view::ViewId> {
         self.tabs.get(self.active_tab).copied()
     }
 }
@@ -203,7 +203,7 @@ impl Pane for LayoutFrame {
 /// so `LayoutFrame::render` can compute its own highlight window.
 fn visible_byte_range(
     doc: &devix_workspace::Document,
-    view: &devix_view::View,
+    view: &crate::view::View,
     height_rows: usize,
 ) -> (usize, usize) {
     let line_count = doc.buffer.line_count();

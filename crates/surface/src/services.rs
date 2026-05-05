@@ -24,7 +24,7 @@ use std::ptr::NonNull;
 use devix_core::{Pane, Theme};
 use slotmap::SlotMap;
 
-use devix_view::{View, ViewId};
+use crate::view::{View, ViewId};
 use devix_workspace::{DocId, Document};
 
 use crate::layout::SidebarSlot;

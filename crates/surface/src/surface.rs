@@ -20,7 +20,7 @@ use devix_core::Pane;
 use devix_core::Rect;
 use slotmap::SlotMap;
 
-use devix_view::{View, ViewId};
+use crate::view::{View, ViewId};
 use devix_workspace::{DocId, Document};
 
 use crate::frame::{FrameId, mint_id};
@@ -180,7 +180,7 @@ impl Surface {
         use devix_ui::TabInfo;
         use devix_ui::layout::{VRect, ensure_visible, set_scroll};
         use devix_ui::tab_strip_layout;
-        use devix_view::ScrollMode;
+        use crate::view::ScrollMode;
 
         // Reset render-cache for this frame. Both the per-leaf walk
         // below (for `Frame` leaves' tab-strip + body rects) and the

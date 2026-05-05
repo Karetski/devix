@@ -9,7 +9,6 @@ devix-text.workspace = true
 devix-core.workspace = true
 devix-editor.workspace = true
 devix-workspace.workspace = true
-devix-view.workspace = true
 devix-ui.workspace = true
 slotmap = "1"
 anyhow = { workspace = true }
