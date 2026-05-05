@@ -2,23 +2,23 @@
 //!
 //! Two distinct phases per draw cycle:
 //!
-//! 1. [`layout_pass`] — pre-paint state mutation. Walks every `Frame` leaf,
-//!    runs the cursor-anchor pass on its active `View.scroll`, and clamps any
-//!    stale scroll offsets against the new body geometry.
+//! 1. `Surface::layout(area)` — pre-paint state mutation. Owned by the
+//!    surface model so the layout pass can be tested without an `App`.
+//!    Walks every `Frame` leaf, runs the cursor-anchor pass on its active
+//!    `View.scroll`, and clamps any stale scroll offsets.
 //! 2. [`paint`] — pure draw + render-cache updates.
 
 use devix_core::{Pane, RenderCtx};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use devix_ui::layout::{VRect, ensure_visible, set_scroll};
 use devix_ui::{
-    SidebarPane as SidebarChrome, TabStripPane, layout_tabstrip, tab_strip_layout,
+    SidebarPane as SidebarChrome, TabStripPane, tab_strip_layout,
 };
 use devix_editor::{EditorPane, SidebarSlotPane, TabbedPane};
-use devix_surface::{
-    Document, FrameId, LeafRef, PalettePane, ScrollMode, SidebarSlot, View, Surface,
-    palette_area, render_palette,
-};
+use devix_commands::PalettePane;
+use devix_core::SidebarSlot;
+use devix_surface::{Document, FrameId, LeafRef, Surface, View};
+use devix_ui::{PaletteRow, palette_area, render_palette};
 
 use crate::app::App;
 
@@ -88,11 +88,13 @@ mod tests {
 pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     let editor_area = frame.area();
 
+    // Phase 1 — layout: scroll-into-view + clamp. Mutates `app.surface`
+    // before paint sees it. Owned by surface so the contract "paint
+    // never mutates state" stays a one-liner.
+    app.surface.layout(editor_area);
+
     let leaves =
         devix_surface::leaves_with_rects(app.surface.root.as_ref(), editor_area);
-
-    // Phase 1 — layout: scroll-into-view + clamp.
-    layout_pass(&leaves, &mut app.surface);
 
     // Phase 2 — paint (pure, plus render-cache writes).
     paint(&leaves, app, frame);
@@ -101,14 +103,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     if let Some(modal) = app.surface.modal.as_ref() {
         let any = modal.as_any();
         if let Some(p) = any.and_then(|a| a.downcast_ref::<PalettePane>()) {
-            render_palette(
-                &p.state,
-                &app.commands,
-                &app.keymap,
-                &app.theme,
-                palette_area(editor_area),
-                frame,
-            );
+            paint_palette(p, app, editor_area, frame);
         } else {
             let mut overlay_ctx = RenderCtx { frame };
             modal.render(editor_area, &mut overlay_ctx);
@@ -116,70 +111,45 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     }
 }
 
-/// Mutate every `Frame`'s active `View.scroll` so the next paint pass renders
-/// the cursor in view (Anchored mode) or against a clamped offset (Free mode),
-/// and run the tab-strip's pre-paint scroll math.
-fn layout_pass(leaves: &[(LeafRef, Rect)], ws: &mut Surface) {
-    for (leaf, rect) in leaves {
-        let LeafRef::Frame(fid) = leaf else { continue };
-        let strip_area = Rect { height: 1, ..*rect };
-        let body_area = frame_body_rect(*rect);
+/// Project the palette state into the rendering-friendly `PaletteRow` shape
+/// (label/category/chord-string/selected) so `devix_ui::render_palette` can
+/// stay free of `commands`-side types.
+fn paint_palette(p: &PalettePane, app: &App, editor_area: Rect, frame: &mut Frame<'_>) {
+    let state = &p.state;
+    let selected = state.selected();
 
-        let tabs: Vec<devix_ui::TabInfo> = match devix_surface::find_frame(ws.root.as_ref(), *fid) {
-            Some(frame) => frame
-                .tabs
-                .iter()
-                .map(|vid| {
-                    let v = &ws.views[*vid];
-                    let d = &ws.documents[v.doc];
-                    let label = d.buffer.path()
-                        .and_then(|p| p.file_name())
-                        .and_then(|f| f.to_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| "[scratch]".to_string());
-                    devix_ui::TabInfo { label, dirty: d.buffer.dirty() }
-                })
-                .collect(),
-            None => continue,
-        };
-        let Some(active_tab) = devix_surface::find_frame(ws.root.as_ref(), *fid)
-            .map(|f| f.active_tab) else { continue };
-        let Some(f) = devix_surface::find_frame_mut(&mut ws.root, *fid) else { continue };
-        layout_tabstrip(
-            &tabs,
-            active_tab,
-            &mut f.tab_strip_scroll,
-            &mut f.recenter_active,
-            strip_area,
-        );
-
-        let Some(vid) = devix_surface::find_frame(ws.root.as_ref(), *fid)
-            .and_then(|f| f.active_view()) else { continue };
-        let view = &ws.views[vid];
-        let doc = &ws.documents[view.doc];
-
-        let head = view.primary().head;
-        let cur_line = doc.buffer.line_of_char(head);
-        let line_count = doc.buffer.line_count();
-        let scroll_mode = view.scroll_mode;
-        let body_w = body_area.width as u32;
-        let body_h = body_area.height as u32;
-        if body_h == 0 { continue; }
-
-        let content = (body_w, line_count.max(1) as u32);
-        let viewport = (body_w, body_h);
-        let v = &mut ws.views[vid];
-        match scroll_mode {
-            ScrollMode::Anchored => {
-                let line_rect = VRect { x: 0, y: cur_line as u32, w: body_w, h: 1 };
-                ensure_visible(&mut v.scroll, line_rect, content, viewport);
-            }
-            ScrollMode::Free => {
-                let (sx, sy) = v.scroll;
-                set_scroll(&mut v.scroll, sx, sy, content, viewport);
-            }
-        }
+    let mut chords: Vec<String> = Vec::with_capacity(state.matches().len());
+    let mut row_data: Vec<(String, &'static str, usize)> = Vec::with_capacity(state.matches().len());
+    for i in 0..state.matches().len() {
+        let Some(id) = state.matched_command_id(i) else { continue };
+        let Some(cmd) = app.commands.get(id) else { continue };
+        let chord_str = app
+            .keymap
+            .chord_for(id)
+            .map(devix_commands::format_chord)
+            .unwrap_or_default();
+        chords.push(chord_str);
+        row_data.push((cmd.label.to_string(), cmd.category.unwrap_or(""), i));
     }
+    let rows: Vec<PaletteRow<'_>> = row_data
+        .iter()
+        .zip(chords.iter())
+        .map(|((label, category, i), chord)| PaletteRow {
+            label: label.as_str(),
+            category,
+            chord: chord.as_str(),
+            selected: *i == selected,
+        })
+        .collect();
+
+    render_palette(
+        state.query(),
+        &rows,
+        selected,
+        palette_area(editor_area),
+        &app.theme,
+        frame,
+    );
 }
 
 fn paint(leaves: &[(LeafRef, Rect)], app: &mut App, frame: &mut Frame<'_>) {

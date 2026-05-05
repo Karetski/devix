@@ -14,7 +14,9 @@ use devix_core::Pane;
 use devix_plugin::{
     LuaPane, PluginInput, PluginMsg, PluginRuntime, make_command_action, parse_chord,
 };
-use devix_surface::{Command, CommandId, CommandRegistry, Context, Keymap, SidebarSlot, Surface, Viewport};
+use devix_commands::{Command, CommandId, CommandRegistry, Context, Keymap, Viewport};
+use devix_core::SidebarSlot;
+use devix_surface::Surface;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -87,7 +89,7 @@ fn hello_command_round_trips_through_registry_and_keymap() {
         category: Some("Plugin"),
         action: make_command_action(&spec, runtime.invoke_sender()),
     });
-    let chord = parse_chord(spec.chord.as_deref().unwrap()).unwrap();
+    let chord = spec.chord.expect("plugin under test must declare a chord");
     keymap.bind_command(chord, cid);
 
     let action = keymap
@@ -95,7 +97,7 @@ fn hello_command_round_trips_through_registry_and_keymap() {
         .expect("plugin chord must resolve to a command");
 
     let mut surface = Surface::open(None).unwrap();
-    let mut clipboard: Option<arboard::Clipboard> = None;
+    let mut clipboard = devix_core::NoClipboard;
     let mut quit = false;
     {
         let mut ctx = Context {
@@ -364,6 +366,8 @@ fn unparseable_chord_does_not_fail_load() {
     let path = write_plugin_named("bad-chord", source);
     let runtime = PluginRuntime::load(&path).unwrap();
     assert_eq!(runtime.contributions().commands.len(), 1);
-    assert_eq!(runtime.contributions().commands[0].chord.as_deref(), Some("wat+blorp"));
+    // Plugin host parses chords up-front; an unparseable string lands
+    // as `None` rather than blocking the whole load.
+    assert_eq!(runtime.contributions().commands[0].chord, None);
     assert!(parse_chord("wat+blorp").is_none());
 }

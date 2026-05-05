@@ -17,16 +17,17 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use devix_core::Pane;
-use ratatui::layout::Rect;
+use devix_core::Rect;
 use slotmap::SlotMap;
 
-use devix_editor::{DocId, Document};
+use devix_view::{View, ViewId};
+use devix_workspace::{DocId, Document};
+
 use crate::frame::{FrameId, mint_id};
 use crate::layout::SidebarSlot;
 use crate::tree::{LayoutFrame, LeafId, find_frame, pane_at_indices, pane_leaf_id};
 #[cfg(test)]
 use crate::tree::{find_frame_mut, frame_ids};
-use crate::view::{View, ViewId};
 
 mod focus;
 mod hittest;
@@ -163,6 +164,106 @@ impl Surface {
         let view_id = find_frame(self.root.as_ref(), frame_id)?.active_view()?;
         let doc_id = self.views[view_id].doc;
         Some((frame_id, view_id, doc_id))
+    }
+
+    /// Pre-paint layout pass.
+    ///
+    /// Walks every `Frame` leaf in the layout tree under `area` and runs the
+    /// state mutations the next paint will see: anchor `View.scroll` to the
+    /// cursor (or clamp it under the new content extent in `Free` mode), and
+    /// run the per-frame tab-strip's scroll-into-view math.
+    ///
+    /// This is the only mutation hook that runs between input dispatch and
+    /// paint. After it returns, paint is pure — render functions read state
+    /// and emit cells, never write back.
+    pub fn layout(&mut self, area: Rect) {
+        use devix_ui::TabInfo;
+        use devix_ui::layout::{VRect, ensure_visible, set_scroll};
+        use devix_view::ScrollMode;
+
+        let leaves = crate::tree::leaves_with_rects(self.root.as_ref(), area);
+        for (leaf, rect) in leaves {
+            let LeafRef::Frame(fid) = leaf else { continue };
+            let strip_area = Rect { height: 1, ..rect };
+            let body_area = Rect {
+                y: rect.y + 1,
+                height: rect.height.saturating_sub(1),
+                ..rect
+            };
+
+            let tabs: Vec<TabInfo> = match find_frame(self.root.as_ref(), fid) {
+                Some(frame) => frame
+                    .tabs
+                    .iter()
+                    .map(|vid| {
+                        let v = &self.views[*vid];
+                        let d = &self.documents[v.doc];
+                        let label = d
+                            .buffer
+                            .path()
+                            .and_then(|p| p.file_name())
+                            .and_then(|f| f.to_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "[scratch]".to_string());
+                        TabInfo {
+                            label,
+                            dirty: d.buffer.dirty(),
+                        }
+                    })
+                    .collect(),
+                None => continue,
+            };
+            let Some(active_tab) = find_frame(self.root.as_ref(), fid).map(|f| f.active_tab) else {
+                continue;
+            };
+            let Some(f) = crate::tree::find_frame_mut(&mut self.root, fid) else {
+                continue;
+            };
+            devix_ui::layout_tabstrip(
+                &tabs,
+                active_tab,
+                &mut f.tab_strip_scroll,
+                &mut f.recenter_active,
+                strip_area,
+            );
+
+            let Some(vid) =
+                find_frame(self.root.as_ref(), fid).and_then(|f| f.active_view())
+            else {
+                continue;
+            };
+            let view = &self.views[vid];
+            let doc = &self.documents[view.doc];
+
+            let head = view.primary().head;
+            let cur_line = doc.buffer.line_of_char(head);
+            let line_count = doc.buffer.line_count();
+            let scroll_mode = view.scroll_mode;
+            let body_w = body_area.width as u32;
+            let body_h = body_area.height as u32;
+            if body_h == 0 {
+                continue;
+            }
+
+            let content = (body_w, line_count.max(1) as u32);
+            let viewport = (body_w, body_h);
+            let v = &mut self.views[vid];
+            match scroll_mode {
+                ScrollMode::Anchored => {
+                    let line_rect = VRect {
+                        x: 0,
+                        y: cur_line as u32,
+                        w: body_w,
+                        h: 1,
+                    };
+                    ensure_visible(&mut v.scroll, line_rect, content, viewport);
+                }
+                ScrollMode::Free => {
+                    let (sx, sy) = v.scroll;
+                    set_scroll(&mut v.scroll, sx, sy, content, viewport);
+                }
+            }
+        }
     }
 }
 

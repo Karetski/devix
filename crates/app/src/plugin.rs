@@ -6,9 +6,9 @@ use std::sync::Arc;
 
 use devix_plugin::{
     CommandSpec, LuaPane, PluginMsg, PluginPane, PluginRuntime, default_plugin_path,
-    parse_chord,
 };
-use devix_surface::{Command, CommandId, CommandRegistry, Keymap, SidebarSlot, cmd};
+use devix_commands::{Command, CommandId, CommandRegistry, Keymap, cmd};
+use devix_core::SidebarSlot;
 
 use crate::app::App;
 use crate::events::run_command;
@@ -64,8 +64,7 @@ impl PluginWiring {
 }
 
 fn bind_chord_if_any(spec: &CommandSpec, id: CommandId, keymap: &mut Keymap) {
-    let Some(raw) = spec.chord.as_deref() else { return };
-    if let Some(chord) = parse_chord(raw) {
+    if let Some(chord) = spec.chord {
         keymap.bind_command(chord, id);
     }
 }
@@ -115,7 +114,7 @@ pub fn drain_plugin_events(app: &mut App) {
             }
         }
     }
-    app.dirty = true;
+    app.request_redraw();
 }
 
 pub fn sidebar_pane(app: &App, slot: SidebarSlot) -> Option<LuaPane> {

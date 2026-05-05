@@ -18,15 +18,19 @@
 //! Anything plugins ever depend on lives here. Keep the surface small.
 
 pub mod action;
+pub mod clipboard;
 pub mod event;
 pub mod geom;
+pub mod layout;
 pub mod pane;
 pub mod theme;
 pub mod walk;
 
 pub use action::Action;
+pub use clipboard::{Clipboard, NoClipboard};
 pub use event::Event;
 pub use geom::{Anchor, AnchorEdge, Rect};
+pub use layout::{Axis, Direction, SidebarSlot, split_rects};
 pub use pane::{HandleCtx, Outcome, Pane, RenderCtx};
 pub use theme::Theme;
 pub use walk::{focusable_at, focusable_leaves, pane_at, pane_at_path};

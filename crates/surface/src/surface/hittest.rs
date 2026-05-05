@@ -3,7 +3,7 @@
 //! input source is the same hit-test cache.
 
 use devix_core::{pane_at, Pane};
-use ratatui::layout::Rect;
+use devix_core::Rect;
 
 use crate::frame::FrameId;
 use crate::tree::{LayoutFrame, LayoutSidebar, find_frame_mut};

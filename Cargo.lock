@@ -209,6 +209,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "crossterm",
+ "devix-commands",
  "devix-core",
  "devix-editor",
  "devix-plugin",
@@ -216,6 +217,20 @@ dependencies = [
  "devix-text",
  "devix-ui",
  "ratatui",
+]
+
+[[package]]
+name = "devix-commands"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "devix-core",
+ "devix-editor",
+ "devix-surface",
+ "devix-text",
+ "devix-ui",
+ "nucleo-matcher",
 ]
 
 [[package]]
@@ -236,7 +251,8 @@ dependencies = [
  "devix-syntax",
  "devix-text",
  "devix-ui",
- "notify",
+ "devix-view",
+ "devix-workspace",
  "ratatui",
  "ropey",
  "slotmap",
@@ -247,8 +263,8 @@ name = "devix-plugin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arboard",
  "crossterm",
+ "devix-commands",
  "devix-core",
  "devix-editor",
  "devix-surface",
@@ -263,13 +279,12 @@ name = "devix-surface"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "arboard",
- "crossterm",
  "devix-core",
  "devix-editor",
  "devix-text",
- "nucleo-matcher",
- "ratatui",
+ "devix-ui",
+ "devix-view",
+ "devix-workspace",
  "slotmap",
 ]
 
@@ -297,8 +312,29 @@ dependencies = [
 name = "devix-ui"
 version = "0.1.0"
 dependencies = [
+ "crossterm",
  "devix-core",
  "ratatui",
+]
+
+[[package]]
+name = "devix-view"
+version = "0.1.0"
+dependencies = [
+ "devix-text",
+ "devix-workspace",
+ "slotmap",
+]
+
+[[package]]
+name = "devix-workspace"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "devix-syntax",
+ "devix-text",
+ "notify",
+ "slotmap",
 ]
 
 [[package]]

@@ -1,14 +1,7 @@
-//! Layout primitives: axis, direction, sidebar slot enums.
+//! Re-export of the layout primitives that live in `devix-core`.
 //!
-//! The layout *tree* lives in `crate::tree` as a `Box<dyn Pane>`. This
-//! module is just the small enums consumers (split, focus, sidebar
-//! toggling) use to express axis-or-direction.
+//! Surface used to define `Axis`, `Direction`, and `SidebarSlot` here, but
+//! `editor` and `ui` had parallel copies. The canonical home is now
+//! `devix_core::layout`; this module just re-exports for source-compat.
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Axis { Horizontal, Vertical }
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub enum SidebarSlot { Left, Right }
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Direction { Left, Down, Up, Right }
+pub use devix_core::layout::{Axis, Direction, SidebarSlot};

@@ -2,9 +2,8 @@
 //! Owned by Surface, indexed by ViewId.
 
 use devix_text::{Range, Selection, Transaction};
+use devix_workspace::DocId;
 use slotmap::new_key_type;
-
-use devix_editor::DocId;
 
 new_key_type! { pub struct ViewId; }
 

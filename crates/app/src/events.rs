@@ -5,10 +5,11 @@ use std::sync::Arc;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind};
-use devix_core::HandleCtx;
-use devix_surface::{
-    Context, EditorCommand, ModalOutcome, PalettePane, TabStripHit, Viewport, chord_from_key, cmd,
+use devix_commands::{
+    Context, EditorCommand, ModalOutcome, PalettePane, Viewport, chord_from_key, cmd,
 };
+use devix_core::HandleCtx;
+use devix_surface::TabStripHit;
 
 use crate::app::App;
 
@@ -20,7 +21,7 @@ pub fn handle_event(ev: Event, app: &mut App) {
             handle_key(ev, code, modifiers, app);
         }
         Event::Mouse(me) => handle_mouse(me, app),
-        Event::Resize(_, _) => app.dirty = true,
+        Event::Resize(_, _) => app.request_redraw(),
         _ => {}
     }
 }
@@ -49,7 +50,7 @@ pub fn handle_key(ev: Event, code: KeyCode, mods: KeyModifiers, app: &mut App) {
     if let Some(slot) = crate::plugin::focused_plugin_slot(app) {
         if let Event::Key(key_ev) = ev {
             if crate::plugin::forward_key_to_plugin(app, slot, key_ev) {
-                app.dirty = true;
+                app.request_redraw();
                 return;
             }
         }
@@ -76,7 +77,7 @@ fn dispatch_modal_event(app: &mut App, ev: &Event) {
             .as_mut()
             .expect("dispatch_modal_event requires a modal");
         let mut hctx = HandleCtx::default();
-        let _ = modal.handle(ev, ratatui::layout::Rect::default(), &mut hctx);
+        let _ = modal.handle(ev, devix_core::Rect::default(), &mut hctx);
     }
 
     let outcome = drain_modal_outcome(app);
@@ -91,7 +92,7 @@ fn dispatch_modal_event(app: &mut App, ev: &Event) {
             run_command(app, action);
         }
         ModalOutcome::None => {
-            app.dirty = true;
+            app.request_redraw();
         }
     }
 }
@@ -140,7 +141,7 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
             if let Some(slot) = crate::plugin::focused_plugin_slot(app) {
                 if let Some((rx, ry)) = sidebar_inner_relative(app, slot, me.column, me.row) {
                     if crate::plugin::forward_click_to_plugin(app, slot, rx, ry, button) {
-                        app.dirty = true;
+                        app.request_redraw();
                         return;
                     }
                 }
@@ -163,14 +164,14 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
                 if app.surface.tab_strip_can_scroll(fid) {
                     let delta: isize = if matches!(me.kind, MouseEventKind::ScrollUp) { -2 } else { 2 };
                     app.surface.scroll_tab_strip(fid, delta);
-                    app.dirty = true;
+                    app.request_redraw();
                     return;
                 }
             }
             if let Some(slot) = crate::plugin::plugin_slot_at(app, me.column, me.row) {
                 let delta: i32 = if matches!(me.kind, MouseEventKind::ScrollUp) { -2 } else { 2 };
                 if crate::plugin::scroll_plugin_pane(app, slot, delta) {
-                    app.dirty = true;
+                    app.request_redraw();
                     return;
                 }
             }
@@ -182,7 +183,7 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
                 if app.surface.tab_strip_can_scroll(fid) {
                     let delta: isize = if matches!(me.kind, MouseEventKind::ScrollLeft) { -2 } else { 2 };
                     app.surface.scroll_tab_strip(fid, delta);
-                    app.dirty = true;
+                    app.request_redraw();
                 }
             }
         }
@@ -192,7 +193,7 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
 
 fn sidebar_inner_relative(
     app: &App,
-    slot: devix_surface::SidebarSlot,
+    slot: devix_core::SidebarSlot,
     col: u16,
     row: u16,
 ) -> Option<(u16, u16)> {
@@ -211,7 +212,7 @@ fn handle_tab_strip_click(app: &mut App, hit: TabStripHit) {
     let TabStripHit::Tab { frame, idx } = hit;
     app.surface.focus_frame(frame);
     app.surface.activate_tab(frame, idx);
-    app.dirty = true;
+    app.request_redraw();
 }
 
 pub fn run_command(app: &mut App, action: Arc<dyn EditorCommand>) {
@@ -235,12 +236,12 @@ pub fn run_command(app: &mut App, action: Arc<dyn EditorCommand>) {
 
     let mut cx = Context {
         surface: &mut app.surface,
-        clipboard: &mut app.clipboard,
+        clipboard: app.clipboard.as_mut(),
         quit: &mut app.quit,
         viewport,
         commands: &app.commands,
     };
     action.invoke(&mut cx);
 
-    app.dirty = true;
+    app.request_redraw();
 }

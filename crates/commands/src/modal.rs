@@ -5,21 +5,20 @@
 //! responder chain — the dispatcher gives it first crack at every input
 //! event before the focused-leaf path. There is no closed `Overlay` enum
 //! and no per-modal type-tagging in the framework.
+//!
+//! Rendering for these panes lives in `devix-ui` (e.g.
+//! `ui::palette::render_palette`). This module owns only the state and
+//! input handling so the model layer stays free of `ratatui::widgets`.
 
 use std::any::Any;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use devix_core::{HandleCtx, Outcome, Pane, RenderCtx, Theme};
+use devix_core::{HandleCtx, Outcome, Pane, Rect, RenderCtx};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32String};
-use ratatui::Frame;
-use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget};
 
-use crate::command::{CommandId, CommandRegistry};
-use crate::keymap::{Chord, Keymap};
+use crate::keymap::Chord;
+use crate::registry::{CommandId, CommandRegistry};
 
 /// Side-effect requested by a modal Pane during input handling. The host
 /// reads and clears this after `Pane::handle` returns; modals signal
@@ -86,9 +85,6 @@ impl PaletteState {
     }
 
     pub fn set_query(&mut self, q: String) {
-        if q == self.query {
-            return;
-        }
         self.query = q;
         self.refilter();
         self.selected = 0;
@@ -96,7 +92,6 @@ impl PaletteState {
 
     pub fn move_selection(&mut self, delta: isize) {
         if self.matches.is_empty() {
-            self.selected = 0;
             return;
         }
         let len = self.matches.len() as isize;
@@ -126,7 +121,7 @@ impl PaletteState {
 }
 
 // ---------------------------------------------------------------------------
-// PalettePane — owned modal Pane
+// PalettePane — owned modal Pane (state + input only; rendering in `devix-ui`)
 // ---------------------------------------------------------------------------
 
 pub struct PalettePane {
@@ -184,6 +179,11 @@ impl PalettePane {
 }
 
 impl Pane for PalettePane {
+    /// PalettePane render is a no-op: rendering is driven externally
+    /// from the app's render module via `devix_ui::render_palette`,
+    /// which gets the typed registry/keymap context the trait can't
+    /// carry. Keeping this empty preserves the closed `dyn Pane` shape
+    /// without coupling commands to ratatui.
     fn render(&self, _area: Rect, _ctx: &mut RenderCtx<'_, '_>) {}
 
     fn handle(&mut self, ev: &Event, _area: Rect, _ctx: &mut HandleCtx<'_>) -> Outcome {
@@ -213,169 +213,18 @@ impl Pane for PalettePane {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Render helpers
-// ---------------------------------------------------------------------------
-
-/// Compute the centered area the palette occupies inside `parent`.
-pub fn palette_area(parent: Rect) -> Rect {
-    let w = (parent.width as u32 * 60 / 100).clamp(40, 100) as u16;
-    let w = w.min(parent.width);
-    let h = (parent.height as u32 * 60 / 100).clamp(8, 24) as u16;
-    let h = h.min(parent.height);
-    let x = parent.x + (parent.width.saturating_sub(w)) / 2;
-    let y = parent.y + (parent.height.saturating_sub(h)) / 3;
-    Rect {
-        x,
-        y,
-        width: w,
-        height: h,
-    }
-}
-
-pub fn render_palette(
-    state: &PaletteState,
-    registry: &CommandRegistry,
-    keymap: &Keymap,
-    theme: &Theme,
-    area: Rect,
-    frame: &mut Frame<'_>,
-) {
-    Clear.render(area, frame.buffer_mut());
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Command Palette ")
-        .style(theme.text_style());
-    let inner = block.inner(area);
-    block.render(area, frame.buffer_mut());
-    if inner.width == 0 || inner.height == 0 {
-        return;
-    }
-
-    let query_row = Rect { height: 1, ..inner };
-    let query_text = format!("> {}", state.query());
-    Paragraph::new(query_text).render(query_row, frame.buffer_mut());
-
-    if inner.height <= 2 {
-        return;
-    }
-
-    let list_area = Rect {
-        y: inner.y + 2,
-        height: inner.height - 2,
-        ..inner
-    };
-
-    let visible = list_area.height as usize;
-    if visible == 0 {
-        return;
-    }
-
-    let total = state.matches().len();
-    let selected = state.selected();
-    let target_row = visible / 3;
-    let top = selected
-        .saturating_sub(target_row)
-        .min(total.saturating_sub(visible.min(total)));
-
-    let select_style = theme.selection_style();
-    let dim = Style::default().add_modifier(Modifier::DIM);
-
-    for row in 0..visible {
-        let match_idx = top + row;
-        if match_idx >= total {
-            break;
-        }
-        let Some(id) = state.matched_command_id(match_idx) else {
-            continue;
-        };
-        let Some(cmd) = registry.get(id) else {
-            continue;
-        };
-
-        let chord_str = keymap
-            .chord_for(id)
-            .map(format_chord)
-            .unwrap_or_default();
-        let label = cmd.label;
-        let category = cmd.category.unwrap_or("");
-
-        let row_rect = Rect {
-            x: list_area.x,
-            y: list_area.y + row as u16,
-            width: list_area.width,
-            height: 1,
-        };
-
-        let left = if category.is_empty() {
-            label.to_string()
-        } else {
-            format!("{}    {}", label, category)
-        };
-        let total_w = row_rect.width as usize;
-        let chord_w = chord_str.len();
-        let left_max = total_w.saturating_sub(chord_w + 1);
-        let left_trunc: String = left.chars().take(left_max).collect();
-        let pad = total_w.saturating_sub(left_trunc.chars().count() + chord_w);
-        let line_text = format!("{}{}{}", left_trunc, " ".repeat(pad), chord_str);
-
-        let style = if match_idx == selected {
-            select_style
-        } else {
-            Style::default()
-        };
-        let chord_style = if match_idx == selected { select_style } else { dim };
-
-        let label_span = Span::styled(
-            line_text[..line_text.len() - chord_str.len()].to_string(),
-            style,
-        );
-        let chord_span = Span::styled(chord_str.clone(), chord_style);
-        Paragraph::new(Line::from(vec![label_span, chord_span]))
-            .render(row_rect, frame.buffer_mut());
-    }
-}
-
 /// Render `Chord` as a human-readable shortcut string ("Ctrl+Shift+P").
+/// Thin wrapper over `devix_ui::palette::format_chord` so callers can
+/// pass a `Chord` directly. Lives here because `Chord` is a commands type.
 pub fn format_chord(chord: Chord) -> String {
-    let mut parts: Vec<String> = Vec::with_capacity(4);
-    if chord.mods.contains(KeyModifiers::CONTROL) {
-        parts.push("Ctrl".into());
-    }
-    if chord.mods.contains(KeyModifiers::ALT) {
-        parts.push("Alt".into());
-    }
-    if chord.mods.contains(KeyModifiers::SHIFT) {
-        parts.push("Shift".into());
-    }
-    let key = match chord.code {
-        KeyCode::Char(c) => c.to_ascii_uppercase().to_string(),
-        KeyCode::Enter => "Enter".into(),
-        KeyCode::Esc => "Esc".into(),
-        KeyCode::Tab => "Tab".into(),
-        KeyCode::Backspace => "Backspace".into(),
-        KeyCode::Delete => "Delete".into(),
-        KeyCode::Left => "Left".into(),
-        KeyCode::Right => "Right".into(),
-        KeyCode::Up => "Up".into(),
-        KeyCode::Down => "Down".into(),
-        KeyCode::Home => "Home".into(),
-        KeyCode::End => "End".into(),
-        KeyCode::PageUp => "PgUp".into(),
-        KeyCode::PageDown => "PgDn".into(),
-        KeyCode::F(n) => format!("F{n}"),
-        other => format!("{other:?}"),
-    };
-    parts.push(key);
-    parts.join("+")
+    devix_ui::format_chord(chord.code, chord.mods)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cmd::Quit;
-    use crate::command::{Command, CommandId, CommandRegistry};
+    use crate::registry::{Command, CommandId, CommandRegistry};
     use std::sync::Arc;
 
     fn reg() -> CommandRegistry {

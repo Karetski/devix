@@ -9,10 +9,9 @@ use anyhow::Result;
 use crossterm::event::{self, Event};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
-use devix_core::Theme;
-use devix_surface::{
-    CommandRegistry, Keymap, Surface, build_registry, default_keymap,
-};
+use devix_commands::{CommandRegistry, Keymap, build_registry, default_keymap};
+use devix_core::{Clipboard, Theme};
+use devix_surface::Surface;
 
 use crate::clipboard;
 use crate::events::{handle_event, run_command};
@@ -26,8 +25,8 @@ pub struct App {
     pub keymap: Keymap,
     pub theme: Theme,
     pub quit: bool,
-    pub clipboard: Option<arboard::Clipboard>,
-    pub dirty: bool,
+    pub clipboard: Box<dyn Clipboard>,
+    dirty: bool,
     pub pending_scroll: isize,
     /// Lua plugin runtime + the contributions it registered. `None` when
     /// no `DEVIX_PLUGIN` was set or loading failed; the editor still runs
@@ -58,6 +57,18 @@ enum MainEvent {
 }
 
 impl App {
+    /// Mark the next frame for redraw. Called from any code path that
+    /// changes user-visible state (input, plugin events, disk watcher).
+    /// The render driver consumes the flag once per frame via `take_dirty`.
+    pub fn request_redraw(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Read-and-clear the dirty flag. Owned by the render driver in `run`.
+    pub(crate) fn take_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.dirty)
+    }
+
     pub fn new(path: Option<PathBuf>, plugin_wakeup: Option<devix_plugin::Wakeup>) -> Result<Self> {
         let surface = Surface::open(path)?;
         let clipboard = clipboard::init();
@@ -107,9 +118,8 @@ pub fn run<B: Backend>(terminal: &mut Terminal<B>, path: Option<PathBuf>) -> Res
         drain_disk_events(&mut app);
         drain_plugin_events(&mut app);
 
-        if app.dirty {
+        if app.take_dirty() {
             terminal.draw(|frame| render(frame, &mut app))?;
-            app.dirty = false;
         }
 
         match rx.recv_timeout(IDLE_TIMEOUT) {
@@ -131,7 +141,7 @@ pub fn run<B: Backend>(terminal: &mut Terminal<B>, path: Option<PathBuf>) -> Res
 
         if app.pending_scroll != 0 {
             let delta = std::mem::take(&mut app.pending_scroll);
-            run_command(&mut app, std::sync::Arc::new(devix_surface::cmd::ScrollBy(delta)));
+            run_command(&mut app, std::sync::Arc::new(devix_commands::cmd::ScrollBy(delta)));
         }
     }
     Ok(())

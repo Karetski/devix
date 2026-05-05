@@ -1,9 +1,10 @@
 //! Dispatcher context.
 
-use ratatui::layout::Rect;
+use devix_core::Clipboard;
+use devix_core::Rect;
 
-use crate::command::CommandRegistry;
-use crate::surface::Surface;
+use crate::registry::CommandRegistry;
+use devix_surface::Surface;
 
 #[derive(Copy, Clone, Default)]
 pub struct Viewport {
@@ -28,7 +29,7 @@ impl From<(Rect, u16)> for Viewport {
 
 pub struct Context<'a> {
     pub surface: &'a mut Surface,
-    pub clipboard: &'a mut Option<arboard::Clipboard>,
+    pub clipboard: &'a mut dyn Clipboard,
     pub quit: &'a mut bool,
     pub viewport: Viewport,
     pub commands: &'a CommandRegistry,

@@ -194,11 +194,7 @@ pub trait CollectionLayout {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Axis {
-    Horizontal,
-    Vertical,
-}
+pub use devix_core::Axis;
 
 /// 1D flow layout — items along an axis with optional spacing between them.
 /// Spacing is reported as decorations (id = index of the item *before* the

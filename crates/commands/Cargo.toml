@@ -1,15 +1,15 @@
 [package]
-name = "devix-surface"
+name = "devix-commands"
 edition.workspace = true
 version.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-devix-text.workspace = true
+crossterm.workspace = true
 devix-core.workspace = true
+devix-text.workspace = true
 devix-editor.workspace = true
-devix-workspace.workspace = true
-devix-view.workspace = true
+devix-surface.workspace = true
 devix-ui.workspace = true
-slotmap = "1"
-anyhow = { workspace = true }
+nucleo-matcher.workspace = true
+anyhow.workspace = true

@@ -20,8 +20,7 @@
 //! ownership migrates onto `TabbedPane` (Phase 3c follow-up) — at that
 //! point `EditorPane` can own its data and the render tree disappears.
 
-use devix_core::{Event, HandleCtx, Outcome, Pane, RenderCtx};
-use ratatui::layout::{Constraint, Direction as RatDirection, Layout, Rect};
+use devix_core::{Event, HandleCtx, Outcome, Pane, Rect, RenderCtx, split_rects};
 use std::any::Any;
 
 use crate::frame::FrameId;
@@ -49,29 +48,12 @@ impl Pane for LayoutSplit {
         if self.children.is_empty() {
             return Vec::new();
         }
-        let total: u32 = self
-            .children
-            .iter()
-            .map(|(_, w)| *w as u32)
-            .sum::<u32>()
-            .max(1);
-        let constraints: Vec<Constraint> = self
-            .children
-            .iter()
-            .map(|(_, w)| Constraint::Ratio(*w as u32, total))
-            .collect();
-        let dir = match self.axis {
-            Axis::Horizontal => RatDirection::Horizontal,
-            Axis::Vertical => RatDirection::Vertical,
-        };
-        let rects = Layout::default()
-            .direction(dir)
-            .constraints(constraints)
-            .split(area);
+        let weights: Vec<u16> = self.children.iter().map(|(_, w)| *w).collect();
+        let rects = split_rects(area, self.axis, &weights);
         self.children
             .iter()
-            .zip(rects.iter())
-            .map(|((child, _), rect)| (*rect, child.as_ref()))
+            .zip(rects.into_iter())
+            .map(|((child, _), rect)| (rect, child.as_ref()))
             .collect()
     }
 
@@ -95,7 +77,7 @@ impl Pane for LayoutSplit {
 /// are minted via `crate::frame::mint_id()`.
 pub struct LayoutFrame {
     pub frame: FrameId,
-    pub tabs: Vec<crate::view::ViewId>,
+    pub tabs: Vec<devix_view::ViewId>,
     pub active_tab: usize,
     /// Scroll offset for this frame's tab strip, in cells.
     pub tab_strip_scroll: (u32, u32),
@@ -106,7 +88,7 @@ pub struct LayoutFrame {
 }
 
 impl LayoutFrame {
-    pub fn with_view(frame: FrameId, view: crate::view::ViewId) -> Self {
+    pub fn with_view(frame: FrameId, view: devix_view::ViewId) -> Self {
         Self {
             frame,
             tabs: vec![view],
@@ -134,7 +116,7 @@ impl LayoutFrame {
     }
 
     /// Returns `None` if `tabs` is empty or `active_tab` is out of bounds.
-    pub fn active_view(&self) -> Option<crate::view::ViewId> {
+    pub fn active_view(&self) -> Option<devix_view::ViewId> {
         self.tabs.get(self.active_tab).copied()
     }
 }

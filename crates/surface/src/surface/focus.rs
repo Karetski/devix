@@ -9,7 +9,7 @@
 //! were laid out at the last render.
 
 use devix_core::{Pane, pane_at_path};
-use ratatui::layout::Rect;
+use devix_core::Rect;
 
 use crate::frame::FrameId;
 use crate::layout::{Axis, Direction, SidebarSlot};

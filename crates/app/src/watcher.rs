@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use devix_surface::cmd;
+use devix_commands::cmd;
 
 use crate::app::App;
 use crate::events::run_command;
@@ -52,5 +52,5 @@ pub fn drain_disk_events(app: &mut App) {
         }
     }
 
-    app.dirty = true;
+    app.request_redraw();
 }

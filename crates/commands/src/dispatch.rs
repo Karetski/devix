@@ -5,7 +5,7 @@
 use devix_text::{Buffer, delete_each_tx, delete_range_tx, replace_selection_tx};
 
 use crate::context::{Context, Viewport};
-use crate::view::{ScrollMode, View};
+use devix_surface::view::{ScrollMode, View};
 
 pub(crate) fn page_step(v: Viewport) -> usize { v.height.saturating_sub(1).max(1) as usize }
 
@@ -138,8 +138,7 @@ pub(crate) fn do_copy(cx: &mut Context<'_>) {
     };
     if start == end { return; }
     let text = cx.surface.documents[did].buffer.slice_to_string(start, end);
-    let Some(cb) = cx.clipboard.as_mut() else { return };
-    let _ = cb.set_text(text);
+    let _ = cx.clipboard.set_text(text);
 }
 
 pub(crate) fn do_cut(cx: &mut Context<'_>) {
@@ -152,8 +151,7 @@ pub(crate) fn do_cut(cx: &mut Context<'_>) {
     };
     if start == end { return; }
     let text = cx.surface.documents[did].buffer.slice_to_string(start, end);
-    let Some(cb) = cx.clipboard.as_mut() else { return };
-    if cb.set_text(text).is_err() { return; }
+    if !cx.clipboard.set_text(text) { return; }
     let tx = delete_range_tx(
         &cx.surface.documents[did].buffer,
         &cx.surface.views[vid].selection,
@@ -165,7 +163,7 @@ pub(crate) fn do_cut(cx: &mut Context<'_>) {
 }
 
 pub(crate) fn do_paste(cx: &mut Context<'_>) {
-    let text = match cx.clipboard.as_mut().and_then(|cb| cb.get_text().ok()) {
+    let text = match cx.clipboard.get_text() {
         Some(t) => t,
         None => return,
     };

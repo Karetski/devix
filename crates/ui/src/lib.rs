@@ -3,10 +3,12 @@
 //! palette) live in `devix-editor` / `devix-surface`.
 
 pub mod layout;
+pub mod palette;
 pub mod popup;
 pub mod sidebar;
 pub mod tabstrip;
 
+pub use palette::{PaletteRow, format_chord, palette_area, render_palette};
 pub use popup::{CompletionLine, Popup, PopupAnchor, PopupContent, render_popup};
 pub use sidebar::{SidebarInfo, SidebarPane, render_sidebar};
 pub use tabstrip::{

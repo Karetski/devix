@@ -16,18 +16,12 @@
 //! thing as the framework": ask each child for its rect, paint it. There's
 //! no special composite API.
 
-use devix_core::{Event, HandleCtx, Outcome, Pane, RenderCtx};
+pub use devix_core::Axis;
+
+use devix_core::{Event, HandleCtx, Outcome, Pane, Rect, RenderCtx, split_rects};
 use devix_ui::{SidebarPane as SidebarChrome, TabStripPane};
-use ratatui::layout::{Constraint, Direction as RatDirection, Layout, Rect};
 
 use crate::editor::EditorPane;
-
-/// Axis along which a `SplitPane` lays out its children.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Axis {
-    Horizontal,
-    Vertical,
-}
 
 /// Proportional split: children share the available area along `axis`,
 /// each weighted by its `u16` factor. Mirrors `Node::Split` semantics.
@@ -53,29 +47,12 @@ impl<'a> Pane for SplitPane<'a> {
         if self.children.is_empty() {
             return Vec::new();
         }
-        let total: u32 = self
-            .children
-            .iter()
-            .map(|(_, w)| *w as u32)
-            .sum::<u32>()
-            .max(1);
-        let constraints: Vec<Constraint> = self
-            .children
-            .iter()
-            .map(|(_, w)| Constraint::Ratio(*w as u32, total))
-            .collect();
-        let dir = match self.axis {
-            Axis::Horizontal => RatDirection::Horizontal,
-            Axis::Vertical => RatDirection::Vertical,
-        };
-        let rects = Layout::default()
-            .direction(dir)
-            .constraints(constraints)
-            .split(area);
+        let weights: Vec<u16> = self.children.iter().map(|(_, w)| *w).collect();
+        let rects = split_rects(area, self.axis, &weights);
         self.children
             .iter()
-            .zip(rects.iter())
-            .map(|((child, _), rect)| (*rect, child.as_ref()))
+            .zip(rects.into_iter())
+            .map(|((child, _), rect)| (rect, child.as_ref()))
             .collect()
     }
 }

@@ -47,13 +47,10 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result, anyhow};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton};
-use devix_core::{Action, Event, HandleCtx, Outcome, Pane, RenderCtx};
-use devix_surface::{Chord, Context, EditorCommand, SidebarSlot};
+use devix_commands::{Chord, Context, EditorCommand};
+use devix_core::{Action, Event, HandleCtx, Outcome, Pane, Rect, RenderCtx, SidebarSlot};
 use mlua::{Function, Lua, LuaOptions, RegistryKey, StdLib, Table, UserData,
     UserDataMethods, Value};
-use ratatui::layout::Rect;
-use ratatui::text::Line;
-use ratatui::widgets::Paragraph;
 use tokio::sync::mpsc::{
     UnboundedReceiver, UnboundedSender, error::TryRecvError, unbounded_channel,
 };
@@ -64,10 +61,14 @@ use tokio::sync::mpsc::{
 pub struct CommandSpec {
     pub id: String,
     pub label: String,
-    /// Optional chord like `"ctrl+h"` / `"ctrl+shift+p"`. Parsed by
-    /// [`parse_chord`] before binding to the keymap; unparseable chords
-    /// log to the status line and the command stays palette-only.
-    pub chord: Option<String>,
+    /// Optional chord pre-parsed at registration time. The Lua side
+    /// passes a string ("ctrl+shift+p"); the plugin host runs it through
+    /// [`parse_chord`] before producing the spec, so consumers (app
+    /// keymap binding) do not need to re-parse. `None` means "no chord
+    /// bound" — either Lua passed nothing or the string was unparseable
+    /// (the unparseable case is silent for now; future host versions
+    /// may surface it as a load-time warning).
+    pub chord: Option<Chord>,
     pub handle: u64,
 }
 
@@ -304,7 +305,8 @@ impl PluginHost {
                 lua.create_function(move |lua, table: Table| {
                     let id: String = table.get("id")?;
                     let label: String = table.get("label")?;
-                    let chord: Option<String> = table.get("chord")?;
+                    let chord_raw: Option<String> = table.get("chord")?;
+                    let chord = chord_raw.as_deref().and_then(parse_chord);
                     let run: Function = table.get("run")?;
 
                     let key = lua.create_registry_value(run)?;
@@ -955,14 +957,28 @@ impl Pane for LuaPane {
         if scroll != raw_scroll {
             self.scroll.store(scroll, Ordering::Release);
         }
-        let lines: Vec<Line<'_>> = snapshot
-            .iter()
-            .map(|s| Line::from(s.clone()))
-            .collect();
-        ctx.frame.render_widget(
-            Paragraph::new(lines).scroll((scroll, 0)),
-            area,
-        );
+        // Direct cell-write paint so this crate does not depend on
+        // `ratatui::widgets`. Walk the visible window of `snapshot`,
+        // truncate each line to `area.width`, and stamp it via
+        // `Buffer::set_stringn` (the safe variant that respects width).
+        let buf = ctx.frame.buffer_mut();
+        let top = scroll as usize;
+        let visible = area.height as usize;
+        for row in 0..visible {
+            let line_idx = top + row;
+            if line_idx >= line_count {
+                break;
+            }
+            let y = area.y + row as u16;
+            let line = &snapshot[line_idx];
+            buf.set_stringn(
+                area.x,
+                y,
+                line,
+                area.width as usize,
+                ratatui::style::Style::default(),
+            );
+        }
         // Publish the painted body height back to Lua so plugins can
         // keep selection visible (`pane:visible_rows()`).
         self.visible_rows.store(area.height, Ordering::Release);
@@ -1137,7 +1153,7 @@ mod tests {
         let c = host.load_file(&p).unwrap();
         assert_eq!(c.commands.len(), 1);
         assert_eq!(c.commands[0].id, "hello");
-        assert_eq!(c.commands[0].chord.as_deref(), Some("ctrl+h"));
+        assert_eq!(c.commands[0].chord, parse_chord("ctrl+h"));
         assert_eq!(c.panes.len(), 1);
         assert_eq!(c.panes[0].slot, SidebarSlot::Left);
         assert_eq!(
