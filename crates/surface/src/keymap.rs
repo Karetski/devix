@@ -125,7 +125,7 @@ pub fn default_keymap() -> Keymap {
     k.bind_command(chord(ch('b'), C | A),                   cmd_id::SIDEBAR_RIGHT);
 
     // Command palette
-    k.bind_command(chord(ch('p'), C | S),                   cmd_id::PALETTE_OPEN);
+    k.bind_command(chord(ch('p'), C),                       cmd_id::PALETTE_OPEN);
 
     // Language server
     k.bind_command(chord(ch('i'), C),                       cmd_id::LSP_HOVER);
