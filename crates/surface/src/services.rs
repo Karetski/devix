@@ -24,7 +24,7 @@ use std::ptr::NonNull;
 use devix_core::{Pane, Theme};
 use slotmap::SlotMap;
 
-use crate::view::{View, ViewId};
+use crate::cursor::{Cursor, CursorId};
 use devix_workspace::{DocId, Document};
 
 use crate::layout::SidebarSlot;
@@ -32,7 +32,7 @@ use crate::surface::{LeafRef, RenderCache};
 
 pub struct RenderServices<'a> {
     pub documents: &'a SlotMap<DocId, Document>,
-    pub views: &'a SlotMap<ViewId, View>,
+    pub cursors: &'a SlotMap<CursorId, Cursor>,
     pub theme: &'a Theme,
     pub render_cache: &'a RenderCache,
     /// Which leaf currently holds focus, in tree-identity terms. The

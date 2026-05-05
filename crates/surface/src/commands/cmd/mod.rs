@@ -132,11 +132,11 @@ mod tests {
     fn surface_with_text(text: &str) -> Surface {
         use devix_text::{Selection, replace_selection_tx};
         let mut ws = Surface::open(None).unwrap();
-        let did = ws.active_view().unwrap().doc;
+        let did = ws.active_cursor().unwrap().doc;
         let tx = replace_selection_tx(&ws.documents[did].buffer, &Selection::point(0), text);
         ws.documents[did].buffer.apply(tx);
-        let vid = ws.active_ids().unwrap().1;
-        ws.views[vid].selection = Selection::point(0);
+        let cid = ws.active_ids().unwrap().1;
+        ws.cursors[cid].selection = Selection::point(0);
         ws
     }
 
@@ -150,10 +150,10 @@ mod tests {
         AddCursorBelow.invoke(&mut ctx);
         AddCursorBelow.invoke(&mut ctx);
         InsertChar('x').invoke(&mut ctx);
-        let did = ws.active_view().unwrap().doc;
+        let did = ws.active_cursor().unwrap().doc;
         assert_eq!(ws.documents[did].buffer.rope().to_string(), "xaa\nxbb\nxcc");
-        let vid = ws.active_ids().unwrap().1;
-        let sel = &ws.views[vid].selection;
+        let cid = ws.active_ids().unwrap().1;
+        let sel = &ws.cursors[cid].selection;
         assert_eq!(sel.len(), 3);
         for r in sel.ranges() {
             let buf = &ws.documents[did].buffer;
@@ -169,8 +169,8 @@ mod tests {
         let commands = CommandRegistry::default();
         let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands);
         AddCursorAbove.invoke(&mut ctx);
-        let vid = ws.active_ids().unwrap().1;
-        assert_eq!(ws.views[vid].selection.len(), 1);
+        let cid = ws.active_ids().unwrap().1;
+        assert_eq!(ws.cursors[cid].selection.len(), 1);
     }
 
     #[test]
@@ -183,10 +183,10 @@ mod tests {
         AddCursorBelow.invoke(&mut ctx);
         MoveRight { extend: false }.invoke(&mut ctx);
         MoveRight { extend: false }.invoke(&mut ctx);
-        let vid = ws.active_ids().unwrap().1;
-        let did = ws.views[vid].doc;
+        let cid = ws.active_ids().unwrap().1;
+        let did = ws.cursors[cid].doc;
         let buf = &ws.documents[did].buffer;
-        let cols: Vec<usize> = ws.views[vid]
+        let cols: Vec<usize> = ws.cursors[cid]
             .selection
             .ranges()
             .iter()
@@ -198,8 +198,8 @@ mod tests {
     #[test]
     fn delete_back_removes_one_char_per_cursor() {
         let mut ws = surface_with_text("aa\nbb");
-        let vid0 = ws.active_ids().unwrap().1;
-        ws.views[vid0].selection = devix_text::Selection::with_ranges(
+        let cid0 = ws.active_ids().unwrap().1;
+        ws.cursors[cid0].selection = devix_text::Selection::with_ranges(
             vec![devix_text::Range::point(2), devix_text::Range::point(5)],
             0,
         );
@@ -208,7 +208,7 @@ mod tests {
         let commands = CommandRegistry::default();
         let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands);
         DeleteBack { word: false }.invoke(&mut ctx);
-        let did = ws.active_view().unwrap().doc;
+        let did = ws.active_cursor().unwrap().doc;
         assert_eq!(ws.documents[did].buffer.rope().to_string(), "a\nb");
     }
 
@@ -222,8 +222,8 @@ mod tests {
         AddCursorBelow.invoke(&mut ctx);
         AddCursorBelow.invoke(&mut ctx);
         CollapseSelection.invoke(&mut ctx);
-        let vid = ws.active_ids().unwrap().1;
-        assert_eq!(ws.views[vid].selection.len(), 1);
+        let cid = ws.active_ids().unwrap().1;
+        assert_eq!(ws.cursors[cid].selection.len(), 1);
     }
 
     #[test]

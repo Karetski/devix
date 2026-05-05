@@ -1,26 +1,26 @@
-//! View = per-frame editor state (selection + sticky col + scroll).
-//! Owned by Surface, indexed by ViewId.
+//! Cursor = per-tab editing state (selection + sticky col + scroll).
+//! Owned by Surface, indexed by CursorId. One per open tab.
 
 use devix_text::{Range, Selection, Transaction};
 use devix_workspace::DocId;
 use slotmap::new_key_type;
 
-new_key_type! { pub struct ViewId; }
+new_key_type! { pub struct CursorId; }
 
-/// What the next render pass should do with the view's scroll offset.
+/// What the next render pass should do with the cursor's scroll offset.
 ///
-/// * `Anchored` — bump scroll the minimum amount needed to keep the cursor
+/// * `Anchored` — bump scroll the minimum amount needed to keep the caret
 ///   visible (the editor "follows the cursor"). The default for keyboard
 ///   navigation and edits.
 /// * `Free` — leave scroll alone. Set by `Action::ScrollBy` so a wheel scroll
-///   past the cursor doesn't snap back on the next frame.
+///   past the caret doesn't snap back on the next frame.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ScrollMode {
     Anchored,
     Free,
 }
 
-pub struct View {
+pub struct Cursor {
     pub doc: DocId,
     pub selection: Selection,
     /// Sticky column for vertical motion.
@@ -33,7 +33,7 @@ pub struct View {
     pub scroll_mode: ScrollMode,
 }
 
-impl View {
+impl Cursor {
     pub fn new(doc: DocId) -> Self {
         Self {
             doc,
@@ -66,9 +66,9 @@ impl View {
         self.scroll_mode = ScrollMode::Anchored;
     }
 
-    /// Replace the selection and reset transient view state (sticky col,
-    /// scroll mode). Used by jump-style updates (undo, redo, select-all)
-    /// where the new position has no continuity with prior state.
+    /// Replace the selection and reset transient state (sticky col, scroll
+    /// mode). Used by jump-style updates (undo, redo, select-all) where the
+    /// new position has no continuity with prior state.
     pub fn adopt_selection(&mut self, sel: Selection) {
         self.selection = sel;
         self.target_col = None;
@@ -88,13 +88,13 @@ mod tests {
     use slotmap::SlotMap;
 
     #[test]
-    fn fresh_view_starts_at_origin_anchored() {
+    fn fresh_cursor_starts_at_origin_anchored() {
         let mut docs: SlotMap<DocId, ()> = SlotMap::with_key();
         let id = docs.insert(());
-        let v = View::new(id);
-        assert_eq!(v.primary().head, 0);
-        assert_eq!(v.scroll_mode, ScrollMode::Anchored);
-        assert!(v.target_col.is_none());
-        assert_eq!(v.scroll_top(), 0);
+        let c = Cursor::new(id);
+        assert_eq!(c.primary().head, 0);
+        assert_eq!(c.scroll_mode, ScrollMode::Anchored);
+        assert!(c.target_col.is_none());
+        assert_eq!(c.scroll_top(), 0);
     }
 }

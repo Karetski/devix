@@ -3,8 +3,8 @@
 //! Two phases per draw cycle:
 //!
 //! 1. `Surface::layout(area)` — pre-paint state mutation. Walks the
-//!    structural tree, runs the cursor-anchor pass on each `Frame`'s
-//!    active `View.scroll`, and populates the render-cache (frame
+//!    structural tree, runs the caret-anchor pass on each `Frame`'s
+//!    active `Cursor.scroll`, and populates the render-cache (frame
 //!    body rects, tab-strip hit regions, sidebar rects). All
 //!    mutation lives here so paint stays pure.
 //! 2. [`render`] — pure draw. The structural tree's own `render` impls
@@ -107,7 +107,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     {
         let services = RenderServices {
             documents: &app.surface.documents,
-            views: &app.surface.views,
+            cursors: &app.surface.cursors,
             theme: &app.theme,
             render_cache: &app.surface.render_cache,
             focused_leaf,

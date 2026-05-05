@@ -1,7 +1,7 @@
 //! Mouse-driven commands: scroll, click, drag.
 
 use devix_core::Action;
-use crate::view::ScrollMode;
+use crate::cursor::ScrollMode;
 
 use crate::commands::context::Context;
 use crate::commands::dispatch;
@@ -9,14 +9,14 @@ use crate::commands::dispatch;
 pub struct ScrollBy(pub isize);
 impl<'a> Action<Context<'a>> for ScrollBy {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some((_, vid, did)) = ctx.surface.active_ids() else { return };
+        let Some((_, cid, did)) = ctx.surface.active_ids() else { return };
         let line_count = ctx.surface.documents[did].buffer.line_count();
-        let v = &mut ctx.surface.views[vid];
+        let c = &mut ctx.surface.cursors[cid];
         let max_top = line_count.saturating_sub(1);
-        let next = (v.scroll_top() as isize).saturating_add(self.0);
+        let next = (c.scroll_top() as isize).saturating_add(self.0);
         let clamped = next.clamp(0, max_top as isize) as usize;
-        v.set_scroll_top(clamped);
-        v.scroll_mode = ScrollMode::Free;
+        c.set_scroll_top(clamped);
+        c.scroll_mode = ScrollMode::Free;
     }
 }
 
@@ -31,8 +31,8 @@ impl<'a> Action<Context<'a>> for ClickAt {
         let Some(idx) = dispatch::click_to_char_idx(ctx, self.col, self.row) else {
             return;
         };
-        if let Some(v) = ctx.surface.active_view_mut() {
-            v.move_to(idx, self.extend, false);
+        if let Some(c) = ctx.surface.active_cursor_mut() {
+            c.move_to(idx, self.extend, false);
         }
     }
 }
@@ -43,8 +43,8 @@ impl<'a> Action<Context<'a>> for DragAt {
         let Some(idx) = dispatch::click_to_char_idx(ctx, self.col, self.row) else {
             return;
         };
-        if let Some(v) = ctx.surface.active_view_mut() {
-            v.move_to(idx, true, false);
+        if let Some(c) = ctx.surface.active_cursor_mut() {
+            c.move_to(idx, true, false);
         }
     }
 }

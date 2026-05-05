@@ -1,7 +1,7 @@
 //! Edit operations: undo/redo, selection, insertion, deletion, multicursor.
 
 use devix_core::Action;
-use crate::view::ScrollMode;
+use crate::cursor::ScrollMode;
 
 use crate::commands::context::Context;
 use crate::commands::dispatch;
@@ -9,9 +9,9 @@ use crate::commands::dispatch;
 pub struct Undo;
 impl<'a> Action<Context<'a>> for Undo {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some((_, vid, did)) = ctx.surface.active_ids() else { return };
+        let Some((_, cid, did)) = ctx.surface.active_ids() else { return };
         if let Some(sel) = ctx.surface.documents[did].undo() {
-            ctx.surface.views[vid].adopt_selection(sel);
+            ctx.surface.cursors[cid].adopt_selection(sel);
         }
     }
 }
@@ -19,9 +19,9 @@ impl<'a> Action<Context<'a>> for Undo {
 pub struct Redo;
 impl<'a> Action<Context<'a>> for Redo {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some((_, vid, did)) = ctx.surface.active_ids() else { return };
+        let Some((_, cid, did)) = ctx.surface.active_ids() else { return };
         if let Some(sel) = ctx.surface.documents[did].redo() {
-            ctx.surface.views[vid].adopt_selection(sel);
+            ctx.surface.cursors[cid].adopt_selection(sel);
         }
     }
 }
@@ -30,9 +30,9 @@ pub struct SelectAll;
 impl<'a> Action<Context<'a>> for SelectAll {
     fn invoke(&self, ctx: &mut Context<'a>) {
         use devix_text::{Range, Selection};
-        let Some((_, vid, did)) = ctx.surface.active_ids() else { return };
+        let Some((_, cid, did)) = ctx.surface.active_ids() else { return };
         let end = ctx.surface.documents[did].buffer.len_chars();
-        ctx.surface.views[vid].adopt_selection(Selection::single(Range::new(0, end)));
+        ctx.surface.cursors[cid].adopt_selection(Selection::single(Range::new(0, end)));
     }
 }
 
@@ -79,33 +79,33 @@ impl<'a> Action<Context<'a>> for DeleteForward {
     }
 }
 
-/// Add a point cursor one line above the primary head, at the same column
+/// Add a point caret one line above the primary head, at the same column
 /// (clamped to the new line's width). Repeated presses extend upward.
 pub struct AddCursorAbove;
 impl<'a> Action<Context<'a>> for AddCursorAbove {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some((_, vid, did)) = ctx.surface.active_ids() else { return };
+        let Some((_, cid, did)) = ctx.surface.active_ids() else { return };
         let buf = &ctx.surface.documents[did].buffer;
-        let head = ctx.surface.views[vid].primary().head;
+        let head = ctx.surface.cursors[cid].primary().head;
         let line = buf.line_of_char(head);
         if line == 0 { return; }
         let col = buf.col_of_char(head);
         let new_line = line - 1;
         let new_col = col.min(buf.line_len_chars(new_line));
         let new_head = buf.line_start(new_line) + new_col;
-        let v = &mut ctx.surface.views[vid];
-        v.selection.push_range(devix_text::Range::point(new_head));
-        v.target_col = None;
-        v.scroll_mode = ScrollMode::Anchored;
+        let c = &mut ctx.surface.cursors[cid];
+        c.selection.push_range(devix_text::Range::point(new_head));
+        c.target_col = None;
+        c.scroll_mode = ScrollMode::Anchored;
     }
 }
 
 pub struct AddCursorBelow;
 impl<'a> Action<Context<'a>> for AddCursorBelow {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some((_, vid, did)) = ctx.surface.active_ids() else { return };
+        let Some((_, cid, did)) = ctx.surface.active_ids() else { return };
         let buf = &ctx.surface.documents[did].buffer;
-        let head = ctx.surface.views[vid].primary().head;
+        let head = ctx.surface.cursors[cid].primary().head;
         let line = buf.line_of_char(head);
         let max_line = buf.line_count().saturating_sub(1);
         if line >= max_line { return; }
@@ -113,27 +113,27 @@ impl<'a> Action<Context<'a>> for AddCursorBelow {
         let new_line = line + 1;
         let new_col = col.min(buf.line_len_chars(new_line));
         let new_head = buf.line_start(new_line) + new_col;
-        let v = &mut ctx.surface.views[vid];
-        v.selection.push_range(devix_text::Range::point(new_head));
-        v.target_col = None;
-        v.scroll_mode = ScrollMode::Anchored;
+        let c = &mut ctx.surface.cursors[cid];
+        c.selection.push_range(devix_text::Range::point(new_head));
+        c.target_col = None;
+        c.scroll_mode = ScrollMode::Anchored;
     }
 }
 
-/// Esc-equivalent: drop secondary cursors back to the primary. With a
+/// Esc-equivalent: drop secondary carets back to the primary. With a
 /// single, non-empty range, collapse it to a point at the head.
 pub struct CollapseSelection;
 impl<'a> Action<Context<'a>> for CollapseSelection {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some((_, vid, _)) = ctx.surface.active_ids() else { return };
-        let v = &mut ctx.surface.views[vid];
-        if v.selection.is_multi() {
-            v.selection.collapse_to_primary();
+        let Some((_, cid, _)) = ctx.surface.active_ids() else { return };
+        let c = &mut ctx.surface.cursors[cid];
+        if c.selection.is_multi() {
+            c.selection.collapse_to_primary();
         } else {
-            v.selection.collapse();
+            c.selection.collapse();
         }
-        v.target_col = None;
-        v.scroll_mode = ScrollMode::Anchored;
+        c.target_col = None;
+        c.scroll_mode = ScrollMode::Anchored;
     }
 }
 

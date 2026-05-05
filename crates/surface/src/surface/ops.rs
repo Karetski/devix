@@ -18,7 +18,7 @@ use crate::tree::{
     LayoutFrame, LayoutSidebar, LayoutSplit, LeafId, find_frame, find_frame_mut, frame_ids,
     mutate, pane_leaf_id,
 };
-use crate::view::{ScrollMode, View, ViewId};
+use crate::cursor::{Cursor, CursorId, ScrollMode};
 
 use super::{Surface, canonicalize_or_keep};
 
@@ -27,9 +27,9 @@ impl Surface {
     pub fn new_tab(&mut self) {
         let Some(fid) = self.active_frame() else { return };
         let did = self.documents.insert(Document::empty());
-        let vid = self.views.insert(View::new(did));
+        let cid = self.cursors.insert(Cursor::new(did));
         let Some(frame) = find_frame_mut(&mut self.root, fid) else { return };
-        frame.tabs.push(vid);
+        frame.tabs.push(cid);
         let new_idx = frame.tabs.len() - 1;
         frame.set_active(new_idx);
     }
@@ -38,8 +38,8 @@ impl Surface {
     pub fn close_active_tab(&mut self, force: bool) -> bool {
         let Some(fid) = self.active_frame() else { return false };
         let Some(frame) = find_frame(self.root.as_ref(), fid) else { return false };
-        let Some(vid) = frame.active_view() else { return false };
-        let did = self.views[vid].doc;
+        let Some(cid) = frame.active_cursor() else { return false };
+        let did = self.cursors[cid].doc;
         if !force && self.documents[did].buffer.dirty() { return false; }
 
         // After this point we mutate. Re-borrow mutably; the immutable
@@ -49,16 +49,16 @@ impl Surface {
             None => return false,
         };
         if frame.tabs.len() == 1 {
-            // Last tab in the frame: replace with a fresh scratch view.
+            // Last tab in the frame: replace with a fresh scratch cursor.
             let new_did = self.documents.insert(Document::empty());
-            let new_vid = self.views.insert(View::new(new_did));
+            let new_cid = self.cursors.insert(Cursor::new(new_did));
             let frame = match find_frame_mut(&mut self.root, fid) {
                 Some(f) => f,
                 None => return false,
             };
-            frame.tabs[0] = new_vid;
+            frame.tabs[0] = new_cid;
             frame.set_active(0);
-            self.views.remove(vid);
+            self.cursors.remove(cid);
             self.try_remove_orphan_doc(did);
             return true;
         }
@@ -67,7 +67,7 @@ impl Surface {
         frame.tabs.remove(idx);
         let next = idx.min(frame.tabs.len() - 1);
         frame.set_active(next);
-        self.views.remove(vid);
+        self.cursors.remove(cid);
         self.try_remove_orphan_doc(did);
         true
     }
@@ -90,8 +90,8 @@ impl Surface {
 
     /// Open `path` in the active frame's current tab (replace-current semantics).
     /// If a Document already exists for the canonicalized path, reuse it.
-    /// Returns the new ViewId.
-    pub fn open_path_replace_current(&mut self, path: PathBuf) -> Result<ViewId> {
+    /// Returns the new CursorId.
+    pub fn open_path_replace_current(&mut self, path: PathBuf) -> Result<CursorId> {
         let key = canonicalize_or_keep(&path);
         let did = if let Some(&existing) = self.doc_index.get(&key) {
             existing
@@ -101,25 +101,25 @@ impl Surface {
             self.doc_index.insert(key, id);
             id
         };
-        // Resolve the active frame and old view BEFORE allocating the new view,
+        // Resolve the active frame and old cursor BEFORE allocating the new cursor,
         // so a missing frame or empty tabs short-circuits without leaving a
-        // detached View in the slot-map.
+        // detached Cursor in the slot-map.
         let Some(fid) = self.active_frame() else {
             return Err(anyhow::anyhow!("no active frame to open path into"));
         };
-        let Some(old_view) = find_frame(self.root.as_ref(), fid).and_then(|f| f.active_view())
+        let Some(old_cid) = find_frame(self.root.as_ref(), fid).and_then(|f| f.active_cursor())
         else {
             return Err(anyhow::anyhow!("active frame has no tabs"));
         };
-        let new_view = self.views.insert(View::new(did));
+        let new_cid = self.cursors.insert(Cursor::new(did));
         let Some(frame) = find_frame_mut(&mut self.root, fid) else {
             return Err(anyhow::anyhow!("active frame disappeared"));
         };
-        frame.tabs[frame.active_tab] = new_view;
-        let old_doc = self.views[old_view].doc;
-        self.views.remove(old_view);
+        frame.tabs[frame.active_tab] = new_cid;
+        let old_doc = self.cursors[old_cid].doc;
+        self.cursors.remove(old_cid);
         self.try_remove_orphan_doc(old_doc);
-        Ok(new_view)
+        Ok(new_cid)
     }
 
     /// Close the active frame if there are 2+ frames in the tree.
@@ -134,7 +134,7 @@ impl Surface {
         // Snapshot the dying frame's tabs *before* the structural mutation
         // drops the LayoutFrame. After `remove_at` the frame is gone — its
         // owned `tabs` Vec went with it.
-        let dying_views: Vec<ViewId> = find_frame(self.root.as_ref(), fid)
+        let dying_cursors: Vec<CursorId> = find_frame(self.root.as_ref(), fid)
             .map(|f| f.tabs.clone())
             .unwrap_or_default();
 
@@ -142,9 +142,9 @@ impl Surface {
             return;
         }
         mutate::collapse_singletons(&mut self.root);
-        for vid in dying_views {
-            let did = self.views[vid].doc;
-            self.views.remove(vid);
+        for cid in dying_cursors {
+            let did = self.cursors[cid].doc;
+            self.cursors.remove(cid);
             self.try_remove_orphan_doc(did);
         }
         // Re-anchor focus to the first remaining frame, deepest path.
@@ -152,31 +152,31 @@ impl Surface {
     }
 
     /// Replace the focused Frame leaf with a Split containing two frames:
-    /// the original frame, plus a new frame whose first tab clones the active view.
+    /// the original frame, plus a new frame whose first tab clones the active cursor.
     pub fn split_active(&mut self, axis: Axis) {
         let Some(active_fid) = self.active_frame() else { return };
         let focus_path = self.focus.clone();
 
         // Snapshot the active frame's state — both its current tab list
-        // (which the new LayoutFrame will inherit) and its active view —
+        // (which the new LayoutFrame will inherit) and its active cursor —
         // before we mutate the tree.
         let Some(active_frame) = find_frame(self.root.as_ref(), active_fid) else { return };
         let original_tabs = active_frame.tabs.clone();
         let original_active_tab = active_frame.active_tab;
         let original_scroll = active_frame.tab_strip_scroll;
-        let Some(active_view_id) = active_frame.active_view() else { return };
+        let Some(active_cursor_id) = active_frame.active_cursor() else { return };
 
-        let cloned_view = {
-            let v = &self.views[active_view_id];
-            View {
-                doc: v.doc,
-                selection: v.selection.clone(),
-                target_col: v.target_col,
-                scroll: v.scroll,
+        let cloned_cursor = {
+            let c = &self.cursors[active_cursor_id];
+            Cursor {
+                doc: c.doc,
+                selection: c.selection.clone(),
+                target_col: c.target_col,
+                scroll: c.scroll,
                 scroll_mode: ScrollMode::Anchored,
             }
         };
-        let new_view_id = self.views.insert(cloned_view);
+        let new_cursor_id = self.cursors.insert(cloned_cursor);
         let new_frame_id = mint_id();
 
         let original_replaced = LayoutFrame {
@@ -190,7 +190,7 @@ impl Surface {
             axis,
             children: vec![
                 (Box::new(original_replaced), 1),
-                (Box::new(LayoutFrame::with_view(new_frame_id, new_view_id)), 1),
+                (Box::new(LayoutFrame::with_cursor(new_frame_id, new_cursor_id)), 1),
             ],
         });
         if !mutate::replace_at(&mut self.root, &focus_path, new_split) {
@@ -244,10 +244,10 @@ impl Surface {
         }
     }
 
-    /// If no surviving view references `did`, drop the document and its
+    /// If no surviving cursor references `did`, drop the document and its
     /// path index entry.
     fn try_remove_orphan_doc(&mut self, did: DocId) {
-        let still_used = self.views.values().any(|v| v.doc == did);
+        let still_used = self.cursors.values().any(|c| c.doc == did);
         if still_used { return; }
         if let Some(d) = self.documents.remove(did) {
             if let Some(p) = d.buffer.path() {
@@ -287,4 +287,3 @@ fn first_frame_path(root: &dyn Pane) -> Vec<usize> {
     let mut p = Vec::new();
     if go(root, &mut p) { p } else { Vec::new() }
 }
-

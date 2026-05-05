@@ -27,8 +27,8 @@ pub fn drain_disk_events(app: &mut App) {
     // pending flag silently.
     let active_doc_id = app
         .surface
-        .active_view()
-        .map(|v| v.doc);
+        .active_cursor()
+        .map(|c| c.doc);
 
     for did in &affected {
         let doc = &mut app.surface.documents[*did];
@@ -43,9 +43,9 @@ pub fn drain_disk_events(app: &mut App) {
             // stale highlight spans.
             if app.surface.documents[*did].reload_from_disk().is_ok() {
                 let max = app.surface.documents[*did].buffer.len_chars();
-                for view in app.surface.views.values_mut() {
-                    if view.doc == *did {
-                        view.selection.clamp(max);
+                for cursor in app.surface.cursors.values_mut() {
+                    if cursor.doc == *did {
+                        cursor.selection.clamp(max);
                     }
                 }
             }

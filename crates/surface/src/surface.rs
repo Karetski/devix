@@ -1,5 +1,5 @@
 //! Surface = aggregate of all editor state owned across the layout tree:
-//! documents, views, frames, plus the layout root, focus path, and the
+//! documents, cursors, frames, plus the layout root, focus path, and the
 //! per-frame render-rect cache.
 //!
 //! Behaviour is split across submodules by concern:
@@ -20,7 +20,7 @@ use devix_core::Pane;
 use devix_core::Rect;
 use slotmap::SlotMap;
 
-use crate::view::{View, ViewId};
+use crate::cursor::{Cursor, CursorId};
 use devix_workspace::{DocId, Document};
 
 use crate::frame::{FrameId, mint_id};
@@ -41,7 +41,7 @@ pub enum LeafRef {
 
 /// One clickable tab region produced by the tab-strip render. Stored in the
 /// render cache and consumed by hit-testing. Defined here (rather than in
-/// `devix-ui`) so the surface model has no view-layer dependency.
+/// `devix-ui`) so the surface model has no widget-layer dependency.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct TabHit {
     pub idx: usize,
@@ -73,7 +73,7 @@ pub enum TabStripHit {
 
 pub struct Surface {
     pub documents: SlotMap<DocId, Document>,
-    pub views: SlotMap<ViewId, View>,
+    pub cursors: SlotMap<CursorId, Cursor>,
     /// Structural Pane tree — the layout source of truth, and **also**
     /// the only place per-frame state lives now. `LayoutFrame` owns its
     /// `tabs`/`active_tab`/`tab_strip_scroll`/`recenter_active`
@@ -95,11 +95,11 @@ pub struct Surface {
 }
 
 impl Surface {
-    /// Create a surface with a single frame, single tab, single view.
+    /// Create a surface with a single frame, single tab, single cursor.
     /// `path` is opened if Some; otherwise an empty scratch buffer is used.
     pub fn open(path: Option<PathBuf>) -> Result<Self> {
         let mut documents: SlotMap<DocId, Document> = SlotMap::with_key();
-        let mut views: SlotMap<ViewId, View> = SlotMap::with_key();
+        let mut cursors: SlotMap<CursorId, Cursor> = SlotMap::with_key();
         let mut doc_index = HashMap::new();
 
         let doc_id = match path {
@@ -111,14 +111,14 @@ impl Surface {
             }
             None => documents.insert(Document::empty()),
         };
-        let view_id = views.insert(View::new(doc_id));
+        let cursor_id = cursors.insert(Cursor::new(doc_id));
         let frame_id = mint_id();
-        let root: Box<dyn Pane> = Box::new(LayoutFrame::with_view(frame_id, view_id));
+        let root: Box<dyn Pane> = Box::new(LayoutFrame::with_cursor(frame_id, cursor_id));
         let focus = vec![]; // root is the frame leaf itself
 
         Ok(Self {
             documents,
-            views,
+            cursors,
             root,
             modal: None,
             focus,
@@ -127,16 +127,16 @@ impl Surface {
         })
     }
 
-    pub fn active_view(&self) -> Option<&View> {
+    pub fn active_cursor(&self) -> Option<&Cursor> {
         let frame_id = self.active_frame()?;
-        let view_id = find_frame(self.root.as_ref(), frame_id)?.active_view()?;
-        self.views.get(view_id)
+        let cursor_id = find_frame(self.root.as_ref(), frame_id)?.active_cursor()?;
+        self.cursors.get(cursor_id)
     }
 
-    pub fn active_view_mut(&mut self) -> Option<&mut View> {
+    pub fn active_cursor_mut(&mut self) -> Option<&mut Cursor> {
         let frame_id = self.active_frame()?;
-        let view_id = find_frame(self.root.as_ref(), frame_id)?.active_view()?;
-        self.views.get_mut(view_id)
+        let cursor_id = find_frame(self.root.as_ref(), frame_id)?.active_cursor()?;
+        self.cursors.get_mut(cursor_id)
     }
 
     pub fn active_frame(&self) -> Option<FrameId> {
@@ -148,29 +148,29 @@ impl Surface {
     }
 
     pub fn active_doc_mut(&mut self) -> Option<&mut Document> {
-        let v = self.active_view()?;
-        self.documents.get_mut(v.doc)
+        let c = self.active_cursor()?;
+        self.documents.get_mut(c.doc)
     }
 
     pub fn active_doc(&self) -> Option<&Document> {
-        let v = self.active_view()?;
-        self.documents.get(v.doc)
+        let c = self.active_cursor()?;
+        self.documents.get(c.doc)
     }
 
-    /// Resolve focus to (frame, view, doc) IDs in one immutable borrow,
+    /// Resolve focus to (frame, cursor, doc) IDs in one immutable borrow,
     /// so callers can take disjoint &mut borrows on the underlying slot-maps.
-    pub fn active_ids(&self) -> Option<(FrameId, ViewId, DocId)> {
+    pub fn active_ids(&self) -> Option<(FrameId, CursorId, DocId)> {
         let frame_id = self.active_frame()?;
-        let view_id = find_frame(self.root.as_ref(), frame_id)?.active_view()?;
-        let doc_id = self.views[view_id].doc;
-        Some((frame_id, view_id, doc_id))
+        let cursor_id = find_frame(self.root.as_ref(), frame_id)?.active_cursor()?;
+        let doc_id = self.cursors[cursor_id].doc;
+        Some((frame_id, cursor_id, doc_id))
     }
 
     /// Pre-paint layout pass.
     ///
     /// Walks every `Frame` leaf in the layout tree under `area` and runs the
-    /// state mutations the next paint will see: anchor `View.scroll` to the
-    /// cursor (or clamp it under the new content extent in `Free` mode), and
+    /// state mutations the next paint will see: anchor `Cursor.scroll` to the
+    /// caret (or clamp it under the new content extent in `Free` mode), and
     /// run the per-frame tab-strip's scroll-into-view math.
     ///
     /// This is the only mutation hook that runs between input dispatch and
@@ -180,7 +180,7 @@ impl Surface {
         use devix_ui::TabInfo;
         use devix_ui::layout::{VRect, ensure_visible, set_scroll};
         use devix_ui::tab_strip_layout;
-        use crate::view::ScrollMode;
+        use crate::cursor::ScrollMode;
 
         // Reset render-cache for this frame. Both the per-leaf walk
         // below (for `Frame` leaves' tab-strip + body rects) and the
@@ -210,9 +210,9 @@ impl Surface {
                 Some(frame) => frame
                     .tabs
                     .iter()
-                    .map(|vid| {
-                        let v = &self.views[*vid];
-                        let d = &self.documents[v.doc];
+                    .map(|cid| {
+                        let c = &self.cursors[*cid];
+                        let d = &self.documents[c.doc];
                         let label = d
                             .buffer
                             .path()
@@ -261,18 +261,18 @@ impl Surface {
             );
             self.render_cache.frame_rects.insert(fid, body_area);
 
-            let Some(vid) =
-                find_frame(self.root.as_ref(), fid).and_then(|f| f.active_view())
+            let Some(cid) =
+                find_frame(self.root.as_ref(), fid).and_then(|f| f.active_cursor())
             else {
                 continue;
             };
-            let view = &self.views[vid];
-            let doc = &self.documents[view.doc];
+            let cursor = &self.cursors[cid];
+            let doc = &self.documents[cursor.doc];
 
-            let head = view.primary().head;
+            let head = cursor.primary().head;
             let cur_line = doc.buffer.line_of_char(head);
             let line_count = doc.buffer.line_count();
-            let scroll_mode = view.scroll_mode;
+            let scroll_mode = cursor.scroll_mode;
             let body_w = body_area.width as u32;
             let body_h = body_area.height as u32;
             if body_h == 0 {
@@ -281,7 +281,7 @@ impl Surface {
 
             let content = (body_w, line_count.max(1) as u32);
             let viewport = (body_w, body_h);
-            let v = &mut self.views[vid];
+            let c = &mut self.cursors[cid];
             match scroll_mode {
                 ScrollMode::Anchored => {
                     let line_rect = VRect {
@@ -290,11 +290,11 @@ impl Surface {
                         w: body_w,
                         h: 1,
                     };
-                    ensure_visible(&mut v.scroll, line_rect, content, viewport);
+                    ensure_visible(&mut c.scroll, line_rect, content, viewport);
                 }
                 ScrollMode::Free => {
-                    let (sx, sy) = v.scroll;
-                    set_scroll(&mut v.scroll, sx, sy, content, viewport);
+                    let (sx, sy) = c.scroll;
+                    set_scroll(&mut c.scroll, sx, sy, content, viewport);
                 }
             }
         }
@@ -310,18 +310,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fresh_workspace_has_one_frame_one_view() {
+    fn fresh_workspace_has_one_frame_one_cursor() {
         let ws = Surface::open(None).unwrap();
         assert_eq!(frame_ids(ws.root.as_ref()).len(), 1);
-        assert_eq!(ws.views.len(), 1);
+        assert_eq!(ws.cursors.len(), 1);
         assert_eq!(ws.documents.len(), 1);
-        assert!(ws.active_view().is_some());
+        assert!(ws.active_cursor().is_some());
     }
 
     #[test]
     fn new_tab_then_close_returns_to_previous() {
         let mut ws = Surface::open(None).unwrap();
-        let original_view = ws.active_view().unwrap().doc;
+        let original_doc = ws.active_cursor().unwrap().doc;
 
         ws.new_tab();
         let fid = ws.active_frame().unwrap();
@@ -329,8 +329,8 @@ mod tests {
         assert_eq!(find_frame(ws.root.as_ref(), fid).unwrap().active_tab, 1);
 
         assert!(ws.close_active_tab(false));
-        let active = ws.active_view().unwrap();
-        assert_eq!(active.doc, original_view);
+        let active = ws.active_cursor().unwrap();
+        assert_eq!(active.doc, original_doc);
     }
 
     #[test]
@@ -340,15 +340,15 @@ mod tests {
         let fid = ws.active_frame().unwrap();
         let frame = find_frame(ws.root.as_ref(), fid).unwrap();
         assert_eq!(frame.tabs.len(), 1);
-        let v = ws.active_view().unwrap();
-        assert!(ws.documents[v.doc].buffer.path().is_none());
+        let c = ws.active_cursor().unwrap();
+        assert!(ws.documents[c.doc].buffer.path().is_none());
     }
 
     #[test]
     fn dirty_close_refused_force_close_succeeds() {
         use devix_text::{Selection, replace_selection_tx};
         let mut ws = Surface::open(None).unwrap();
-        let did = ws.active_view().unwrap().doc;
+        let did = ws.active_cursor().unwrap().doc;
         let tx = replace_selection_tx(&ws.documents[did].buffer, &Selection::point(0), "hi");
         ws.documents[did].buffer.apply(tx);
         assert!(!ws.close_active_tab(false), "dirty close should refuse");
@@ -363,11 +363,11 @@ mod tests {
         std::fs::write(&p, "abc").unwrap();
 
         let mut ws = Surface::open(None).unwrap();
-        let v1 = ws.open_path_replace_current(p.clone()).unwrap();
-        let did1 = ws.views[v1].doc;
+        let c1 = ws.open_path_replace_current(p.clone()).unwrap();
+        let did1 = ws.cursors[c1].doc;
         ws.new_tab();
-        let v2 = ws.open_path_replace_current(p.clone()).unwrap();
-        let did2 = ws.views[v2].doc;
+        let c2 = ws.open_path_replace_current(p.clone()).unwrap();
+        let did2 = ws.cursors[c2].doc;
         assert_eq!(did1, did2, "same path should reuse DocId");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -381,11 +381,11 @@ mod tests {
         let new_fid = ws.active_frame().unwrap();
         assert_ne!(original_fid, new_fid);
 
-        let Some(orig_view_id) = find_frame(ws.root.as_ref(), original_fid).and_then(|f| f.active_view()) else { panic!("original frame has no active view"); };
-        let Some(new_view_id) = find_frame(ws.root.as_ref(), new_fid).and_then(|f| f.active_view()) else { panic!("new frame has no active view"); };
-        let original_doc = ws.views[orig_view_id].doc;
-        let new_doc = ws.views[new_view_id].doc;
-        assert_eq!(original_doc, new_doc, "split clones view, shares document");
+        let Some(orig_cursor_id) = find_frame(ws.root.as_ref(), original_fid).and_then(|f| f.active_cursor()) else { panic!("original frame has no active cursor"); };
+        let Some(new_cursor_id) = find_frame(ws.root.as_ref(), new_fid).and_then(|f| f.active_cursor()) else { panic!("new frame has no active cursor"); };
+        let original_doc = ws.cursors[orig_cursor_id].doc;
+        let new_doc = ws.cursors[new_cursor_id].doc;
+        assert_eq!(original_doc, new_doc, "split clones cursor, shares document");
     }
 
     #[test]
@@ -455,20 +455,20 @@ mod tests {
         use devix_text::{Selection, replace_selection_tx};
 
         let mut ws = Surface::open(None).unwrap();
-        let did = ws.active_view().unwrap().doc;
+        let did = ws.active_cursor().unwrap().doc;
         let txt = "x\n".repeat(100);
         let tx = replace_selection_tx(&ws.documents[did].buffer, &Selection::point(0), &txt);
         ws.documents[did].buffer.apply(tx);
 
-        let v = ws.active_view_mut().unwrap();
-        let next: isize = (v.scroll_top() as isize).saturating_add(-1);
-        v.set_scroll_top(next.clamp(0, 99) as usize);
-        assert_eq!(v.scroll_top(), 0);
+        let c = ws.active_cursor_mut().unwrap();
+        let next: isize = (c.scroll_top() as isize).saturating_add(-1);
+        c.set_scroll_top(next.clamp(0, 99) as usize);
+        assert_eq!(c.scroll_top(), 0);
 
-        let v = ws.active_view_mut().unwrap();
-        let next: isize = (v.scroll_top() as isize).saturating_add(1_000_000);
-        v.set_scroll_top(next.clamp(0, 99) as usize);
-        assert_eq!(v.scroll_top(), 99);
+        let c = ws.active_cursor_mut().unwrap();
+        let next: isize = (c.scroll_top() as isize).saturating_add(1_000_000);
+        c.set_scroll_top(next.clamp(0, 99) as usize);
+        assert_eq!(c.scroll_top(), 99);
     }
 
     #[test]
@@ -520,12 +520,12 @@ mod tests {
         std::fs::write(&p, "abc").unwrap();
 
         let mut ws = Surface::open(None).unwrap();
-        let v1 = ws.open_path_replace_current(p.clone()).unwrap();
-        let did1 = ws.views[v1].doc;
+        let c1 = ws.open_path_replace_current(p.clone()).unwrap();
+        let did1 = ws.cursors[c1].doc;
 
         ws.split_active(Axis::Horizontal);
-        let v2 = ws.open_path_replace_current(p.clone()).unwrap();
-        let did2 = ws.views[v2].doc;
+        let c2 = ws.open_path_replace_current(p.clone()).unwrap();
+        let did2 = ws.cursors[c2].doc;
 
         assert_eq!(did1, did2, "same path opened in different frames should share DocId");
         let _ = std::fs::remove_dir_all(&dir);

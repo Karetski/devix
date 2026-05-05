@@ -39,12 +39,12 @@ impl<'a> Action<Context<'a>> for OpenPath {
 pub struct ReloadFromDisk;
 impl<'a> Action<Context<'a>> for ReloadFromDisk {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some((_, vid, did)) = ctx.surface.active_ids() else { return };
+        let Some((_, cid, did)) = ctx.surface.active_ids() else { return };
         let res = ctx.surface.documents[did].reload_from_disk();
         if res.is_ok() {
             let max = ctx.surface.documents[did].buffer.len_chars();
             ctx.surface.documents[did].disk_changed_pending = false;
-            ctx.surface.views[vid].selection.clamp(max);
+            ctx.surface.cursors[cid].selection.clamp(max);
         }
     }
 }

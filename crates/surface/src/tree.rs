@@ -9,7 +9,7 @@
 //! Each leaf paints itself in `render`. `LayoutFrame` builds the
 //! borrowed render-time helpers (`TabbedPane` from `devix-editor`,
 //! `EditorPane`, `TabStripPane`) on the stack inside one render call,
-//! pulling buffer/view/theme/highlight borrows from the scoped TLS the
+//! pulling buffer/cursor/theme/highlight borrows from the scoped TLS the
 //! host opens via `RenderServices::scope`. There is no parallel render
 //! tree built by the binary anymore.
 
@@ -79,7 +79,7 @@ impl Pane for LayoutSplit {
 /// are minted via `crate::frame::mint_id()`.
 pub struct LayoutFrame {
     pub frame: FrameId,
-    pub tabs: Vec<crate::view::ViewId>,
+    pub tabs: Vec<crate::cursor::CursorId>,
     pub active_tab: usize,
     /// Scroll offset for this frame's tab strip, in cells.
     pub tab_strip_scroll: (u32, u32),
@@ -90,10 +90,10 @@ pub struct LayoutFrame {
 }
 
 impl LayoutFrame {
-    pub fn with_view(frame: FrameId, view: crate::view::ViewId) -> Self {
+    pub fn with_cursor(frame: FrameId, cursor: crate::cursor::CursorId) -> Self {
         Self {
             frame,
-            tabs: vec![view],
+            tabs: vec![cursor],
             active_tab: 0,
             tab_strip_scroll: (0, 0),
             recenter_active: true,
@@ -118,7 +118,7 @@ impl LayoutFrame {
     }
 
     /// Returns `None` if `tabs` is empty or `active_tab` is out of bounds.
-    pub fn active_view(&self) -> Option<crate::view::ViewId> {
+    pub fn active_cursor(&self) -> Option<crate::cursor::CursorId> {
         self.tabs.get(self.active_tab).copied()
     }
 }
@@ -130,14 +130,14 @@ impl Pane for LayoutFrame {
         // scope (e.g. unit tests using Pane directly) this Pane is a
         // no-op, which matches its previous empty-stub behavior.
         RenderServices::with(|services| {
-            let Some(view_id) = self.active_view() else { return };
-            let Some(view) = services.views.get(view_id) else { return };
-            let Some(doc) = services.documents.get(view.doc) else { return };
+            let Some(cid) = self.active_cursor() else { return };
+            let Some(cursor) = services.cursors.get(cid) else { return };
+            let Some(doc) = services.documents.get(cursor.doc) else { return };
 
             // Editor body height — 1 row reserved for the tab strip. Same
             // partition `TabbedPane::children` uses below.
             let body_height = area.height.saturating_sub(1) as usize;
-            let (start, end) = visible_byte_range(doc, view, body_height);
+            let (start, end) = visible_byte_range(doc, cursor, body_height);
             let highlights = doc.highlights(start, end);
 
             let active = matches!(
@@ -148,9 +148,9 @@ impl Pane for LayoutFrame {
             let strip_tabs: Vec<TabInfo> = self
                 .tabs
                 .iter()
-                .filter_map(|vid| {
-                    let v = services.views.get(*vid)?;
-                    let d = services.documents.get(v.doc)?;
+                .filter_map(|cid| {
+                    let c = services.cursors.get(*cid)?;
+                    let d = services.documents.get(c.doc)?;
                     let label = d
                         .buffer
                         .path()
@@ -170,8 +170,8 @@ impl Pane for LayoutFrame {
                 },
                 editor: EditorPane {
                     buffer: &doc.buffer,
-                    selection: &view.selection,
-                    scroll: view.scroll,
+                    selection: &cursor.selection,
+                    scroll: cursor.scroll,
                     theme: services.theme,
                     highlights,
                     active,
@@ -198,18 +198,18 @@ impl Pane for LayoutFrame {
     }
 }
 
-/// Byte range covering all lines currently visible in `view`'s editor
+/// Byte range covering all lines currently visible in `cursor`'s editor
 /// body. Mirrors the helper that lived in `app/render.rs`; moved here
 /// so `LayoutFrame::render` can compute its own highlight window.
 fn visible_byte_range(
     doc: &devix_workspace::Document,
-    view: &crate::view::View,
+    cursor: &crate::cursor::Cursor,
     height_rows: usize,
 ) -> (usize, usize) {
     let line_count = doc.buffer.line_count();
     let rope = doc.buffer.rope();
-    let top = view.scroll_top().min(line_count);
-    let bottom = (view.scroll_top() + height_rows).min(line_count);
+    let top = cursor.scroll_top().min(line_count);
+    let bottom = (cursor.scroll_top() + height_rows).min(line_count);
     let start = rope.line_to_byte(top);
     let end = if bottom >= line_count {
         rope.len_bytes()

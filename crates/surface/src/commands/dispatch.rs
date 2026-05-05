@@ -5,7 +5,7 @@
 use devix_text::{Buffer, delete_each_tx, delete_range_tx, replace_selection_tx};
 
 use crate::commands::context::{Context, Viewport};
-use crate::view::{ScrollMode, View};
+use crate::cursor::{Cursor, ScrollMode};
 
 pub(crate) fn page_step(v: Viewport) -> usize { v.height.saturating_sub(1).max(1) as usize }
 
@@ -17,28 +17,28 @@ pub(crate) fn move_to_with(
     extend: bool,
     motion: impl Fn(&Buffer, usize) -> usize,
 ) {
-    let Some((_, vid, did)) = cx.surface.active_ids() else { return };
+    let Some((_, cid, did)) = cx.surface.active_ids() else { return };
     let buf = &cx.surface.documents[did].buffer;
-    let mut sel = cx.surface.views[vid].selection.clone();
+    let mut sel = cx.surface.cursors[cid].selection.clone();
     sel.transform(|r| {
         let to = motion(buf, r.head);
         r.put_head(to, extend)
     });
     sel.normalize();
-    let v = &mut cx.surface.views[vid];
-    v.selection = sel;
-    v.target_col = None;
-    v.scroll_mode = ScrollMode::Anchored;
+    let c = &mut cx.surface.cursors[cid];
+    c.selection = sel;
+    c.target_col = None;
+    c.scroll_mode = ScrollMode::Anchored;
 }
 
-/// Vertical motion. With a single cursor the sticky-column behavior on
-/// `View` keeps repeated Up/Down stable across short lines.
+/// Vertical motion. With a single caret the sticky-column behavior on
+/// `Cursor` keeps repeated Up/Down stable across short lines.
 pub(crate) fn move_vertical(cx: &mut Context<'_>, down: bool, extend: bool) {
-    let Some((_, vid, did)) = cx.surface.active_ids() else { return };
+    let Some((_, cid, did)) = cx.surface.active_ids() else { return };
     let buf = &cx.surface.documents[did].buffer;
-    let single = !cx.surface.views[vid].selection.is_multi();
-    let sticky = cx.surface.views[vid].target_col;
-    let mut sel = cx.surface.views[vid].selection.clone();
+    let single = !cx.surface.cursors[cid].selection.is_multi();
+    let sticky = cx.surface.cursors[cid].target_col;
+    let mut sel = cx.surface.cursors[cid].selection.clone();
 
     let primary_idx = sel.primary_index();
     let primary_col_for_sticky = if single {
@@ -64,36 +64,36 @@ pub(crate) fn move_vertical(cx: &mut Context<'_>, down: bool, extend: bool) {
     });
     sel.normalize();
 
-    let v = &mut cx.surface.views[vid];
-    v.selection = sel;
-    v.target_col = primary_col_for_sticky;
-    v.scroll_mode = ScrollMode::Anchored;
+    let c = &mut cx.surface.cursors[cid];
+    c.selection = sel;
+    c.target_col = primary_col_for_sticky;
+    c.scroll_mode = ScrollMode::Anchored;
 }
 
 pub(crate) fn replace_selection(cx: &mut Context<'_>, text: &str) {
-    let Some((_, vid, did)) = cx.surface.active_ids() else { return };
+    let Some((_, cid, did)) = cx.surface.active_ids() else { return };
     let tx = replace_selection_tx(
         &cx.surface.documents[did].buffer,
-        &cx.surface.views[vid].selection,
+        &cx.surface.cursors[cid].selection,
         text,
     );
     let after = tx.selection_after.clone();
     cx.surface.documents[did].apply_tx(tx);
-    let v = &mut cx.surface.views[vid];
-    v.selection = after;
-    reset_motion_state(v);
+    let c = &mut cx.surface.cursors[cid];
+    c.selection = after;
+    reset_motion_state(c);
 }
 
 /// Per-range delete. For each range: if non-empty, delete its span; if
-/// empty (point cursor), call `builder` to compute a 1-char-or-word span
+/// empty (point caret), call `builder` to compute a 1-char-or-word span
 /// to delete. All resulting changes bundle into one transaction.
 pub(crate) fn delete_each_or(
     cx: &mut Context<'_>,
     builder: impl Fn(&Buffer, usize) -> Option<(usize, usize)>,
 ) {
-    let Some((_, vid, did)) = cx.surface.active_ids() else { return };
+    let Some((_, cid, did)) = cx.surface.active_ids() else { return };
     let buf = &cx.surface.documents[did].buffer;
-    let sel = cx.surface.views[vid].selection.clone();
+    let sel = cx.surface.cursors[cid].selection.clone();
     let tx = delete_each_tx(&sel, |r| {
         if !r.is_empty() {
             return Some((r.start(), r.end()));
@@ -106,14 +106,14 @@ pub(crate) fn delete_each_or(
     }
     let after = tx.selection_after.clone();
     cx.surface.documents[did].apply_tx(tx);
-    let v = &mut cx.surface.views[vid];
-    v.selection = after;
-    reset_motion_state(v);
+    let c = &mut cx.surface.cursors[cid];
+    c.selection = after;
+    reset_motion_state(c);
 }
 
-fn reset_motion_state(v: &mut View) {
-    v.target_col = None;
-    v.scroll_mode = ScrollMode::Anchored;
+fn reset_motion_state(c: &mut Cursor) {
+    c.target_col = None;
+    c.scroll_mode = ScrollMode::Anchored;
 }
 
 fn current_line_span(buf: &Buffer, head: usize) -> (usize, usize) {
@@ -129,8 +129,8 @@ fn current_line_span(buf: &Buffer, head: usize) -> (usize, usize) {
 }
 
 pub(crate) fn do_copy(cx: &mut Context<'_>) {
-    let Some((_, vid, did)) = cx.surface.active_ids() else { return };
-    let prim = cx.surface.views[vid].primary();
+    let Some((_, cid, did)) = cx.surface.active_ids() else { return };
+    let prim = cx.surface.cursors[cid].primary();
     let (start, end) = if prim.is_empty() {
         current_line_span(&cx.surface.documents[did].buffer, prim.head)
     } else {
@@ -142,8 +142,8 @@ pub(crate) fn do_copy(cx: &mut Context<'_>) {
 }
 
 pub(crate) fn do_cut(cx: &mut Context<'_>) {
-    let Some((_, vid, did)) = cx.surface.active_ids() else { return };
-    let prim = cx.surface.views[vid].primary();
+    let Some((_, cid, did)) = cx.surface.active_ids() else { return };
+    let prim = cx.surface.cursors[cid].primary();
     let (start, end) = if prim.is_empty() {
         current_line_span(&cx.surface.documents[did].buffer, prim.head)
     } else {
@@ -154,12 +154,12 @@ pub(crate) fn do_cut(cx: &mut Context<'_>) {
     if !cx.clipboard.set_text(text) { return; }
     let tx = delete_range_tx(
         &cx.surface.documents[did].buffer,
-        &cx.surface.views[vid].selection,
+        &cx.surface.cursors[cid].selection,
         start, end,
     );
     let after = tx.selection_after.clone();
     cx.surface.documents[did].apply_tx(tx);
-    cx.surface.views[vid].adopt_selection(after);
+    cx.surface.cursors[cid].adopt_selection(after);
 }
 
 pub(crate) fn do_paste(cx: &mut Context<'_>) {
@@ -177,9 +177,9 @@ pub(crate) fn click_to_char_idx(cx: &Context<'_>, col: u16, row: u16) -> Option<
     let text_x = v.x + v.gutter_width;
     let click_col = col.saturating_sub(text_x) as usize;
     let row_in_view = (row - v.y) as usize;
-    let view = cx.surface.active_view()?;
-    let buf = &cx.surface.documents.get(view.doc)?.buffer;
-    let line = (view.scroll_top() + row_in_view).min(buf.line_count().saturating_sub(1));
+    let cursor = cx.surface.active_cursor()?;
+    let buf = &cx.surface.documents.get(cursor.doc)?.buffer;
+    let line = (cursor.scroll_top() + row_in_view).min(buf.line_count().saturating_sub(1));
     let local_col = click_col.min(buf.line_len_chars(line));
     Some(buf.line_start(line) + local_col)
 }
