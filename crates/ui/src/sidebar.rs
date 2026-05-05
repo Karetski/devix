@@ -3,7 +3,7 @@
 use devix_core::{Event, HandleCtx, Outcome, Pane, RenderCtx};
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders};
 
 pub struct SidebarInfo<'a> {
@@ -12,8 +12,16 @@ pub struct SidebarInfo<'a> {
 }
 
 pub fn render_sidebar(info: &SidebarInfo<'_>, area: Rect, frame: &mut Frame<'_>) {
+    // Focused state uses the terminal's default fg (Reset) plus BOLD,
+    // so the border is "the brightest text the terminal can show"
+    // without picking a literal color — `Color::White` is invisible on
+    // light themes, `Color::Black` invisible on dark ones. Unfocused
+    // uses DarkGray, which renders as bright-black on every terminal
+    // and stays dimmer than normal text on both light and dark themes.
     let style = if info.focused {
-        Style::default().fg(Color::White)
+        Style::default()
+            .fg(Color::Reset)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::DarkGray)
     };

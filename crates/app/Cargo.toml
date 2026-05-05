@@ -17,6 +17,7 @@ devix-core.workspace = true
 devix-ui.workspace = true
 devix-editor.workspace = true
 devix-surface.workspace = true
+devix-plugin.workspace = true
 devix-lsp.workspace = true
 lsp-types.workspace = true
 tokio.workspace = true

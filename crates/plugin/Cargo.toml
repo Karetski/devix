@@ -1,0 +1,19 @@
+[package]
+name = "devix-plugin"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+ratatui.workspace = true
+tokio.workspace = true
+mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }
+devix-core.workspace = true
+devix-surface.workspace = true
+crossterm.workspace = true
+
+[dev-dependencies]
+arboard = { version = "3.4", default-features = false }
+devix-editor.workspace = true
+devix-ui.workspace = true

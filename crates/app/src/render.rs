@@ -30,6 +30,191 @@ use devix_surface::{
 
 use crate::app::App;
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    /// Sets `DEVIX_PLUGIN` for one test; restores the previous value on
+    /// drop so concurrent tests don't poison each other. Acquires a
+    /// process-wide mutex first because cargo runs tests in parallel
+    /// by default — without serialization, two tests can mutate the
+    /// same env var concurrently and read each other's value.
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+    impl EnvGuard {
+        fn set(key: &'static str, val: &str) -> Self {
+            static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let _lock = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let prev = std::env::var_os(key);
+            unsafe { std::env::set_var(key, val); }
+            Self { key, prev, _lock }
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match self.prev.take() {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn status_line_still_renders_when_sidebar_is_focused() {
+        // Regression: focusing a sidebar leaf used to drop the status
+        // line entirely (active_view returned None → render_status
+        // bailed). Falls back to the first frame's view now.
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let example = manifest
+            .parent()
+            .unwrap()
+            .join("plugin/examples/file_tree.lua");
+        let _g = EnvGuard::set("DEVIX_PLUGIN", &example.to_string_lossy());
+        let mut app = App::new(None, None).unwrap();
+        // Step focus left into the auto-opened sidebar.
+        use std::sync::Arc;
+        crate::events::run_command(
+            &mut app,
+            Arc::new(devix_surface::cmd::FocusDir(devix_surface::Direction::Left)),
+        );
+        assert!(
+            app.surface.active_frame().is_none(),
+            "focus should now resolve to a sidebar leaf",
+        );
+
+        let backend = TestBackend::new(60, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::render::render(f, &mut app)).unwrap();
+
+        let buf = terminal.backend().buffer();
+        // Last row is the status line.
+        let last = buf.area.height - 1;
+        let mut row = String::new();
+        for x in 0..buf.area.width {
+            row.push_str(buf[(x, last)].symbol());
+        }
+        assert!(
+            row.contains("plugin loaded") || row.contains("[scratch]"),
+            "expected the status row to render even with sidebar focused, got {row:?}",
+        );
+    }
+
+    #[test]
+    fn sidebar_renders_plugin_supplied_lines() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let example = manifest
+            .parent()
+            .unwrap()
+            .join("plugin/examples/file_tree.lua");
+        let _g = EnvGuard::set("DEVIX_PLUGIN", &example.to_string_lossy());
+        let mut app = App::new(None, None).expect("App constructs with plugin");
+        assert!(app.plugins.is_some(), "plugin should have loaded");
+
+        // App::new auto-opens the contributed slot, so we don't toggle
+        // here — render straight into a TestBackend.
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::render::render(f, &mut app)).unwrap();
+
+        let buf = terminal.backend().buffer();
+        let mut all = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                all.push_str(buf[(x, y)].symbol());
+            }
+            all.push('\n');
+        }
+        eprintln!("=== rendered sidebar test buffer ===\n{all}=== end ===");
+        assert!(
+            all.contains('▸') || all.contains("Cargo"),
+            "expected file-tree content (▸ marker or `Cargo` entry) somewhere in:\n{all}",
+        );
+    }
+
+    /// Drive a key event into a focused plugin pane and verify the
+    /// plugin's `on_key` callback fired. Uses a tiny test plugin in a
+    /// temp file (rather than the bundled file-tree example) so the
+    /// assertion is unambiguous.
+    #[test]
+    fn key_event_reaches_plugin_pane_callback() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+        let dir = std::env::temp_dir().join(format!(
+            "devix-app-plugin-key-{}",
+            std::process::id(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let plugin_path = dir.join("plugin.lua");
+        std::fs::write(
+            &plugin_path,
+            r#"
+                local pane = devix.register_pane({ slot = "left", lines = { "ready" } })
+                pane:on_key(function(ev)
+                    devix.status("plugin-saw-key:" .. ev.key)
+                end)
+            "#,
+        ).unwrap();
+
+        let _g = EnvGuard::set("DEVIX_PLUGIN", &plugin_path.to_string_lossy());
+        let mut app = App::new(None, None).expect("App constructs with plugin");
+        assert!(app.plugins.is_some(), "plugin should load");
+
+        // Render once so render_cache has the sidebar rect; FocusDir
+        // would otherwise have nothing to navigate against.
+        let backend = TestBackend::new(40, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::render::render(f, &mut app)).unwrap();
+
+        // Step focus into the plugin sidebar.
+        use std::sync::Arc;
+        crate::events::run_command(
+            &mut app,
+            Arc::new(devix_surface::cmd::FocusDir(devix_surface::Direction::Left)),
+        );
+        assert_eq!(
+            crate::plugin::focused_plugin_slot(&app),
+            Some(devix_surface::SidebarSlot::Left),
+            "focus should be on the plugin pane",
+        );
+
+        // Drive a synthetic key through the input dispatcher. The
+        // dispatcher routes it to the plugin first because focus is on
+        // a plugin pane.
+        let key_ev = Event::Key(KeyEvent {
+            code: KeyCode::Char('q'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        crate::events::handle_event(key_ev, &mut app);
+
+        // The plugin runs on its dedicated thread, so we poll the
+        // outbound channel until it pushes the status message.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut saw_key = false;
+        while std::time::Instant::now() < deadline {
+            crate::plugin::drain_plugin_events(&mut app);
+            if app.status.get().map(|s| s.contains("plugin-saw-key:q")).unwrap_or(false) {
+                saw_key = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            saw_key,
+            "expected the plugin's on_key callback to fire and set the status, got {:?}",
+            app.status.get(),
+        );
+    }
+}
+
 pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -275,7 +460,7 @@ fn build_tabbed_pane<'a>(app: &'a App, frame: FrameId) -> TabbedPane<'a> {
 
 /// Construct a `SidebarSlotPane` for `slot`. Chrome-only for now; future
 /// plugins drop content via the `content` field.
-fn build_sidebar_pane<'a>(app: &'a App, slot: SidebarSlot) -> SidebarSlotPane<'a> {
+pub(crate) fn build_sidebar_pane<'a>(app: &'a App, slot: SidebarSlot) -> SidebarSlotPane<'a> {
     let title = match slot {
         SidebarSlot::Left => "left",
         SidebarSlot::Right => "right",
@@ -287,9 +472,11 @@ fn build_sidebar_pane<'a>(app: &'a App, slot: SidebarSlot) -> SidebarSlotPane<'a
     .and_then(devix_surface::pane_leaf_id)
     .map(|id| matches!(id, LeafRef::Sidebar(s) if s == slot))
     .unwrap_or(false);
+    let content: Option<Box<dyn devix_core::Pane>> = crate::plugin::sidebar_pane(app, slot)
+        .map(|p| Box::new(p) as Box<dyn devix_core::Pane>);
     SidebarSlotPane {
         chrome: SidebarChrome { title: title.to_string(), focused },
-        content: None,
+        content,
     }
 }
 
@@ -345,20 +532,49 @@ fn visible_byte_range(doc: &Document, view: &View, height_rows: usize) -> (usize
 }
 
 fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let Some(view) = app.surface.active_view() else { return };
-    let doc = &app.surface.documents[view.doc];
-    let path_str = doc.buffer.path().map(|p| p.display().to_string());
-    let head = view.primary().head;
-    let (errors, warnings) = count_diagnostics(doc);
-    let info = StatusInfo {
-        path: path_str.as_deref(),
-        dirty: doc.buffer.dirty(),
-        line: doc.buffer.line_of_char(head) + 1,
-        col: doc.buffer.col_of_char(head) + 1,
-        sel_len: view.primary().len(),
-        message: app.status.get(),
-        diag_errors: errors,
-        diag_warnings: warnings,
+    // The status line should *always* render, even when focus is on a
+    // non-Frame leaf (e.g. a sidebar) — `active_view()` returns None
+    // there, so previously the status row dropped out and it looked
+    // like the editor had crashed. Fall back to the primary view of the
+    // first surviving frame so the user still sees their file's
+    // path / cursor / status messages.
+    let view_opt = app.surface.active_view().or_else(|| {
+        let frames = devix_surface::frame_ids(app.surface.root.as_ref());
+        let fid = frames.first().copied()?;
+        let vid = devix_surface::find_frame(app.surface.root.as_ref(), fid)?.active_view()?;
+        app.surface.views.get(vid)
+    });
+
+    let path_str = view_opt
+        .map(|v| &app.surface.documents[v.doc])
+        .and_then(|d| d.buffer.path().map(|p| p.display().to_string()));
+
+    let info = match view_opt {
+        Some(view) => {
+            let doc = &app.surface.documents[view.doc];
+            let head = view.primary().head;
+            let (errors, warnings) = count_diagnostics(doc);
+            StatusInfo {
+                path: path_str.as_deref(),
+                dirty: doc.buffer.dirty(),
+                line: doc.buffer.line_of_char(head) + 1,
+                col: doc.buffer.col_of_char(head) + 1,
+                sel_len: view.primary().len(),
+                message: app.status.get(),
+                diag_errors: errors,
+                diag_warnings: warnings,
+            }
+        }
+        None => StatusInfo {
+            path: None,
+            dirty: false,
+            line: 0,
+            col: 0,
+            sel_len: 0,
+            message: app.status.get(),
+            diag_errors: 0,
+            diag_warnings: 0,
+        },
     };
     // Phase 1 of the architecture refactor: drive the status line through
     // the Pane adapter so the new trait surface is exercised end-to-end.

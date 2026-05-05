@@ -32,6 +32,7 @@ devix-editor = { path = "crates/editor" }
 devix-syntax = { path = "crates/syntax" }
 devix-lsp = { path = "crates/lsp" }
 devix-surface = { path = "crates/surface" }
+devix-plugin = { path = "crates/plugin" }
 
 [profile.release]
 lto = "thin"

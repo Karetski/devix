@@ -67,6 +67,20 @@ pub fn handle_key(ev: Event, code: KeyCode, mods: KeyModifiers, app: &mut App) {
         }
     }
 
+    // When focus sits on a plugin-contributed sidebar pane, give the
+    // plugin first crack at every key. If the plugin registered an
+    // `on_key` callback the event is forwarded and treated as
+    // consumed; otherwise we fall through to the keymap so navigation
+    // chords still work even with no plugin handler.
+    if let Some(slot) = crate::plugin::focused_plugin_slot(app) {
+        if let Event::Key(key_ev) = ev {
+            if crate::plugin::forward_key_to_plugin(app, slot, key_ev) {
+                app.dirty = true;
+                return;
+            }
+        }
+    }
+
     let chord = chord_from_key(code, mods);
     if let Some(action) = app.keymap.lookup(chord, &app.commands) {
         run_command(app, action);
@@ -164,14 +178,31 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
     }
 
     match me.kind {
-        MouseEventKind::Down(MouseButton::Left) => {
+        MouseEventKind::Down(button @ (MouseButton::Left | MouseButton::Right | MouseButton::Middle)) => {
             // Tab-strip clicks are not editor clicks: don't fall through to
             // ClickAt or we'd reposition the caret on a phantom row.
-            if let Some(hit) = app.surface.tab_strip_hit(me.column, me.row) {
-                handle_tab_strip_click(app, hit);
-                return;
+            if button == MouseButton::Left {
+                if let Some(hit) = app.surface.tab_strip_hit(me.column, me.row) {
+                    handle_tab_strip_click(app, hit);
+                    return;
+                }
             }
             app.surface.focus_at_screen(me.column, me.row);
+            // Plugin sidebar panes get the click before the editor's
+            // ClickAt — clicking inside a plugin pane shouldn't move the
+            // editor caret. Coordinates are converted to pane-relative
+            // (0,0 = top-left of the inner content area).
+            if let Some(slot) = crate::plugin::focused_plugin_slot(app) {
+                if let Some((rx, ry)) = sidebar_inner_relative(app, slot, me.column, me.row) {
+                    if crate::plugin::forward_click_to_plugin(app, slot, rx, ry, button) {
+                        app.dirty = true;
+                        return;
+                    }
+                }
+            }
+            if button != MouseButton::Left {
+                return;
+            }
             let extend = me.modifiers.contains(KeyModifiers::SHIFT);
             run_command(app, Arc::new(cmd::ClickAt {
                 col: me.column, row: me.row, extend,
@@ -195,6 +226,16 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
                     return;
                 }
             }
+            // Wheel over a plugin sidebar scrolls *its* line buffer,
+            // not the editor body. Without this the user has no way to
+            // see content past the bottom of a long pane.
+            if let Some(slot) = crate::plugin::plugin_slot_at(app, me.column, me.row) {
+                let delta: i32 = if matches!(me.kind, MouseEventKind::ScrollUp) { -2 } else { 2 };
+                if crate::plugin::scroll_plugin_pane(app, slot, delta) {
+                    app.dirty = true;
+                    return;
+                }
+            }
             let delta: isize = if matches!(me.kind, MouseEventKind::ScrollUp) { -1 } else { 1 };
             app.pending_scroll = app.pending_scroll.saturating_add(delta);
         }
@@ -211,6 +252,27 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
         }
         _ => {}
     }
+}
+
+/// Translate a screen `(col, row)` click into pane-relative coordinates
+/// inside `slot`'s rendered content area. Returns `None` if the click
+/// missed the slot or lay on the chrome border. Reads the cached
+/// sidebar rect populated by the previous render pass.
+fn sidebar_inner_relative(
+    app: &App,
+    slot: devix_surface::SidebarSlot,
+    col: u16,
+    row: u16,
+) -> Option<(u16, u16)> {
+    let rect = app.surface.render_cache.sidebar_rects.get(&slot).copied()?;
+    let inner_x = rect.x.saturating_add(1);
+    let inner_y = rect.y.saturating_add(1);
+    let inner_w = rect.width.saturating_sub(2);
+    let inner_h = rect.height.saturating_sub(2);
+    if col < inner_x || row < inner_y || col >= inner_x + inner_w || row >= inner_y + inner_h {
+        return None;
+    }
+    Some((col - inner_x, row - inner_y))
 }
 
 fn handle_tab_strip_click(app: &mut App, hit: TabStripHit) {

@@ -14,6 +14,7 @@ mod app;
 mod clipboard;
 mod events;
 mod lsp;
+mod plugin;
 mod render;
 mod watcher;
 
