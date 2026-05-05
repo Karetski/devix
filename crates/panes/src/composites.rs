@@ -3,9 +3,10 @@
 //! Two composites are owned per render call (built on the stack inside
 //! the structural Panes' `render` impls in `devix-editor`'s `tree.rs`):
 //!
-//! - [`TabbedPane`]: a tab strip pinned to row 0 with one editor body
-//!   beneath. Owns both children as fields so `children()` can hand back
-//!   stable `&dyn Pane` references.
+//! - [`TabbedPane`]: a tab strip pinned to row 0 with one body Pane
+//!   beneath. Generic over the body so any focusable Pane (an editor
+//!   buffer today; a settings pane, a terminal pane tomorrow) can sit
+//!   inside the tab strip without `panes` knowing what it is.
 //! - [`SidebarSlotPane`]: a sidebar bound to an edge slot with optional
 //!   content. The slot exists so plugins can drop a Pane in later.
 //!
@@ -19,22 +20,20 @@
 //! "the same thing as the framework": ask each child for its rect,
 //! paint it.
 
-pub use devix_core::Axis;
+use crate::event::Event;
+use crate::geom::Rect;
+use crate::pane::{HandleCtx, Outcome, Pane, RenderCtx};
+use crate::widgets::{SidebarPane as SidebarChrome, TabStripPane};
 
-use devix_core::{Event, HandleCtx, Outcome, Pane, Rect, RenderCtx};
-use devix_ui::{SidebarPane as SidebarChrome, TabStripPane};
-
-use crate::buffer::EditorPane;
-
-/// One editor frame: tab strip pinned to row 0, active editor body below.
-/// Owns its children as fields so `children()` returns stable references
-/// — `EditorPane` borrows nothing it doesn't outlive.
-pub struct TabbedPane<'a> {
+/// One frame: tab strip pinned to row 0, active body below. Owns both
+/// children as fields so `children()` returns stable references — the
+/// body borrows nothing it doesn't outlive.
+pub struct TabbedPane<B: Pane> {
     pub strip: TabStripPane,
-    pub editor: EditorPane<'a>,
+    pub body: B,
 }
 
-impl<'a> Pane for TabbedPane<'a> {
+impl<B: Pane> Pane for TabbedPane<B> {
     fn render(&self, area: Rect, ctx: &mut RenderCtx<'_, '_>) {
         for (rect, child) in self.children(area) {
             child.render(rect, ctx);
@@ -57,7 +56,7 @@ impl<'a> Pane for TabbedPane<'a> {
         // row 0 and the strip for clicks on row 0.
         vec![
             (strip_rect, &self.strip as &dyn Pane),
-            (body_rect, &self.editor as &dyn Pane),
+            (body_rect, &self.body as &dyn Pane),
         ]
     }
 }
@@ -115,4 +114,3 @@ impl<'a> Pane for SidebarSlotPane<'a> {
         true
     }
 }
-

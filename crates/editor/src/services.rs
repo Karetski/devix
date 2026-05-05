@@ -21,13 +21,13 @@
 use std::cell::Cell;
 use std::ptr::NonNull;
 
-use devix_core::{Pane, Theme};
+use devix_panes::{Pane, Theme};
 use slotmap::SlotMap;
 
 use crate::cursor::{Cursor, CursorId};
 use crate::document::{DocId, Document};
 
-use devix_core::SidebarSlot;
+use devix_panes::SidebarSlot;
 use crate::editor::{LeafRef, RenderCache};
 
 pub struct RenderServices<'a> {

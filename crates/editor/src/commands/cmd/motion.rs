@@ -1,6 +1,6 @@
 //! Cursor motion: char / word / line / doc / page.
 
-use devix_core::Action;
+use devix_panes::Action;
 
 use crate::commands::context::Context;
 use crate::commands::dispatch;

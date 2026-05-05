@@ -1,6 +1,6 @@
 //! Sidebar widget: empty bordered placeholder. Body is reserved for plugins.
 
-use devix_core::{Event, HandleCtx, Outcome, Pane, RenderCtx};
+use crate::{Event, HandleCtx, Outcome, Pane, RenderCtx};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};

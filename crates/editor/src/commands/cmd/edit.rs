@@ -1,6 +1,6 @@
 //! Edit operations: undo/redo, selection, insertion, deletion, multicursor.
 
-use devix_core::Action;
+use devix_panes::Action;
 use crate::cursor::ScrollMode;
 
 use crate::commands::context::Context;

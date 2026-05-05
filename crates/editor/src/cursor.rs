@@ -28,7 +28,7 @@ pub struct Cursor {
     /// Editor scroll offset in cells. `.1` is the line index of the topmost
     /// visible line (one cell per line for now); `.0` is reserved for
     /// horizontal scrolling within long lines. Pure data — the render layer
-    /// applies layout-aware clamping via `devix_ui::layout` free functions.
+    /// applies layout-aware clamping via `devix_panes::layout` free functions.
     pub scroll: (u32, u32),
     pub scroll_mode: ScrollMode,
 }

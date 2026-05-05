@@ -1,5 +1,5 @@
 [package]
-name = "devix-ui"
+name = "devix-panes"
 edition.workspace = true
 version.workspace = true
 rust-version.workspace = true
@@ -7,4 +7,3 @@ rust-version.workspace = true
 [dependencies]
 ratatui.workspace = true
 crossterm.workspace = true
-devix-core.workspace = true

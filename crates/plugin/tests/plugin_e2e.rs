@@ -10,12 +10,12 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use devix_core::Pane;
+use devix_panes::Pane;
 use devix_plugin::{
     LuaPane, PluginInput, PluginMsg, PluginRuntime, make_command_action, parse_chord,
 };
 use devix_editor::{Command, CommandId, CommandRegistry, Context, Keymap, Viewport};
-use devix_core::SidebarSlot;
+use devix_panes::SidebarSlot;
 use devix_editor::Editor;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -97,7 +97,7 @@ fn hello_command_round_trips_through_registry_and_keymap() {
         .expect("plugin chord must resolve to a command");
 
     let mut editor = Editor::open(None).unwrap();
-    let mut clipboard = devix_core::NoClipboard;
+    let mut clipboard = devix_panes::NoClipboard;
     let mut quit = false;
     {
         let mut ctx = Context {
@@ -142,7 +142,7 @@ fn left_sidebar_pane_renders_lua_lines() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|f| {
-            let mut ctx = devix_core::RenderCtx { frame: f };
+            let mut ctx = devix_panes::RenderCtx { frame: f };
             lua_pane.render(Rect { x: 0, y: 0, width: 20, height: 5 }, &mut ctx);
         })
         .unwrap();
@@ -186,7 +186,7 @@ fn pane_set_lines_updates_render_after_load() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|f| {
-            let mut ctx = devix_core::RenderCtx { frame: f };
+            let mut ctx = devix_panes::RenderCtx { frame: f };
             lua_pane.render(Rect { x: 0, y: 0, width: 20, height: 3 }, &mut ctx);
         })
         .unwrap();
@@ -207,7 +207,7 @@ fn pane_set_lines_updates_render_after_load() {
     // Re-render the same LuaPane (which holds the shared `lines` Arc).
     terminal
         .draw(|f| {
-            let mut ctx = devix_core::RenderCtx { frame: f };
+            let mut ctx = devix_panes::RenderCtx { frame: f };
             lua_pane.render(Rect { x: 0, y: 0, width: 20, height: 3 }, &mut ctx);
         })
         .unwrap();
@@ -319,14 +319,14 @@ fn bundled_file_tree_example_loads_and_lists_cwd() {
 
 #[test]
 fn sidebar_slot_pane_renders_lua_pane_inside_chrome() {
-    use devix_core::Pane as _;
+    use devix_panes::Pane as _;
     use devix_editor::SidebarSlotPane;
-    use devix_ui::SidebarPane as SidebarChrome;
+    use devix_panes::SidebarPane as SidebarChrome;
 
     let path = write_plugin();
     let runtime = PluginRuntime::load(&path).unwrap();
     let pane = runtime.pane_for(SidebarSlot::Left).expect("left pane registered");
-    let lua: Box<dyn devix_core::Pane> = Box::new(pane.into_pane());
+    let lua: Box<dyn devix_panes::Pane> = Box::new(pane.into_pane());
     let slot = SidebarSlotPane {
         chrome: SidebarChrome { title: "left".into(), focused: false },
         content: Some(lua),
@@ -336,7 +336,7 @@ fn sidebar_slot_pane_renders_lua_pane_inside_chrome() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|f| {
-            let mut ctx = devix_core::RenderCtx { frame: f };
+            let mut ctx = devix_panes::RenderCtx { frame: f };
             slot.render(Rect { x: 0, y: 0, width: 20, height: 5 }, &mut ctx);
         })
         .unwrap();

@@ -209,19 +209,10 @@ dependencies = [
  "anyhow",
  "arboard",
  "crossterm",
- "devix-core",
  "devix-editor",
+ "devix-panes",
  "devix-plugin",
  "devix-text",
- "devix-ui",
- "ratatui",
-]
-
-[[package]]
-name = "devix-core"
-version = "0.1.0"
-dependencies = [
- "crossterm",
  "ratatui",
 ]
 
@@ -231,10 +222,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossterm",
- "devix-core",
+ "devix-panes",
  "devix-syntax",
  "devix-text",
- "devix-ui",
  "notify",
  "nucleo-matcher",
  "ratatui",
@@ -243,14 +233,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "devix-panes"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "ratatui",
+]
+
+[[package]]
 name = "devix-plugin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossterm",
- "devix-core",
  "devix-editor",
- "devix-ui",
+ "devix-panes",
  "mlua",
  "ratatui",
  "tokio",
@@ -274,15 +271,6 @@ dependencies = [
  "anyhow",
  "ropey",
  "unicode-segmentation",
-]
-
-[[package]]
-name = "devix-ui"
-version = "0.1.0"
-dependencies = [
- "crossterm",
- "devix-core",
- "ratatui",
 ]
 
 [[package]]

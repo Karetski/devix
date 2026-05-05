@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crate::commands::cmd::{self, EditorCommand};
 use crate::commands::registry::{Command, CommandId, CommandRegistry};
-use devix_core::layout::SidebarSlot;
+use devix_panes::SidebarSlot;
 
 pub const PALETTE_OPEN:        CommandId = CommandId("palette.open");
 pub const PALETTE_CLOSE:       CommandId = CommandId("palette.close");

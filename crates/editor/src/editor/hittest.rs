@@ -2,8 +2,8 @@
 //! tab activation and tab-strip scroll forwarding live here too because their
 //! input source is the same hit-test cache.
 
-use devix_core::{pane_at, Pane};
-use devix_core::Rect;
+use devix_panes::{pane_at, Pane};
+use devix_panes::Rect;
 
 use crate::frame::FrameId;
 use crate::tree::{LayoutFrame, LayoutSidebar, find_frame_mut};

@@ -12,12 +12,12 @@
 //!    whole tree (no parallel render-tree pass, no per-leaf match arm
 //!    in the binary). Modal Panes paint last for z-ordering.
 
-use devix_core::{Pane, RenderCtx, SidebarSlot};
+use devix_panes::{Pane, RenderCtx, SidebarSlot};
 use devix_editor::RenderServices;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use devix_editor::PalettePane;
-use devix_ui::{PaletteRow, palette_area, render_palette};
+use devix_panes::{PaletteRow, palette_area, render_palette};
 
 use crate::app::App;
 
@@ -131,7 +131,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
 }
 
 /// Project the palette state into the rendering-friendly `PaletteRow` shape
-/// (label/category/chord-string/selected) so `devix_ui::render_palette` can
+/// (label/category/chord-string/selected) so `devix_panes::render_palette` can
 /// stay free of `commands`-side types.
 fn paint_palette(p: &PalettePane, app: &App, editor_area: Rect, frame: &mut Frame<'_>) {
     let state = &p.state;

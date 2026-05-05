@@ -5,8 +5,8 @@
 //! children are arranged in. So a "vertical split" produces children laid
 //! out horizontally — flip in the impls.
 
-use devix_core::Action;
-use devix_core::layout::{Axis, Direction, SidebarSlot};
+use devix_panes::Action;
+use devix_panes::{Axis, Direction, SidebarSlot};
 
 use crate::commands::context::Context;
 

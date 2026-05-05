@@ -8,11 +8,11 @@
 //! sidebar rects — the cache is the only thing that knows how splits
 //! were laid out at the last render.
 
-use devix_core::{Pane, pane_at_path};
-use devix_core::Rect;
+use devix_panes::{Pane, pane_at_path};
+use devix_panes::Rect;
 
 use crate::frame::FrameId;
-use devix_core::{Axis, Direction, SidebarSlot};
+use devix_panes::{Axis, Direction, SidebarSlot};
 use crate::tree::{LayoutFrame, LayoutSidebar, LayoutSplit};
 
 use super::{LeafRef, RenderCache, Editor};

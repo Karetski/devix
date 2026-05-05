@@ -8,7 +8,7 @@ use devix_plugin::{
     CommandSpec, LuaPane, PluginMsg, PluginPane, PluginRuntime, default_plugin_path,
 };
 use devix_editor::{Command, CommandId, CommandRegistry, Keymap, cmd};
-use devix_core::SidebarSlot;
+use devix_panes::SidebarSlot;
 
 use crate::app::App;
 use crate::events::run_command;

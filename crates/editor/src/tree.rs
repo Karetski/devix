@@ -13,15 +13,15 @@
 //! host opens via `RenderServices::scope`. There is no parallel render
 //! tree built by the binary anymore.
 
-use devix_core::{Event, HandleCtx, Outcome, Pane, Rect, RenderCtx, split_rects};
+use devix_panes::{Event, HandleCtx, Outcome, Pane, Rect, RenderCtx, split_rects};
 use std::any::Any;
 
 use crate::buffer::EditorPane;
-use crate::layout::{SidebarSlotPane, TabbedPane};
-use devix_ui::{SidebarPane as SidebarChrome, TabInfo, TabStripPane};
+use devix_panes::{SidebarSlotPane, TabbedPane};
+use devix_panes::{SidebarPane as SidebarChrome, TabInfo, TabStripPane};
 
 use crate::frame::FrameId;
-use devix_core::{Axis, SidebarSlot};
+use devix_panes::{Axis, SidebarSlot};
 use crate::services::RenderServices;
 
 /// Recursive split. Mirrors `Node::Split` semantics; `children()`
@@ -169,7 +169,7 @@ impl Pane for LayoutFrame {
                     active: self.active_tab,
                     scroll: self.tab_strip_scroll,
                 },
-                editor: EditorPane {
+                body: EditorPane {
                     buffer: &doc.buffer,
                     selection: &cursor.selection,
                     scroll: cursor.scroll,
@@ -492,7 +492,7 @@ pub mod mutate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use devix_core::{focusable_leaves, pane_at};
+    use devix_panes::{focusable_leaves, pane_at};
     fn full() -> Rect {
         Rect { x: 0, y: 0, width: 100, height: 50 }
     }

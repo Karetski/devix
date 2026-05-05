@@ -3,7 +3,7 @@
 //! Each submodule owns one cohesive group of commands. The shared trait
 //! alias and modal-helper functions live here at the root.
 
-use devix_core::Action;
+use devix_panes::Action;
 
 use crate::commands::context::Context;
 
@@ -62,7 +62,7 @@ mod tests {
 
     fn make_ctx<'a>(
         ws: &'a mut Editor,
-        clipboard: &'a mut dyn devix_core::Clipboard,
+        clipboard: &'a mut dyn devix_panes::Clipboard,
         quit: &'a mut bool,
         commands: &'a CommandRegistry,
     ) -> Context<'a> {
@@ -78,7 +78,7 @@ mod tests {
     #[test]
     fn quit_sets_the_quit_flag_through_the_trait() {
         let mut ws = Editor::open(None).unwrap();
-        let mut clipboard = devix_core::NoClipboard;
+        let mut clipboard = devix_panes::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
         let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands);
@@ -94,7 +94,7 @@ mod tests {
     #[test]
     fn parameterized_commands_dispatch_through_trait_objects() {
         let mut ws = Editor::open(None).unwrap();
-        let mut clipboard = devix_core::NoClipboard;
+        let mut clipboard = devix_panes::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
 
@@ -113,7 +113,7 @@ mod tests {
     #[test]
     fn open_palette_populates_modal_slot() {
         let mut ws = Editor::open(None).unwrap();
-        let mut clipboard = devix_core::NoClipboard;
+        let mut clipboard = devix_panes::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
         let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands);
@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn add_cursor_below_inserts_at_each_cursor() {
         let mut ws = surface_with_text("aa\nbb\ncc");
-        let mut clipboard = devix_core::NoClipboard;
+        let mut clipboard = devix_panes::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
         let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands);
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn add_cursor_above_at_line_zero_is_noop() {
         let mut ws = surface_with_text("aa\nbb");
-        let mut clipboard = devix_core::NoClipboard;
+        let mut clipboard = devix_panes::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
         let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands);
@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn motion_transforms_every_cursor() {
         let mut ws = surface_with_text("aaaa\nbbbb");
-        let mut clipboard = devix_core::NoClipboard;
+        let mut clipboard = devix_panes::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
         let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands);
@@ -203,7 +203,7 @@ mod tests {
             vec![devix_text::Range::point(2), devix_text::Range::point(5)],
             0,
         );
-        let mut clipboard = devix_core::NoClipboard;
+        let mut clipboard = devix_panes::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
         let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands);
@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn collapse_selection_drops_secondary_cursors() {
         let mut ws = surface_with_text("aa\nbb\ncc");
-        let mut clipboard = devix_core::NoClipboard;
+        let mut clipboard = devix_panes::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
         let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands);
@@ -232,7 +232,7 @@ mod tests {
         ws.modal = Some(Box::new(crate::commands::modal::PalettePane::from_registry(
             &CommandRegistry::default(),
         )));
-        let mut clipboard = devix_core::NoClipboard;
+        let mut clipboard = devix_panes::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
         let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands);

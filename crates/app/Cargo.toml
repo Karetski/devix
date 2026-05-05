@@ -13,8 +13,7 @@ anyhow.workspace = true
 crossterm.workspace = true
 ratatui.workspace = true
 devix-text.workspace = true
-devix-core.workspace = true
-devix-ui.workspace = true
+devix-panes.workspace = true
 devix-editor.workspace = true
 devix-plugin.workspace = true
 arboard = { version = "3.4", default-features = false }

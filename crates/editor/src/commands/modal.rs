@@ -13,7 +13,7 @@
 use std::any::Any;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use devix_core::{HandleCtx, Outcome, Pane, Rect, RenderCtx};
+use devix_panes::{HandleCtx, Outcome, Pane, Rect, RenderCtx};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32String};
 
@@ -180,7 +180,7 @@ impl PalettePane {
 
 impl Pane for PalettePane {
     /// PalettePane render is a no-op: rendering is driven externally
-    /// from the app's render module via `devix_ui::render_palette`,
+    /// from the app's render module via `devix_panes::render_palette`,
     /// which gets the typed registry/keymap context the trait can't
     /// carry. Keeping this empty preserves the closed `dyn Pane` shape
     /// without coupling commands to ratatui.
@@ -214,10 +214,10 @@ impl Pane for PalettePane {
 }
 
 /// Render `Chord` as a human-readable shortcut string ("Ctrl+Shift+P").
-/// Thin wrapper over `devix_ui::palette::format_chord` so callers can
+/// Thin wrapper over `devix_panes::palette::format_chord` so callers can
 /// pass a `Chord` directly. Lives here because `Chord` is a commands type.
 pub fn format_chord(chord: Chord) -> String {
-    devix_ui::format_chord(chord.code, chord.mods)
+    devix_panes::format_chord(chord.code, chord.mods)
 }
 
 #[cfg(test)]

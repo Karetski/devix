@@ -18,7 +18,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use crate::commands::builtins as cmd_id;
 use crate::commands::cmd::{self, EditorCommand};
 use crate::commands::registry::{CommandId, CommandRegistry};
-use devix_core::layout::{Direction, SidebarSlot};
+use devix_panes::{Direction, SidebarSlot};
 
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
 pub struct Chord {

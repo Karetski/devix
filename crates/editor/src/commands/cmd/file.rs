@@ -1,6 +1,6 @@
 //! File / disk commands: save, reload, keep-buffer, open-path, quit.
 
-use devix_core::Action;
+use devix_panes::Action;
 
 use crate::commands::context::Context;
 

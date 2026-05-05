@@ -8,7 +8,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
 use devix_editor::{
     Context, EditorCommand, ModalOutcome, PalettePane, Viewport, chord_from_key, cmd,
 };
-use devix_core::HandleCtx;
+use devix_panes::HandleCtx;
 use devix_editor::TabStripHit;
 
 use crate::app::App;
@@ -77,7 +77,7 @@ fn dispatch_modal_event(app: &mut App, ev: &Event) {
             .as_mut()
             .expect("dispatch_modal_event requires a modal");
         let mut hctx = HandleCtx::default();
-        let _ = modal.handle(ev, devix_core::Rect::default(), &mut hctx);
+        let _ = modal.handle(ev, devix_panes::Rect::default(), &mut hctx);
     }
 
     let outcome = drain_modal_outcome(app);
@@ -193,7 +193,7 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
 
 fn sidebar_inner_relative(
     app: &App,
-    slot: devix_core::SidebarSlot,
+    slot: devix_panes::SidebarSlot,
     col: u16,
     row: u16,
 ) -> Option<(u16, u16)> {

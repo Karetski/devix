@@ -9,11 +9,11 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
-use devix_core::Pane;
+use devix_panes::Pane;
 
 use crate::document::{DocId, Document};
 use crate::frame::mint_id;
-use devix_core::{Axis, SidebarSlot};
+use devix_panes::{Axis, SidebarSlot};
 use crate::tree::{
     LayoutFrame, LayoutSidebar, LayoutSplit, LeafId, find_frame, find_frame_mut, frame_ids,
     mutate, pane_leaf_id,

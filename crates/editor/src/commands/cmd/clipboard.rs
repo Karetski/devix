@@ -1,6 +1,6 @@
 //! Clipboard commands: copy / cut / paste.
 
-use devix_core::Action;
+use devix_panes::Action;
 
 use crate::commands::context::Context;
 

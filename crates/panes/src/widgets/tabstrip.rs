@@ -14,14 +14,14 @@
 //!    `clip_left > 0` use `Paragraph::scroll` to show the right portion of a
 //!    partially-visible tab.
 
-use devix_core::{Event, HandleCtx, Outcome, Pane, RenderCtx};
+use crate::{Event, HandleCtx, Outcome, Pane, RenderCtx};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::layout::{
+use super::layout::{
     CollectionLayout, CollectionPass, LinearLayout, ensure_visible, set_scroll,
 };
 

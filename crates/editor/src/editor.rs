@@ -16,15 +16,15 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use devix_core::Pane;
-use devix_core::Rect;
+use devix_panes::Pane;
+use devix_panes::Rect;
 use slotmap::SlotMap;
 
 use crate::cursor::{Cursor, CursorId};
 use crate::document::{DocId, Document};
 
 use crate::frame::{FrameId, mint_id};
-use devix_core::SidebarSlot;
+use devix_panes::SidebarSlot;
 use crate::tree::{LayoutFrame, LeafId, find_frame, pane_at_indices, pane_leaf_id};
 #[cfg(test)]
 use crate::tree::{find_frame_mut, frame_ids};
@@ -177,9 +177,9 @@ impl Editor {
     /// paint. After it returns, paint is pure — render functions read state
     /// and emit cells, never write back.
     pub fn layout(&mut self, area: Rect) {
-        use devix_ui::TabInfo;
-        use devix_ui::layout::{VRect, ensure_visible, set_scroll};
-        use devix_ui::tab_strip_layout;
+        use devix_panes::TabInfo;
+        use devix_panes::widgets::layout::{VRect, ensure_visible, set_scroll};
+        use devix_panes::tab_strip_layout;
         use crate::cursor::ScrollMode;
 
         // Reset render-cache for this frame. Both the per-leaf walk
@@ -234,7 +234,7 @@ impl Editor {
             let Some(f) = crate::tree::find_frame_mut(&mut self.root, fid) else {
                 continue;
             };
-            devix_ui::layout_tabstrip(
+            devix_panes::layout_tabstrip(
                 &tabs,
                 active_tab,
                 &mut f.tab_strip_scroll,
@@ -376,7 +376,7 @@ mod tests {
     fn split_creates_a_second_frame_and_focuses_it() {
         let mut ws = Editor::open(None).unwrap();
         let original_fid = ws.active_frame().unwrap();
-        ws.split_active(crate::layout::Axis::Horizontal);
+        ws.split_active(devix_panes::Axis::Horizontal);
         assert_eq!(frame_ids(ws.root.as_ref()).len(), 2);
         let new_fid = ws.active_frame().unwrap();
         assert_ne!(original_fid, new_fid);
@@ -390,7 +390,7 @@ mod tests {
 
     #[test]
     fn closing_one_split_child_collapses_back_to_single_frame() {
-        use crate::layout::Axis;
+        use devix_panes::Axis;
         use crate::tree::LayoutFrame;
         let mut ws = Editor::open(None).unwrap();
         ws.split_active(Axis::Horizontal);
@@ -422,7 +422,7 @@ mod tests {
 
     #[test]
     fn focus_dir_right_after_split_returns_to_original() {
-        use devix_core::{Axis, Direction};
+        use devix_panes::{Axis, Direction};
         let mut ws = Editor::open(None).unwrap();
         let original = ws.active_frame().unwrap();
         ws.split_active(Axis::Horizontal);
@@ -438,7 +438,7 @@ mod tests {
 
     #[test]
     fn focus_dir_left_at_edge_with_sidebar_enters_sidebar() {
-        use devix_core::Direction;
+        use devix_panes::Direction;
         use crate::tree::{LeafId, pane_at_indices, pane_leaf_id};
         let mut ws = Editor::open(None).unwrap();
         ws.toggle_sidebar(SidebarSlot::Left);
@@ -473,7 +473,7 @@ mod tests {
 
     #[test]
     fn closing_focused_sidebar_lands_focus_on_a_frame() {
-        use devix_core::Direction;
+        use devix_panes::Direction;
         use crate::tree::{LeafId, pane_at_indices, pane_leaf_id};
         let mut ws = Editor::open(None).unwrap();
         ws.toggle_sidebar(SidebarSlot::Left);
@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn closing_one_of_three_split_children_keeps_two_remaining() {
-        use crate::layout::Axis;
+        use devix_panes::Axis;
         use crate::tree::{LayoutSplit, LeafId, pane_at_indices, pane_leaf_id};
         let mut ws = Editor::open(None).unwrap();
         ws.split_active(Axis::Horizontal);
@@ -513,7 +513,7 @@ mod tests {
 
     #[test]
     fn opening_same_path_in_two_frames_shares_document() {
-        use crate::layout::Axis;
+        use devix_panes::Axis;
         let dir = std::env::temp_dir().join(format!("devix-dedup-cross-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("a.txt");
@@ -641,7 +641,7 @@ mod tests {
 
     #[test]
     fn focus_frame_jumps_focus_across_a_split() {
-        use crate::layout::Axis;
+        use devix_panes::Axis;
         let mut ws = Editor::open(None).unwrap();
         let original = ws.active_frame().unwrap();
         ws.split_active(Axis::Horizontal);

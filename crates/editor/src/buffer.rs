@@ -1,6 +1,6 @@
 //! Editor view: pure render of buffer text with line-number gutter,
 //! syntax-scope styling, and selection-range highlight. Vertical scroll
-//! comes from the layout primitives in `devix_ui::layout` — each line is
+//! comes from the layout primitives in `devix_panes::layout` — each line is
 //! one item in a `UniformLayout`.
 //!
 //! Highlights are passed in by the caller (resolved from the document's
@@ -8,7 +8,7 @@
 //! agnostic to how that list was produced; it just paints scope styles
 //! over visible text.
 
-use devix_ui::layout::{CollectionPass, UniformLayout};
+use devix_panes::widgets::layout::{CollectionPass, UniformLayout};
 use ratatui::Frame;
 use ratatui::buffer::Buffer as RatBuffer;
 use ratatui::layout::Rect;
@@ -19,7 +19,7 @@ use ratatui::widgets::{Paragraph, Widget};
 use ropey::Rope;
 
 use devix_text::{Buffer, Range, Selection};
-use devix_core::{Event, HandleCtx, Outcome, Pane, RenderCtx, Theme};
+use devix_panes::{Event, HandleCtx, Outcome, Pane, RenderCtx, Theme};
 use devix_syntax::HighlightSpan;
 
 pub struct BufferRender<'a> {

@@ -1,6 +1,6 @@
 //! Command palette and modal-management commands.
 
-use devix_core::Action;
+use devix_panes::Action;
 
 use crate::commands::context::Context;
 use crate::commands::modal::PalettePane;

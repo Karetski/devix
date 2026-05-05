@@ -4,7 +4,7 @@
 //! `commands`) can call into the clipboard without depending on a concrete
 //! backend. The binary picks `arboard` and bridges it here.
 
-use devix_core::{Clipboard, NoClipboard};
+use devix_panes::{Clipboard, NoClipboard};
 
 struct ArboardClipboard(arboard::Clipboard);
 

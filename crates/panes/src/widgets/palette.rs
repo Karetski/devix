@@ -7,7 +7,7 @@
 //! `ratatui::widgets`.
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use devix_core::{Rect, Theme};
+use crate::{Rect, Theme};
 use ratatui::Frame;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};

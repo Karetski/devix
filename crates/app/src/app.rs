@@ -10,7 +10,7 @@ use crossterm::event::{self, Event};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use devix_editor::{CommandRegistry, Keymap, build_registry, default_keymap};
-use devix_core::{Clipboard, Theme};
+use devix_panes::{Clipboard, Theme};
 use devix_editor::Editor;
 
 use crate::clipboard;

@@ -194,7 +194,7 @@ pub trait CollectionLayout {
     }
 }
 
-pub use devix_core::Axis;
+pub use crate::Axis;
 
 /// 1D flow layout — items along an axis with optional spacing between them.
 /// Spacing is reported as decorations (id = index of the item *before* the

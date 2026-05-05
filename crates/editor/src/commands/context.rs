@@ -1,7 +1,7 @@
 //! Dispatcher context.
 
-use devix_core::Clipboard;
-use devix_core::Rect;
+use devix_panes::Clipboard;
+use devix_panes::Rect;
 
 use crate::commands::registry::CommandRegistry;
 use crate::Editor;
