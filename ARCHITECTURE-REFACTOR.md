@@ -124,26 +124,33 @@ A popup, a tooltip, a dropdown — all `OverlayPane<...>`. Write the behavior on
 
 ## Crate decomposition
 
-Eight crates plus the binary. The architecture vision had `editor`
-absorbing `surface` for one root crate; the realized split keeps them
-separate so the framework crate (`core` + `surface` + `ui`) can be
-audited without dragging editor concerns through it. The boundary that
-matters — `core` as the stable plugin surface — is preserved.
+Five framework crates plus the binary, six total. The earlier vision
+was eight; the realized layout drops the cycle-breaking carve-outs
+(`view`, `workspace`, `commands`, `surface`) that existed only to
+satisfy the borrow checker, and collapses the framework's
+trait-vs-impl split — `core` and `ui` — into a single `panes` crate
+where the boundary lives at the module level instead of the crate
+level (UIKit-style).
 
 | Crate | Role | Deps |
 |---|---|---|
 | `text` | `Buffer`, `Selection`, `Transaction`. Leaf. | `ropey` |
 | `syntax` | tree-sitter wrapper. Leaf. | `tree-sitter` |
-| `lsp` | JSON-RPC + coordinator. Leaf. | `tokio`, `lsp-types` |
-| `core` | `Pane` trait, `Action` trait, `Event`, `Theme`, geometry / layout primitives, `RenderCtx`, `HandleCtx`, generic walkers. **Stable surface for plugins.** | `ratatui` (for `Rect`) |
-| `ui` | Chrome widgets (popup, status, tab strip, sidebar, scroll/layout helpers). Pure design system — no awareness of editor state. | `core` |
-| `editor` | `Document` (text + LSP attachment + tree-sitter + filesystem watcher), per-view popup state (`HoverState`, `CompletionState`), concrete Panes (`EditorPane`, `SplitPane`, `TabbedPane`, `SidebarSlotPane`, `HoverPane`, `CompletionPane`). | `text`, `syntax`, `lsp`, `core`, `ui` |
-| `surface` | The root: layout-tree `Pane`, modal slot, focus chain, `Document`/`View` registries, command/keymap/dispatch. The `Surface` struct itself. | `text`, `core`, `editor`, `lsp` |
-| `devix` (bin) | Terminal lifecycle, tokio runtime, root `Surface` construction, event loop. | `surface`, `editor`, `core`, `ui` |
+| `panes` | The framework. `Pane`/`Action`/`Event`/`Outcome` traits, `RenderCtx`/`HandleCtx`, geometry primitives (`Rect`, `Anchor`), layout primitives (`Axis`, `Direction`, `SidebarSlot`, `split_rects`), walk helpers, `Theme`, layout composites (`TabbedPane`, `SidebarSlotPane`), chrome widgets (popup, palette, sidebar, tabstrip). | `ratatui`, `crossterm` |
+| `editor` | The editor. `Document` (rope buffer + tree-sitter highlighter + filesystem watcher), `Cursor` (per-tab edit state), `EditorPane` (buffer rendering), `Editor` (root: layout tree, focus chain, modal slot, `Document`/`Cursor` SlotMaps), `LayoutFrame`/`LayoutSplit`/`LayoutSidebar`, commands, keymap, palette logic. | `text`, `syntax`, `panes` |
+| `plugin` | Lua plugin host. | `panes`, `editor` |
+| `devix` (bin) | Terminal lifecycle, tokio runtime, root `Editor` construction, event loop. | `text`, `panes`, `editor`, `plugin` |
 
-Plugins (Phase 8) depend only on `core`. They contribute Pane impls and Action impls. The editor crate (or a future plugin host) loads them and inserts their Panes/Actions into the running `Surface`.
+Plugins depend on `panes` (for the trait surface and layout primitives) plus `editor` (the host needs `Editor` to register actions and panes against). The architecture's older "plugins depend only on core" framing was an aspiration — the impls plugins need to compose against (`OverlayPane`, `TabbedPane`, the chrome widgets) live in the same crate as the traits, by design.
 
-`core` is the only crate plugins ever depend on, and its surface is small: four traits and a handful of types. **That is the stable ABI.** Lattner's principle: a small stable core enables an ecosystem.
+The four-concept design maps 1:1 to four type names with no synonyms:
+
+| Concept | Type | Crate |
+|---|---|---|
+| Universal display unit | `Pane` | `panes` |
+| Invocable behavior | `Action` | `panes` |
+| Text model | `Document` | `editor` |
+| Editor root | `Editor` | `editor` |
 
 ## Migration path
 
@@ -206,3 +213,4 @@ Things explicitly pushed to a later phase than the migration path above suggests
 - **Phase 5 (Action as trait) — done.** `Action` enum deleted; dispatcher enum match deleted. All 50+ commands are struct impls in `crates/surface/src/cmd.rs`. `Keymap` and `CommandRegistry` store `Arc<dyn EditorCommand>` (HRTB-aliased to `for<'a> core::Action<Context<'a>>`). Live input flow: `KeyEvent → Chord → keymap.lookup → action.invoke(&mut Context)`. The Lattner endgame — "each behavior is a type, not a tag" — is delivered: adding a new action is a struct + `impl Action<Context<'a>>`, no central enum to grow. Plugins contribute commands the same way, against the same trait. `crates/surface/src/dispatch.rs` is now just shared helpers (motion math, clipboard, completion ops, LSP-position request) used by the struct impls.
 - **Phase 6 (renames) — done.** `Workspace` → `Surface` (struct, crate dir `crates/workspace/` → `crates/surface/`, package name `devix-workspace` → `devix-surface`, every `&Surface`/`&mut Surface` parameter, every `app.surface.foo` accessor). `devix-buffer` → `devix-text` (`Buffer`/`Selection`/`Transaction` lived there; `text` describes the role better than `buffer`). LSP-side `WorkspaceSymbols`/`WorkspaceFolder` and Cargo's `workspace = true` inheritance are unrelated terms and stay untouched.
 - **Phase 7 (final crate consolidation) — done.** `crates/views` and `crates/document` collapsed into a single `crates/editor` crate; the prior `devix-document` crate is gone. The dep edge is one-directional: `surface -> editor` (Surface holds `SlotMap<DocId, Document>` and `SlotMap<ViewId, View>`; both `Document` and per-view popup state — `HoverState`, `CompletionState` — live in editor). Editor depends only on `text`, `syntax`, `lsp`, `core`, `ui`. To keep the dep graph acyclic the popup-state types moved out of `surface/view.rs` into `editor/src/popup_state.rs`; `View` itself stays in `surface` because Surface's slotmap owns it. `crates/ui` (chrome widgets — popup, status, tab strip, sidebar) stays as its own crate per the architecture's "stable plugin surface" framing of `core` (ui has no surface awareness; merging it into core would drag ratatui-widget specifics into the framework's trait surface). Final crate inventory: `app`, `text`, `core`, `editor`, `lsp`, `surface`, `syntax`, `ui` — eight crates, plus the binary.
+- **Vocabulary reorg (post-Phase 7) — done.** A follow-up reorg pass collapsed the cycle-breaking carve-outs and the residual conceptual collisions; the Phase 7 inventory is superseded. (1) `devix-workspace` folded into `devix-editor` (it was a single-file crate for `Document`; the indirection wasn't paying rent). (2) `devix-surface` folded into `devix-editor`, with the root struct renamed `Surface` → `Editor` (`devix_editor::Editor`, the standard Rust `crate::Type` pattern). The buffer-pane file was renamed `editor.rs` → `buffer.rs` to free `editor.rs` for the root struct; the render-helper struct `EditorView` → `BufferRender` to drop the `view` overload. (3) The per-tab edit-state struct `View` → `Cursor` (it's a cursor against a document, with scroll-tracking; `Selection` already represents multi-cursor). (4) `devix-core` and `devix-ui` collapsed into a single `devix-panes` crate. The trait-vs-impl distinction lives at the *module* level inside `panes`, not the crate level — UIKit ships `UIView` and the chrome widgets in one framework, not two. The aspirational "plugins depend only on `core`" boundary didn't survive contact with reality (any non-trivial plugin needs `OverlayPane`, composites, chrome — they pull in the impl side too); a publishable plugin SDK can be a re-export crate created at that moment if it ever matters. (5) `TabbedPane` made generic over its body (`TabbedPane<B: Pane>`) so `panes` doesn't need to know about `EditorPane`. Final crate inventory: `text`, `syntax`, `panes`, `editor`, `plugin`, `app` — six crates, plus the binary. The four-concept vocabulary now maps 1:1 to four type names with no synonyms (`Pane`, `Action`, `Document`, `Editor`).
