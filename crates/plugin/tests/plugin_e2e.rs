@@ -1,7 +1,7 @@
 //! End-to-end tests for the plugin host: action / pane / input wiring.
 //!
 //! What's *not* exercised here is the App's input loop — these tests
-//! work directly against the plugin runtime + the surface APIs each
+//! work directly against the plugin runtime + the editor APIs each
 //! channel feeds into. The App-side wiring (focus → forward_key,
 //! drain_plugin_events → status / OpenPath) gets coverage in
 //! `crates/app/src/render.rs::tests`.
@@ -14,9 +14,9 @@ use devix_core::Pane;
 use devix_plugin::{
     LuaPane, PluginInput, PluginMsg, PluginRuntime, make_command_action, parse_chord,
 };
-use devix_surface::{Command, CommandId, CommandRegistry, Context, Keymap, Viewport};
+use devix_editor::{Command, CommandId, CommandRegistry, Context, Keymap, Viewport};
 use devix_core::SidebarSlot;
-use devix_surface::Surface;
+use devix_editor::Editor;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
@@ -96,12 +96,12 @@ fn hello_command_round_trips_through_registry_and_keymap() {
         .lookup(chord, &commands)
         .expect("plugin chord must resolve to a command");
 
-    let mut surface = Surface::open(None).unwrap();
+    let mut editor = Editor::open(None).unwrap();
     let mut clipboard = devix_core::NoClipboard;
     let mut quit = false;
     {
         let mut ctx = Context {
-            surface: &mut surface,
+            editor: &mut editor,
             clipboard: &mut clipboard,
             quit: &mut quit,
             viewport: Viewport::default(),
@@ -116,7 +116,7 @@ fn hello_command_round_trips_through_registry_and_keymap() {
     assert!(got.is_some(), "plugin should have produced a status message");
 
     drop(action);
-    let _ = (commands, keymap, surface, quit);
+    let _ = (commands, keymap, editor, quit);
 
     let mut commands = CommandRegistry::new();
     commands.register(Command {

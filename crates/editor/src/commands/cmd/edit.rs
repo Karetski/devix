@@ -9,9 +9,9 @@ use crate::commands::dispatch;
 pub struct Undo;
 impl<'a> Action<Context<'a>> for Undo {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some((_, cid, did)) = ctx.surface.active_ids() else { return };
-        if let Some(sel) = ctx.surface.documents[did].undo() {
-            ctx.surface.cursors[cid].adopt_selection(sel);
+        let Some((_, cid, did)) = ctx.editor.active_ids() else { return };
+        if let Some(sel) = ctx.editor.documents[did].undo() {
+            ctx.editor.cursors[cid].adopt_selection(sel);
         }
     }
 }
@@ -19,9 +19,9 @@ impl<'a> Action<Context<'a>> for Undo {
 pub struct Redo;
 impl<'a> Action<Context<'a>> for Redo {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some((_, cid, did)) = ctx.surface.active_ids() else { return };
-        if let Some(sel) = ctx.surface.documents[did].redo() {
-            ctx.surface.cursors[cid].adopt_selection(sel);
+        let Some((_, cid, did)) = ctx.editor.active_ids() else { return };
+        if let Some(sel) = ctx.editor.documents[did].redo() {
+            ctx.editor.cursors[cid].adopt_selection(sel);
         }
     }
 }
@@ -30,9 +30,9 @@ pub struct SelectAll;
 impl<'a> Action<Context<'a>> for SelectAll {
     fn invoke(&self, ctx: &mut Context<'a>) {
         use devix_text::{Range, Selection};
-        let Some((_, cid, did)) = ctx.surface.active_ids() else { return };
-        let end = ctx.surface.documents[did].buffer.len_chars();
-        ctx.surface.cursors[cid].adopt_selection(Selection::single(Range::new(0, end)));
+        let Some((_, cid, did)) = ctx.editor.active_ids() else { return };
+        let end = ctx.editor.documents[did].buffer.len_chars();
+        ctx.editor.cursors[cid].adopt_selection(Selection::single(Range::new(0, end)));
     }
 }
 
@@ -84,16 +84,16 @@ impl<'a> Action<Context<'a>> for DeleteForward {
 pub struct AddCursorAbove;
 impl<'a> Action<Context<'a>> for AddCursorAbove {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some((_, cid, did)) = ctx.surface.active_ids() else { return };
-        let buf = &ctx.surface.documents[did].buffer;
-        let head = ctx.surface.cursors[cid].primary().head;
+        let Some((_, cid, did)) = ctx.editor.active_ids() else { return };
+        let buf = &ctx.editor.documents[did].buffer;
+        let head = ctx.editor.cursors[cid].primary().head;
         let line = buf.line_of_char(head);
         if line == 0 { return; }
         let col = buf.col_of_char(head);
         let new_line = line - 1;
         let new_col = col.min(buf.line_len_chars(new_line));
         let new_head = buf.line_start(new_line) + new_col;
-        let c = &mut ctx.surface.cursors[cid];
+        let c = &mut ctx.editor.cursors[cid];
         c.selection.push_range(devix_text::Range::point(new_head));
         c.target_col = None;
         c.scroll_mode = ScrollMode::Anchored;
@@ -103,9 +103,9 @@ impl<'a> Action<Context<'a>> for AddCursorAbove {
 pub struct AddCursorBelow;
 impl<'a> Action<Context<'a>> for AddCursorBelow {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some((_, cid, did)) = ctx.surface.active_ids() else { return };
-        let buf = &ctx.surface.documents[did].buffer;
-        let head = ctx.surface.cursors[cid].primary().head;
+        let Some((_, cid, did)) = ctx.editor.active_ids() else { return };
+        let buf = &ctx.editor.documents[did].buffer;
+        let head = ctx.editor.cursors[cid].primary().head;
         let line = buf.line_of_char(head);
         let max_line = buf.line_count().saturating_sub(1);
         if line >= max_line { return; }
@@ -113,7 +113,7 @@ impl<'a> Action<Context<'a>> for AddCursorBelow {
         let new_line = line + 1;
         let new_col = col.min(buf.line_len_chars(new_line));
         let new_head = buf.line_start(new_line) + new_col;
-        let c = &mut ctx.surface.cursors[cid];
+        let c = &mut ctx.editor.cursors[cid];
         c.selection.push_range(devix_text::Range::point(new_head));
         c.target_col = None;
         c.scroll_mode = ScrollMode::Anchored;
@@ -125,8 +125,8 @@ impl<'a> Action<Context<'a>> for AddCursorBelow {
 pub struct CollapseSelection;
 impl<'a> Action<Context<'a>> for CollapseSelection {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some((_, cid, _)) = ctx.surface.active_ids() else { return };
-        let c = &mut ctx.surface.cursors[cid];
+        let Some((_, cid, _)) = ctx.editor.active_ids() else { return };
+        let c = &mut ctx.editor.cursors[cid];
         if c.selection.is_multi() {
             c.selection.collapse_to_primary();
         } else {

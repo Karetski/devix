@@ -7,7 +7,7 @@ use std::sync::Arc;
 use devix_plugin::{
     CommandSpec, LuaPane, PluginMsg, PluginPane, PluginRuntime, default_plugin_path,
 };
-use devix_surface::{Command, CommandId, CommandRegistry, Keymap, cmd};
+use devix_editor::{Command, CommandId, CommandRegistry, Keymap, cmd};
 use devix_core::SidebarSlot;
 
 use crate::app::App;
@@ -103,11 +103,11 @@ pub fn drain_plugin_events(app: &mut App) {
             }
             PluginMsg::PaneChanged => {}
             PluginMsg::OpenPath(path) => {
-                if app.surface.active_frame().is_none() {
+                if app.editor.active_frame().is_none() {
                     if let Some(fid) =
-                        devix_surface::frame_ids(app.surface.root.as_ref()).first().copied()
+                        devix_editor::frame_ids(app.editor.root.as_ref()).first().copied()
                     {
-                        app.surface.focus_frame(fid);
+                        app.editor.focus_frame(fid);
                     }
                 }
                 run_command(app, Arc::new(cmd::OpenPath(path)));
@@ -125,9 +125,9 @@ pub fn sidebar_pane(app: &App, slot: SidebarSlot) -> Option<LuaPane> {
 }
 
 pub fn focused_plugin_slot(app: &App) -> Option<SidebarSlot> {
-    let leaf = devix_surface::pane_at_indices(app.surface.root.as_ref(), &app.surface.focus)
-        .and_then(devix_surface::pane_leaf_id)?;
-    let devix_surface::LeafRef::Sidebar(slot) = leaf else { return None };
+    let leaf = devix_editor::pane_at_indices(app.editor.root.as_ref(), &app.editor.focus)
+        .and_then(devix_editor::pane_leaf_id)?;
+    let devix_editor::LeafRef::Sidebar(slot) = leaf else { return None };
     if app.plugins.as_ref()?.contributed_slots().contains(&slot) {
         Some(slot)
     } else {
@@ -159,7 +159,7 @@ pub fn forward_click_to_plugin(
 
 pub fn plugin_slot_at(app: &App, col: u16, row: u16) -> Option<SidebarSlot> {
     let plugin_slots = app.plugins.as_ref()?.contributed_slots();
-    for (slot, rect) in &app.surface.render_cache.sidebar_rects {
+    for (slot, rect) in &app.editor.render_cache.sidebar_rects {
         if !plugin_slots.contains(slot) {
             continue;
         }

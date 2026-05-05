@@ -37,7 +37,7 @@ pub trait EditorCommand: for<'a> Action<Context<'a>> {}
 impl<T> EditorCommand for T where T: for<'a> Action<Context<'a>> {}
 
 pub(crate) fn modal_is<T: 'static>(ctx: &Context<'_>) -> bool {
-    ctx.surface
+    ctx.editor
         .modal
         .as_ref()
         .and_then(|m| m.as_any())
@@ -46,7 +46,7 @@ pub(crate) fn modal_is<T: 'static>(ctx: &Context<'_>) -> bool {
 }
 
 pub(crate) fn downcast_modal_mut<'a, T: 'static>(ctx: &'a mut Context<'_>) -> Option<&'a mut T> {
-    ctx.surface
+    ctx.editor
         .modal
         .as_mut()?
         .as_any_mut()?
@@ -58,16 +58,16 @@ mod tests {
     use super::*;
     use crate::commands::context::Viewport;
     use crate::commands::registry::CommandRegistry;
-    use crate::Surface;
+    use crate::Editor;
 
     fn make_ctx<'a>(
-        ws: &'a mut Surface,
+        ws: &'a mut Editor,
         clipboard: &'a mut dyn devix_core::Clipboard,
         quit: &'a mut bool,
         commands: &'a CommandRegistry,
     ) -> Context<'a> {
         Context {
-            surface: ws,
+            editor: ws,
             clipboard,
             quit,
             viewport: Viewport::default(),
@@ -77,7 +77,7 @@ mod tests {
 
     #[test]
     fn quit_sets_the_quit_flag_through_the_trait() {
-        let mut ws = Surface::open(None).unwrap();
+        let mut ws = Editor::open(None).unwrap();
         let mut clipboard = devix_core::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn parameterized_commands_dispatch_through_trait_objects() {
-        let mut ws = Surface::open(None).unwrap();
+        let mut ws = Editor::open(None).unwrap();
         let mut clipboard = devix_core::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn open_palette_populates_modal_slot() {
-        let mut ws = Surface::open(None).unwrap();
+        let mut ws = Editor::open(None).unwrap();
         let mut clipboard = devix_core::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
@@ -129,9 +129,9 @@ mod tests {
         );
     }
 
-    fn surface_with_text(text: &str) -> Surface {
+    fn surface_with_text(text: &str) -> Editor {
         use devix_text::{Selection, replace_selection_tx};
-        let mut ws = Surface::open(None).unwrap();
+        let mut ws = Editor::open(None).unwrap();
         let did = ws.active_cursor().unwrap().doc;
         let tx = replace_selection_tx(&ws.documents[did].buffer, &Selection::point(0), text);
         ws.documents[did].buffer.apply(tx);
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn close_modal_clears_any_modal() {
-        let mut ws = Surface::open(None).unwrap();
+        let mut ws = Editor::open(None).unwrap();
         ws.modal = Some(Box::new(crate::commands::modal::PalettePane::from_registry(
             &CommandRegistry::default(),
         )));

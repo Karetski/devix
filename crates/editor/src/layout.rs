@@ -1,7 +1,7 @@
 //! Composite `Pane` types — the per-frame render-tree primitives.
 //!
 //! Two composites are owned per render call (built on the stack inside
-//! the structural Panes' `render` impls in `devix-surface`'s `tree.rs`):
+//! the structural Panes' `render` impls in `devix-editor`'s `tree.rs`):
 //!
 //! - [`TabbedPane`]: a tab strip pinned to row 0 with one editor body
 //!   beneath. Owns both children as fields so `children()` can hand back
@@ -9,7 +9,7 @@
 //! - [`SidebarSlotPane`]: a sidebar bound to an edge slot with optional
 //!   content. The slot exists so plugins can drop a Pane in later.
 //!
-//! Splits don't appear here — `LayoutSplit` in `devix-surface` is the
+//! Splits don't appear here — `LayoutSplit` in `devix-editor` is the
 //! single split primitive; it owns its layout state and has been
 //! taught to render itself directly. There is no parallel render-tree
 //! `SplitPane` anymore.
@@ -24,7 +24,7 @@ pub use devix_core::Axis;
 use devix_core::{Event, HandleCtx, Outcome, Pane, Rect, RenderCtx};
 use devix_ui::{SidebarPane as SidebarChrome, TabStripPane};
 
-use crate::editor::EditorPane;
+use crate::buffer::EditorPane;
 
 /// One editor frame: tab strip pinned to row 0, active editor body below.
 /// Owns its children as fields so `children()` returns stable references

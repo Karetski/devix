@@ -1,8 +1,8 @@
-//! Mutating operations on a Surface: tabs, frames/splits, sidebars,
+//! Mutating operations on a Editor: tabs, frames/splits, sidebars,
 //! file-open routing. Kept separate from focus/hit-test so each concern stays
 //! reviewable on its own.
 //!
-//! Phase 3c write-side: layout mutations rewrite `Surface.root`
+//! Phase 3c write-side: layout mutations rewrite `Editor.root`
 //! directly via `crate::tree::mutate` helpers — no `Node` enum, no
 //! `sync_root` rebuild. The structural Pane tree is the source of truth.
 
@@ -11,18 +11,18 @@ use std::path::PathBuf;
 use anyhow::Result;
 use devix_core::Pane;
 
-use devix_editor::{DocId, Document};
+use crate::document::{DocId, Document};
 use crate::frame::mint_id;
-use crate::layout::{Axis, SidebarSlot};
+use devix_core::{Axis, SidebarSlot};
 use crate::tree::{
     LayoutFrame, LayoutSidebar, LayoutSplit, LeafId, find_frame, find_frame_mut, frame_ids,
     mutate, pane_leaf_id,
 };
 use crate::cursor::{Cursor, CursorId, ScrollMode};
 
-use super::{Surface, canonicalize_or_keep};
+use super::{Editor, canonicalize_or_keep};
 
-impl Surface {
+impl Editor {
     /// Open a fresh empty buffer in a new tab on the active frame.
     pub fn new_tab(&mut self) {
         let Some(fid) = self.active_frame() else { return };

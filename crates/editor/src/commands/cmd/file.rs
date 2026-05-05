@@ -15,7 +15,7 @@ impl<'a> Action<Context<'a>> for Quit {
 pub struct Save;
 impl<'a> Action<Context<'a>> for Save {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some(d) = ctx.surface.active_doc_mut() else { return };
+        let Some(d) = ctx.editor.active_doc_mut() else { return };
         let _ = d.buffer.save();
     }
 }
@@ -23,7 +23,7 @@ impl<'a> Action<Context<'a>> for Save {
 pub struct KeepBufferIgnoreDisk;
 impl<'a> Action<Context<'a>> for KeepBufferIgnoreDisk {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        if let Some(d) = ctx.surface.active_doc_mut() {
+        if let Some(d) = ctx.editor.active_doc_mut() {
             d.disk_changed_pending = false;
         }
     }
@@ -32,19 +32,19 @@ impl<'a> Action<Context<'a>> for KeepBufferIgnoreDisk {
 pub struct OpenPath(pub std::path::PathBuf);
 impl<'a> Action<Context<'a>> for OpenPath {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let _ = ctx.surface.open_path_replace_current(self.0.clone());
+        let _ = ctx.editor.open_path_replace_current(self.0.clone());
     }
 }
 
 pub struct ReloadFromDisk;
 impl<'a> Action<Context<'a>> for ReloadFromDisk {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some((_, cid, did)) = ctx.surface.active_ids() else { return };
-        let res = ctx.surface.documents[did].reload_from_disk();
+        let Some((_, cid, did)) = ctx.editor.active_ids() else { return };
+        let res = ctx.editor.documents[did].reload_from_disk();
         if res.is_ok() {
-            let max = ctx.surface.documents[did].buffer.len_chars();
-            ctx.surface.documents[did].disk_changed_pending = false;
-            ctx.surface.cursors[cid].selection.clamp(max);
+            let max = ctx.editor.documents[did].buffer.len_chars();
+            ctx.editor.documents[did].disk_changed_pending = false;
+            ctx.editor.cursors[cid].selection.clamp(max);
         }
     }
 }

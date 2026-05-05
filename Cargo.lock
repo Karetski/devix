@@ -212,7 +212,6 @@ dependencies = [
  "devix-core",
  "devix-editor",
  "devix-plugin",
- "devix-surface",
  "devix-text",
  "devix-ui",
  "ratatui",
@@ -237,6 +236,7 @@ dependencies = [
  "devix-text",
  "devix-ui",
  "notify",
+ "nucleo-matcher",
  "ratatui",
  "ropey",
  "slotmap",
@@ -250,25 +250,10 @@ dependencies = [
  "crossterm",
  "devix-core",
  "devix-editor",
- "devix-surface",
  "devix-ui",
  "mlua",
  "ratatui",
  "tokio",
-]
-
-[[package]]
-name = "devix-surface"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crossterm",
- "devix-core",
- "devix-editor",
- "devix-text",
- "devix-ui",
- "nucleo-matcher",
- "slotmap",
 ]
 
 [[package]]

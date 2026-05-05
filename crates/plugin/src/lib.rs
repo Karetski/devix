@@ -13,7 +13,7 @@
 //!    (`pane:on_key(...)`, `pane:on_click(...)`) after load.
 //! 3. **Open requests** (`devix.open_path`): the plugin can ask the
 //!    editor to open a file path, routed through the existing
-//!    `cmd::OpenPath` action surface.
+//!    `cmd::OpenPath` action editor.
 //!
 //! ## Threading
 //!
@@ -47,7 +47,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result, anyhow};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton};
-use devix_surface::{Chord, Context, EditorCommand};
+use devix_editor::{Chord, Context, EditorCommand};
 use devix_core::{Action, Event, HandleCtx, Outcome, Pane, Rect, RenderCtx, SidebarSlot};
 use mlua::{Function, Lua, LuaOptions, RegistryKey, StdLib, Table, UserData,
     UserDataMethods, Value};
@@ -67,7 +67,7 @@ pub struct CommandSpec {
     /// keymap binding) do not need to re-parse. `None` means "no chord
     /// bound" — either Lua passed nothing or the string was unparseable
     /// (the unparseable case is silent for now; future host versions
-    /// may surface it as a load-time warning).
+    /// may editor it as a load-time warning).
     pub chord: Option<Chord>,
     pub handle: u64,
 }
@@ -440,7 +440,7 @@ impl PluginHost {
         )?;
 
         // devix.open_path(path) — ask the editor to open `path` through
-        // the existing `OpenPath` action surface. Pure outbound message;
+        // the existing `OpenPath` action editor. Pure outbound message;
         // the editor decides where to display it.
         {
             let outbox = self.outbox.clone();

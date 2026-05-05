@@ -1,5 +1,5 @@
 //! Document = Buffer + filesystem-watcher attachment + tree-sitter highlighter.
-//! Owned by Surface.
+//! Owned by Editor.
 //!
 //! All buffer mutations should go through `Document::apply_tx` /
 //! `Document::undo` / `Document::redo` / `Document::reload_from_disk` rather

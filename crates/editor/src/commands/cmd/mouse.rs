@@ -9,9 +9,9 @@ use crate::commands::dispatch;
 pub struct ScrollBy(pub isize);
 impl<'a> Action<Context<'a>> for ScrollBy {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some((_, cid, did)) = ctx.surface.active_ids() else { return };
-        let line_count = ctx.surface.documents[did].buffer.line_count();
-        let c = &mut ctx.surface.cursors[cid];
+        let Some((_, cid, did)) = ctx.editor.active_ids() else { return };
+        let line_count = ctx.editor.documents[did].buffer.line_count();
+        let c = &mut ctx.editor.cursors[cid];
         let max_top = line_count.saturating_sub(1);
         let next = (c.scroll_top() as isize).saturating_add(self.0);
         let clamped = next.clamp(0, max_top as isize) as usize;
@@ -27,11 +27,11 @@ pub struct ClickAt {
 }
 impl<'a> Action<Context<'a>> for ClickAt {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        ctx.surface.focus_at_screen(self.col, self.row);
+        ctx.editor.focus_at_screen(self.col, self.row);
         let Some(idx) = dispatch::click_to_char_idx(ctx, self.col, self.row) else {
             return;
         };
-        if let Some(c) = ctx.surface.active_cursor_mut() {
+        if let Some(c) = ctx.editor.active_cursor_mut() {
             c.move_to(idx, self.extend, false);
         }
     }
@@ -43,7 +43,7 @@ impl<'a> Action<Context<'a>> for DragAt {
         let Some(idx) = dispatch::click_to_char_idx(ctx, self.col, self.row) else {
             return;
         };
-        if let Some(c) = ctx.surface.active_cursor_mut() {
+        if let Some(c) = ctx.editor.active_cursor_mut() {
             c.move_to(idx, true, false);
         }
     }

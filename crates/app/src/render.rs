@@ -2,21 +2,21 @@
 //!
 //! Two phases per draw cycle:
 //!
-//! 1. `Surface::layout(area)` — pre-paint state mutation. Walks the
+//! 1. `Editor::layout(area)` — pre-paint state mutation. Walks the
 //!    structural tree, runs the caret-anchor pass on each `Frame`'s
 //!    active `Cursor.scroll`, and populates the render-cache (frame
 //!    body rects, tab-strip hit regions, sidebar rects). All
 //!    mutation lives here so paint stays pure.
 //! 2. [`render`] — pure draw. The structural tree's own `render` impls
-//!    paint themselves: `Surface.root.render(area, ctx)` walks the
+//!    paint themselves: `Editor.root.render(area, ctx)` walks the
 //!    whole tree (no parallel render-tree pass, no per-leaf match arm
 //!    in the binary). Modal Panes paint last for z-ordering.
 
 use devix_core::{Pane, RenderCtx, SidebarSlot};
-use devix_surface::RenderServices;
+use devix_editor::RenderServices;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use devix_surface::PalettePane;
+use devix_editor::PalettePane;
 use devix_ui::{PaletteRow, palette_area, render_palette};
 
 use crate::app::App;
@@ -87,39 +87,39 @@ mod tests {
 pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     let editor_area = frame.area();
 
-    // Phase 1 — pre-paint mutation. Owned by `Surface::layout`:
+    // Phase 1 — pre-paint mutation. Owned by `Editor::layout`:
     // scroll-into-view, tab-strip layout, render-cache writes.
-    app.surface.layout(editor_area);
+    app.editor.layout(editor_area);
 
-    // The structural Pane tree paints itself. Bundle the surface-side
+    // The structural Pane tree paints itself. Bundle the editor-side
     // borrows it needs into a `RenderServices` and stash them in a
     // scoped thread-local for the duration of `root.render(...)`;
     // structural Panes (`LayoutFrame`, `LayoutSidebar`) read it via
     // `RenderServices::with`. Plugin sidebar resolution is a closure
-    // so `surface` doesn't depend on the binary's plugin world.
+    // so `editor` doesn't depend on the binary's plugin world.
     let focused_leaf =
-        devix_surface::pane_at_indices(app.surface.root.as_ref(), &app.surface.focus)
-            .and_then(devix_surface::pane_leaf_id);
+        devix_editor::pane_at_indices(app.editor.root.as_ref(), &app.editor.focus)
+            .and_then(devix_editor::pane_leaf_id);
     let plugin_resolver = |slot: SidebarSlot| -> Option<Box<dyn Pane>> {
         crate::plugin::sidebar_pane(app, slot)
             .map(|p| Box::new(p) as Box<dyn Pane>)
     };
     {
         let services = RenderServices {
-            documents: &app.surface.documents,
-            cursors: &app.surface.cursors,
+            documents: &app.editor.documents,
+            cursors: &app.editor.cursors,
             theme: &app.theme,
-            render_cache: &app.surface.render_cache,
+            render_cache: &app.editor.render_cache,
             focused_leaf,
             plugin_sidebar: &plugin_resolver,
         };
         let mut ctx = RenderCtx { frame };
-        let root = app.surface.root.as_ref();
+        let root = app.editor.root.as_ref();
         services.scope(|| root.render(editor_area, &mut ctx));
     }
 
     // Modal Panes paint last (z-order is paint order in ratatui).
-    if let Some(modal) = app.surface.modal.as_ref() {
+    if let Some(modal) = app.editor.modal.as_ref() {
         let any = modal.as_any();
         if let Some(p) = any.and_then(|a| a.downcast_ref::<PalettePane>()) {
             paint_palette(p, app, editor_area, frame);
@@ -145,7 +145,7 @@ fn paint_palette(p: &PalettePane, app: &App, editor_area: Rect, frame: &mut Fram
         let chord_str = app
             .keymap
             .chord_for(id)
-            .map(devix_surface::format_chord)
+            .map(devix_editor::format_chord)
             .unwrap_or_default();
         chords.push(chord_str);
         row_data.push((cmd.label.to_string(), cmd.category.unwrap_or(""), i));

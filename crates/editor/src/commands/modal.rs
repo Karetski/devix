@@ -1,6 +1,6 @@
 //! Modal panes and their owned state.
 //!
-//! The architecture target: a head-of-tree slot on `Surface` holds
+//! The architecture target: a head-of-tree slot on `Editor` holds
 //! `Option<Box<dyn Pane>>`. When set, the modal sits at the head of the
 //! responder chain — the dispatcher gives it first crack at every input
 //! event before the focused-leaf path. There is no closed `Overlay` enum

@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use devix_surface::cmd;
+use devix_editor::cmd;
 
 use crate::app::App;
 use crate::events::run_command;
@@ -13,8 +13,8 @@ pub fn drain_disk_events(app: &mut App) {
     // Phase 1: collect which DocIds saw events. Holding `&mut documents`
     // across the iteration would conflict with the active-doc reads/writes
     // below, so the drain is split into a read pass + a write pass.
-    let mut affected: Vec<devix_surface::DocId> = Vec::new();
-    for (id, doc) in app.surface.documents.iter() {
+    let mut affected: Vec<devix_editor::DocId> = Vec::new();
+    for (id, doc) in app.editor.documents.iter() {
         let Some(rx) = doc.disk_rx.as_ref() else { continue };
         let mut got = false;
         while rx.try_recv().is_ok() { got = true; }
@@ -26,12 +26,12 @@ pub fn drain_disk_events(app: &mut App) {
     // can produce a status-bar prompt for it. Background docs accumulate the
     // pending flag silently.
     let active_doc_id = app
-        .surface
+        .editor
         .active_cursor()
         .map(|c| c.doc);
 
     for did in &affected {
-        let doc = &mut app.surface.documents[*did];
+        let doc = &mut app.editor.documents[*did];
         if doc.buffer.dirty() {
             doc.disk_changed_pending = true;
         } else if Some(*did) == active_doc_id {
@@ -41,9 +41,9 @@ pub fn drain_disk_events(app: &mut App) {
             // Background, clean: silently reload now. Routes through
             // Document so tree-sitter reparses; bypassing this leaves
             // stale highlight spans.
-            if app.surface.documents[*did].reload_from_disk().is_ok() {
-                let max = app.surface.documents[*did].buffer.len_chars();
-                for cursor in app.surface.cursors.values_mut() {
+            if app.editor.documents[*did].reload_from_disk().is_ok() {
+                let max = app.editor.documents[*did].buffer.len_chars();
+                for cursor in app.editor.cursors.values_mut() {
                     if cursor.doc == *did {
                         cursor.selection.clamp(max);
                     }

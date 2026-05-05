@@ -5,11 +5,11 @@ use std::sync::Arc;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind};
-use devix_surface::{
+use devix_editor::{
     Context, EditorCommand, ModalOutcome, PalettePane, Viewport, chord_from_key, cmd,
 };
 use devix_core::HandleCtx;
-use devix_surface::TabStripHit;
+use devix_editor::TabStripHit;
 
 use crate::app::App;
 
@@ -27,12 +27,12 @@ pub fn handle_event(ev: Event, app: &mut App) {
 }
 
 pub fn handle_key(ev: Event, code: KeyCode, mods: KeyModifiers, app: &mut App) {
-    if app.surface.modal.is_some() {
+    if app.editor.modal.is_some() {
         dispatch_modal_event(app, &ev);
         return;
     }
 
-    let pending = app.surface.active_doc().map(|d| d.disk_changed_pending).unwrap_or(false);
+    let pending = app.editor.active_doc().map(|d| d.disk_changed_pending).unwrap_or(false);
     if pending && mods.contains(KeyModifiers::CONTROL) {
         let lower = match code {
             KeyCode::Char(c) => Some(c.to_ascii_lowercase()),
@@ -72,7 +72,7 @@ pub fn handle_key(ev: Event, code: KeyCode, mods: KeyModifiers, app: &mut App) {
 fn dispatch_modal_event(app: &mut App, ev: &Event) {
     {
         let modal = app
-            .surface
+            .editor
             .modal
             .as_mut()
             .expect("dispatch_modal_event requires a modal");
@@ -98,7 +98,7 @@ fn dispatch_modal_event(app: &mut App, ev: &Event) {
 }
 
 fn modal_is<T: 'static>(app: &App) -> bool {
-    app.surface
+    app.editor
         .modal
         .as_ref()
         .and_then(|m| m.as_any())
@@ -108,7 +108,7 @@ fn modal_is<T: 'static>(app: &App) -> bool {
 
 fn drain_modal_outcome(app: &mut App) -> ModalOutcome {
     let Some(any) = app
-        .surface
+        .editor
         .modal
         .as_mut()
         .and_then(|m| m.as_any_mut())
@@ -122,7 +122,7 @@ fn drain_modal_outcome(app: &mut App) -> ModalOutcome {
 }
 
 pub fn handle_mouse(me: MouseEvent, app: &mut App) {
-    if app.surface.modal.is_some() {
+    if app.editor.modal.is_some() {
         if matches!(me.kind, MouseEventKind::Down(MouseButton::Left)) {
             run_command(app, Arc::new(cmd::CloseModal));
         }
@@ -132,12 +132,12 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
     match me.kind {
         MouseEventKind::Down(button @ (MouseButton::Left | MouseButton::Right | MouseButton::Middle)) => {
             if button == MouseButton::Left {
-                if let Some(hit) = app.surface.tab_strip_hit(me.column, me.row) {
+                if let Some(hit) = app.editor.tab_strip_hit(me.column, me.row) {
                     handle_tab_strip_click(app, hit);
                     return;
                 }
             }
-            app.surface.focus_at_screen(me.column, me.row);
+            app.editor.focus_at_screen(me.column, me.row);
             if let Some(slot) = crate::plugin::focused_plugin_slot(app) {
                 if let Some((rx, ry)) = sidebar_inner_relative(app, slot, me.column, me.row) {
                     if crate::plugin::forward_click_to_plugin(app, slot, rx, ry, button) {
@@ -160,10 +160,10 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
             }));
         }
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-            if let Some(fid) = app.surface.frame_at_strip(me.column, me.row) {
-                if app.surface.tab_strip_can_scroll(fid) {
+            if let Some(fid) = app.editor.frame_at_strip(me.column, me.row) {
+                if app.editor.tab_strip_can_scroll(fid) {
                     let delta: isize = if matches!(me.kind, MouseEventKind::ScrollUp) { -2 } else { 2 };
-                    app.surface.scroll_tab_strip(fid, delta);
+                    app.editor.scroll_tab_strip(fid, delta);
                     app.request_redraw();
                     return;
                 }
@@ -179,10 +179,10 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
             app.pending_scroll = app.pending_scroll.saturating_add(delta);
         }
         MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
-            if let Some(fid) = app.surface.frame_at_strip(me.column, me.row) {
-                if app.surface.tab_strip_can_scroll(fid) {
+            if let Some(fid) = app.editor.frame_at_strip(me.column, me.row) {
+                if app.editor.tab_strip_can_scroll(fid) {
                     let delta: isize = if matches!(me.kind, MouseEventKind::ScrollLeft) { -2 } else { 2 };
-                    app.surface.scroll_tab_strip(fid, delta);
+                    app.editor.scroll_tab_strip(fid, delta);
                     app.request_redraw();
                 }
             }
@@ -197,7 +197,7 @@ fn sidebar_inner_relative(
     col: u16,
     row: u16,
 ) -> Option<(u16, u16)> {
-    let rect = app.surface.render_cache.sidebar_rects.get(&slot).copied()?;
+    let rect = app.editor.render_cache.sidebar_rects.get(&slot).copied()?;
     let inner_x = rect.x.saturating_add(1);
     let inner_y = rect.y.saturating_add(1);
     let inner_w = rect.width.saturating_sub(2);
@@ -210,19 +210,19 @@ fn sidebar_inner_relative(
 
 fn handle_tab_strip_click(app: &mut App, hit: TabStripHit) {
     let TabStripHit::Tab { frame, idx } = hit;
-    app.surface.focus_frame(frame);
-    app.surface.activate_tab(frame, idx);
+    app.editor.focus_frame(frame);
+    app.editor.activate_tab(frame, idx);
     app.request_redraw();
 }
 
 pub fn run_command(app: &mut App, action: Arc<dyn EditorCommand>) {
     let rect = app
-        .surface
+        .editor
         .active_frame()
-        .and_then(|fid| app.surface.render_cache.frame_rects.get(&fid).copied())
+        .and_then(|fid| app.editor.render_cache.frame_rects.get(&fid).copied())
         .unwrap_or_default();
     let gutter_width = app
-        .surface
+        .editor
         .active_doc()
         .map(|d| (d.buffer.line_count().to_string().len() as u16) + 2)
         .unwrap_or(0);
@@ -235,7 +235,7 @@ pub fn run_command(app: &mut App, action: Arc<dyn EditorCommand>) {
     };
 
     let mut cx = Context {
-        surface: &mut app.surface,
+        editor: &mut app.editor,
         clipboard: app.clipboard.as_mut(),
         quit: &mut app.quit,
         viewport,

@@ -1,7 +1,7 @@
 //! `RenderServices` — the read-only handle the structural Pane tree
 //! borrows from during paint.
 //!
-//! Lives in `surface` (not `core`) because its fields are
+//! Lives in `editor` (not `core`) because its fields are
 //! editor-specific. Plumbed from the host into the structural Panes'
 //! `render` impls via a *scoped thread-local*: the host opens a
 //! `RenderServices::scope(|| root.render(...))` block, and structural
@@ -16,7 +16,7 @@
 //! don't control (here, `Pane::render`'s signature in `core`).
 //!
 //! Plugin-supplied sidebar content is resolved through a closure so
-//! `surface` doesn't need to depend on the binary's plugin world.
+//! `editor` doesn't need to depend on the binary's plugin world.
 
 use std::cell::Cell;
 use std::ptr::NonNull;
@@ -25,10 +25,10 @@ use devix_core::{Pane, Theme};
 use slotmap::SlotMap;
 
 use crate::cursor::{Cursor, CursorId};
-use devix_editor::{DocId, Document};
+use crate::document::{DocId, Document};
 
-use crate::layout::SidebarSlot;
-use crate::surface::{LeafRef, RenderCache};
+use devix_core::SidebarSlot;
+use crate::editor::{LeafRef, RenderCache};
 
 pub struct RenderServices<'a> {
     pub documents: &'a SlotMap<DocId, Document>,

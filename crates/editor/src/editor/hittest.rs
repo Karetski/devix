@@ -8,10 +8,10 @@ use devix_core::Rect;
 use crate::frame::FrameId;
 use crate::tree::{LayoutFrame, LayoutSidebar, find_frame_mut};
 
-use super::{LeafRef, TabStripHit, Surface};
+use super::{LeafRef, TabStripHit, Editor};
 use super::focus::path_to_leaf;
 
-impl Surface {
+impl Editor {
     /// Find the tab-strip element under (col, row), if any. Used by the input
     /// layer before falling back to body-area hit-testing.
     pub fn tab_strip_hit(&self, col: u16, row: u16) -> Option<TabStripHit> {
@@ -71,8 +71,8 @@ impl Surface {
     ///
     /// Walks the structural Pane tree via `core::walk::pane_at` and
     /// downcasts the hit leaf to `LayoutFrame` / `LayoutSidebar` to
-    /// recover the surface's `LeafRef` identity. First consumer of
-    /// `Surface.root` as the authoritative layout — Phase 3c
+    /// recover the editor's `LeafRef` identity. First consumer of
+    /// `Editor.root` as the authoritative layout — Phase 3c
     /// strangler step.
     pub fn focus_at_screen(&mut self, col: u16, row: u16) {
         let area = self.outer_editor_area();

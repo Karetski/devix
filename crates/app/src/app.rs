@@ -9,9 +9,9 @@ use anyhow::Result;
 use crossterm::event::{self, Event};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
-use devix_surface::{CommandRegistry, Keymap, build_registry, default_keymap};
+use devix_editor::{CommandRegistry, Keymap, build_registry, default_keymap};
 use devix_core::{Clipboard, Theme};
-use devix_surface::Surface;
+use devix_editor::Editor;
 
 use crate::clipboard;
 use crate::events::{handle_event, run_command};
@@ -20,7 +20,7 @@ use crate::render::render;
 use crate::watcher::drain_disk_events;
 
 pub struct App {
-    pub surface: Surface,
+    pub editor: Editor,
     pub commands: CommandRegistry,
     pub keymap: Keymap,
     pub theme: Theme,
@@ -70,7 +70,7 @@ impl App {
     }
 
     pub fn new(path: Option<PathBuf>, plugin_wakeup: Option<devix_plugin::Wakeup>) -> Result<Self> {
-        let surface = Surface::open(path)?;
+        let editor = Editor::open(path)?;
         let clipboard = clipboard::init();
 
         let mut commands = build_registry();
@@ -80,15 +80,15 @@ impl App {
         // Auto-open any sidebar slot the plugin contributed content to,
         // so the user sees plugin output on first frame instead of
         // having to discover Ctrl+B / Ctrl+Alt+B first.
-        let mut surface = surface;
+        let mut editor = editor;
         if let Some(wiring) = plugins.as_ref() {
             for slot in wiring.contributed_slots() {
-                surface.toggle_sidebar(slot);
+                editor.toggle_sidebar(slot);
             }
         }
 
         Ok(Self {
-            surface,
+            editor,
             commands,
             keymap,
             theme: Theme::default(),
@@ -141,7 +141,7 @@ pub fn run<B: Backend>(terminal: &mut Terminal<B>, path: Option<PathBuf>) -> Res
 
         if app.pending_scroll != 0 {
             let delta = std::mem::take(&mut app.pending_scroll);
-            run_command(&mut app, std::sync::Arc::new(devix_surface::cmd::ScrollBy(delta)));
+            run_command(&mut app, std::sync::Arc::new(devix_editor::cmd::ScrollBy(delta)));
         }
     }
     Ok(())

@@ -2,7 +2,7 @@
 //! geometry-aware "step into the closest sibling" picker that makes
 //! Ctrl+Alt+Arrow feel right when leaves are unevenly sized.
 //!
-//! Phase 3c: walks the structural `Surface.root` Pane tree via
+//! Phase 3c: walks the structural `Editor.root` Pane tree via
 //! `core::walk::pane_at_path` + downcasts, instead of matching on the
 //! legacy `Node` enum. Geometry still comes from the cached frame /
 //! sidebar rects — the cache is the only thing that knows how splits
@@ -12,12 +12,12 @@ use devix_core::{Pane, pane_at_path};
 use devix_core::Rect;
 
 use crate::frame::FrameId;
-use crate::layout::{Axis, Direction, SidebarSlot};
+use devix_core::{Axis, Direction, SidebarSlot};
 use crate::tree::{LayoutFrame, LayoutSidebar, LayoutSplit};
 
-use super::{LeafRef, RenderCache, Surface};
+use super::{LeafRef, RenderCache, Editor};
 
-impl Surface {
+impl Editor {
     pub fn focus_dir(&mut self, dir: Direction) {
         let area = root_area(&self.render_cache);
         if let Some(target_path) =

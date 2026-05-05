@@ -1,4 +1,4 @@
-//! Command registry: a discoverable, id-keyed surface over the editor's
+//! Command registry: a discoverable, id-keyed editor over the editor's
 //! action trait.
 //!
 //! Phase 5: actions are values implementing `EditorCommand`. The registry

@@ -4,7 +4,7 @@ use devix_core::Clipboard;
 use devix_core::Rect;
 
 use crate::commands::registry::CommandRegistry;
-use crate::Surface;
+use crate::Editor;
 
 #[derive(Copy, Clone, Default)]
 pub struct Viewport {
@@ -28,7 +28,7 @@ impl From<(Rect, u16)> for Viewport {
 }
 
 pub struct Context<'a> {
-    pub surface: &'a mut Surface,
+    pub editor: &'a mut Editor,
     pub clipboard: &'a mut dyn Clipboard,
     pub quit: &'a mut bool,
     pub viewport: Viewport,

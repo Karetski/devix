@@ -29,7 +29,6 @@ devix-text = { path = "crates/text" }
 devix-ui = { path = "crates/ui" }
 devix-editor = { path = "crates/editor" }
 devix-syntax = { path = "crates/syntax" }
-devix-surface = { path = "crates/surface" }
 devix-plugin = { path = "crates/plugin" }
 
 [profile.release]

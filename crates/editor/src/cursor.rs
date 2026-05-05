@@ -1,8 +1,8 @@
 //! Cursor = per-tab editing state (selection + sticky col + scroll).
-//! Owned by Surface, indexed by CursorId. One per open tab.
+//! Owned by Editor, indexed by CursorId. One per open tab.
 
 use devix_text::{Range, Selection, Transaction};
-use devix_editor::DocId;
+use crate::document::DocId;
 use slotmap::new_key_type;
 
 new_key_type! { pub struct CursorId; }

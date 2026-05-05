@@ -9,6 +9,7 @@ anyhow.workspace = true
 ratatui.workspace = true
 ropey.workspace = true
 crossterm.workspace = true
+nucleo-matcher.workspace = true
 devix-text.workspace = true
 devix-core.workspace = true
 devix-syntax.workspace = true

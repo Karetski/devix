@@ -8,7 +8,7 @@ use crate::commands::modal::PalettePane;
 pub struct OpenPalette;
 impl<'a> Action<Context<'a>> for OpenPalette {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        ctx.surface.modal = Some(Box::new(PalettePane::from_registry(ctx.commands)));
+        ctx.editor.modal = Some(Box::new(PalettePane::from_registry(ctx.commands)));
     }
 }
 
@@ -16,7 +16,7 @@ pub struct ClosePalette;
 impl<'a> Action<Context<'a>> for ClosePalette {
     fn invoke(&self, ctx: &mut Context<'a>) {
         if super::modal_is::<PalettePane>(ctx) {
-            ctx.surface.modal = None;
+            ctx.editor.modal = None;
         }
     }
 }
@@ -26,7 +26,7 @@ impl<'a> Action<Context<'a>> for ClosePalette {
 pub struct CloseModal;
 impl<'a> Action<Context<'a>> for CloseModal {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        ctx.surface.modal = None;
+        ctx.editor.modal = None;
     }
 }
 
@@ -52,7 +52,7 @@ pub struct PaletteAccept;
 impl<'a> Action<Context<'a>> for PaletteAccept {
     fn invoke(&self, ctx: &mut Context<'a>) {
         let chosen = ctx
-            .surface
+            .editor
             .modal
             .as_ref()
             .and_then(|m| m.as_any())
@@ -62,7 +62,7 @@ impl<'a> Action<Context<'a>> for PaletteAccept {
                     .selected_command_id()
                     .and_then(|id| ctx.commands.resolve(id))
             });
-        ctx.surface.modal = None;
+        ctx.editor.modal = None;
         if let Some(action) = chosen {
             action.invoke(ctx);
         }

@@ -1,6 +1,6 @@
 //! System-clipboard binding for the binary.
 //!
-//! `core` defines the `Clipboard` trait so the model layer (`surface`,
+//! `core` defines the `Clipboard` trait so the model layer (`editor`,
 //! `commands`) can call into the clipboard without depending on a concrete
 //! backend. The binary picks `arboard` and bridges it here.
 
