@@ -141,6 +141,24 @@ impl<'a> Action<Context<'a>> for ClosePalette {
     }
 }
 
+pub struct OpenSettings;
+impl<'a> Action<Context<'a>> for OpenSettings {
+    fn invoke(&self, ctx: &mut Context<'a>) {
+        ctx.surface.modal = Some(Box::new(crate::modal::SettingsPane::from_registry(
+            ctx.commands,
+        )));
+    }
+}
+
+pub struct CloseSettings;
+impl<'a> Action<Context<'a>> for CloseSettings {
+    fn invoke(&self, ctx: &mut Context<'a>) {
+        if modal_is::<crate::modal::SettingsPane>(ctx) {
+            ctx.surface.modal = None;
+        }
+    }
+}
+
 /// Generic "close whatever modal is open" action used by the responder
 /// chain after a modal pane signals `ModalOutcome::Dismiss`. Symmetrical
 /// to `OpenPalette` — it doesn't know or care which modal is in the slot.
@@ -922,6 +940,32 @@ mod tests {
                 .unwrap_or(false),
             "modal slot should hold a PalettePane",
         );
+    }
+
+    #[test]
+    fn open_settings_populates_modal_slot() {
+        let mut ws = Surface::open(None).unwrap();
+        let mut clipboard = None;
+        let mut status = StatusLine::default();
+        let mut quit = false;
+        let commands = crate::builtins::build_registry();
+        {
+            let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut status, &mut quit, &commands);
+            OpenSettings.invoke(&mut ctx);
+        }
+        assert!(
+            ws.modal
+                .as_ref()
+                .and_then(|m| m.as_any())
+                .map(|a| a.is::<crate::modal::SettingsPane>())
+                .unwrap_or(false),
+            "modal slot should hold a SettingsPane",
+        );
+        {
+            let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut status, &mut quit, &commands);
+            CloseSettings.invoke(&mut ctx);
+        }
+        assert!(ws.modal.is_none(), "CloseSettings clears the modal slot");
     }
 
     fn surface_with_text(text: &str) -> Surface {

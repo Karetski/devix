@@ -47,6 +47,9 @@ pub const SIDEBAR_RIGHT:       CommandId = CommandId("sidebar.toggle_right");
 
 pub const APP_QUIT:            CommandId = CommandId("app.quit");
 
+pub const SETTINGS_OPEN:       CommandId = CommandId("settings.open");
+pub const SETTINGS_CLOSE:      CommandId = CommandId("settings.close");
+
 pub const LSP_HOVER:                  CommandId = CommandId("lsp.hover");
 pub const LSP_GOTO_DEFINITION:        CommandId = CommandId("lsp.goto_definition");
 pub const LSP_COMPLETION_TRIGGER:     CommandId = CommandId("lsp.completion.trigger");
@@ -96,6 +99,9 @@ pub fn register_builtins(reg: &mut CommandRegistry) {
     r(reg, SIDEBAR_RIGHT,     "Toggle Right Sidebar",     "View",    Arc::new(cmd::ToggleSidebar(SidebarSlot::Right)));
 
     r(reg, APP_QUIT,          "Quit",                     "App",     Arc::new(cmd::Quit));
+
+    r(reg, SETTINGS_OPEN,     "Open Settings",            "Settings", Arc::new(cmd::OpenSettings));
+    r(reg, SETTINGS_CLOSE,    "Close Settings",           "Settings", Arc::new(cmd::CloseSettings));
 
     r(reg, LSP_HOVER,                "Show Hover Info",        "Language", Arc::new(cmd::Hover));
     r(reg, LSP_GOTO_DEFINITION,      "Go to Definition",       "Language", Arc::new(cmd::GotoDefinition));

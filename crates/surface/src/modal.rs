@@ -465,6 +465,270 @@ impl Pane for SymbolPickerPane {
 }
 
 // ---------------------------------------------------------------------------
+// Settings state (browser over the editor's introspectable surface)
+// ---------------------------------------------------------------------------
+
+/// One row in the settings list. Sections are flattened into a single
+/// scrollable list so navigation is a uniform `selected: usize` —
+/// section headers are rendered as non-focusable rows.
+///
+/// Entries store only a `CommandId`; label and chord are resolved against
+/// the registry + keymap at render time, mirroring [`PaletteState`]'s
+/// late-binding pattern. The host already owns those so we don't have
+/// to thread the keymap through `Context`.
+///
+/// Future sections (theme, loaded plugins, current language servers) drop
+/// in by extending [`SettingsState::from_registry`] — no new pane type
+/// needed.
+#[derive(Clone, Debug)]
+pub enum SettingsRow {
+    /// A category divider. Not selectable.
+    Header(String),
+    /// A row referencing a registered command. The renderer resolves
+    /// label + bound chord against the registry/keymap each frame.
+    Command(CommandId),
+}
+
+pub struct SettingsState {
+    rows: Vec<SettingsRow>,
+    selected: usize,
+}
+
+impl SettingsState {
+    /// Snapshot the registry into a sectioned list of rows. Walks
+    /// commands in registration order and groups by `Command.category`.
+    /// Built once on open — the registry doesn't mutate during a modal
+    /// session.
+    pub fn from_registry(reg: &CommandRegistry) -> Self {
+        let mut rows = Vec::with_capacity(reg.len() + 4);
+        let mut last_category: Option<&str> = None;
+
+        for cmd in reg.iter() {
+            let cat = cmd.category.unwrap_or("Misc");
+            if last_category != Some(cat) {
+                rows.push(SettingsRow::Header(cat.to_string()));
+                last_category = Some(cat);
+            }
+            rows.push(SettingsRow::Command(cmd.id));
+        }
+
+        // Open with the first selectable row pre-highlighted so the
+        // initial highlight isn't a section header.
+        let selected = rows
+            .iter()
+            .position(|r| matches!(r, SettingsRow::Command(_)))
+            .unwrap_or(0);
+        Self { rows, selected }
+    }
+
+    pub fn rows(&self) -> &[SettingsRow] {
+        &self.rows
+    }
+
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+
+    /// Step the selection by `delta` rows, skipping headers so the
+    /// highlight only ever lands on entries. Wraps at both ends.
+    pub fn move_selection(&mut self, delta: isize) {
+        if self.rows.is_empty() {
+            self.selected = 0;
+            return;
+        }
+        let entry_indices: Vec<usize> = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| matches!(r, SettingsRow::Command(_)).then_some(i))
+            .collect();
+        if entry_indices.is_empty() {
+            return;
+        }
+        let cur = entry_indices
+            .iter()
+            .position(|i| *i == self.selected)
+            .unwrap_or(0) as isize;
+        let n = entry_indices.len() as isize;
+        let next = (cur + delta).rem_euclid(n);
+        self.selected = entry_indices[next as usize];
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SettingsPane — owned modal Pane
+// ---------------------------------------------------------------------------
+
+/// Settings browser as a modal Pane. v1 is a read-only view onto the
+/// command registry + keymap; later sections (theme, plugins) extend
+/// [`SettingsState::from_registry`] and the same Pane keeps working.
+///
+/// Bound to `Ctrl+,` by default. Esc dismisses; Up/Down navigate;
+/// Enter is reserved (no-op in v1).
+pub struct SettingsPane {
+    pub state: SettingsState,
+    outcome: ModalOutcome,
+}
+
+impl SettingsPane {
+    pub fn from_registry(reg: &CommandRegistry) -> Self {
+        Self {
+            state: SettingsState::from_registry(reg),
+            outcome: ModalOutcome::None,
+        }
+    }
+
+    pub fn drain_outcome(&mut self) -> ModalOutcome {
+        std::mem::replace(&mut self.outcome, ModalOutcome::None)
+    }
+
+    fn handle_key(&mut self, code: KeyCode, _mods: KeyModifiers) -> Outcome {
+        match code {
+            KeyCode::Esc => {
+                self.outcome = ModalOutcome::Dismiss;
+                Outcome::Consumed
+            }
+            KeyCode::Up => {
+                self.state.move_selection(-1);
+                Outcome::Consumed
+            }
+            KeyCode::Down => {
+                self.state.move_selection(1);
+                Outcome::Consumed
+            }
+            _ => Outcome::Ignored,
+        }
+    }
+}
+
+impl Pane for SettingsPane {
+    /// Stub; host renders via [`render_settings`] after downcast — same
+    /// pattern as palette/symbols. Settings needs the theme; the chord
+    /// strings are baked into the row values at construction so the
+    /// renderer doesn't need the keymap a second time.
+    fn render(&self, _area: Rect, _ctx: &mut RenderCtx<'_, '_>) {}
+
+    fn handle(&mut self, ev: &Event, _area: Rect, _ctx: &mut HandleCtx<'_>) -> Outcome {
+        match ev {
+            Event::Key(KeyEvent {
+                code,
+                modifiers,
+                kind,
+                ..
+            }) if matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
+                self.handle_key(*code, *modifiers)
+            }
+            _ => Outcome::Ignored,
+        }
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn as_any(&self) -> Option<&dyn Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        Some(self)
+    }
+}
+
+pub fn settings_area(parent: Rect) -> Rect {
+    palette_area(parent)
+}
+
+pub fn render_settings(
+    state: &SettingsState,
+    registry: &CommandRegistry,
+    keymap: &Keymap,
+    theme: &Theme,
+    area: Rect,
+    frame: &mut Frame<'_>,
+) {
+    Clear.render(area, frame.buffer_mut());
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Settings ")
+        .style(theme.text_style());
+    let inner = block.inner(area);
+    block.render(area, frame.buffer_mut());
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let visible = inner.height as usize;
+    if visible == 0 {
+        return;
+    }
+
+    let total = state.rows.len();
+    if total == 0 {
+        return;
+    }
+
+    // Anchor scroll so the highlighted row stays around the upper third —
+    // identical pattern to palette/symbols so navigation feels uniform.
+    let target_row = visible / 3;
+    let top = state
+        .selected
+        .saturating_sub(target_row)
+        .min(total.saturating_sub(visible.min(total)));
+
+    let select_style = theme.selection_style();
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let header_style = Style::default().add_modifier(Modifier::BOLD);
+
+    for row in 0..visible {
+        let idx = top + row;
+        if idx >= total {
+            break;
+        }
+        let row_rect = Rect {
+            x: inner.x,
+            y: inner.y + row as u16,
+            width: inner.width,
+            height: 1,
+        };
+        match &state.rows[idx] {
+            SettingsRow::Header(name) => {
+                Paragraph::new(Line::from(Span::styled(name.clone(), header_style)))
+                    .render(row_rect, frame.buffer_mut());
+            }
+            SettingsRow::Command(id) => {
+                let label = registry
+                    .get(*id)
+                    .map(|c| c.label)
+                    .unwrap_or("(unknown command)");
+                let value = keymap
+                    .chord_for(*id)
+                    .map(format_chord)
+                    .unwrap_or_else(|| "—".into());
+                let total_w = row_rect.width as usize;
+                let value_w = value.chars().count();
+                // Two-space indent per section; one cell of breathing
+                // room between label and value.
+                let left = format!("  {label}");
+                let left_max = total_w.saturating_sub(value_w + 1);
+                let left_trunc: String = left.chars().take(left_max).collect();
+                let pad = total_w.saturating_sub(left_trunc.chars().count() + value_w);
+                let is_sel = idx == state.selected;
+                let row_style = if is_sel { select_style } else { Style::default() };
+                let value_style = if is_sel { select_style } else { dim };
+                Paragraph::new(Line::from(vec![
+                    Span::styled(left_trunc, row_style),
+                    Span::styled(" ".repeat(pad), row_style),
+                    Span::styled(value, value_style),
+                ]))
+                .render(row_rect, frame.buffer_mut());
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Render helpers (centered floating box, query row, scored result list)
 // ---------------------------------------------------------------------------
 
@@ -925,5 +1189,78 @@ mod tests {
     fn format_chord_named() {
         let c = Chord::new(KeyCode::PageUp, KeyModifiers::CONTROL);
         assert_eq!(format_chord(c), "Ctrl+PgUp");
+    }
+
+    fn settings_reg() -> CommandRegistry {
+        let mut r = CommandRegistry::new();
+        for (id, label, cat) in [
+            ("file.save", "Save", Some("File")),
+            ("edit.undo", "Undo", Some("Edit")),
+            ("edit.redo", "Redo", Some("Edit")),
+            ("app.quit", "Quit", Some("App")),
+        ] {
+            r.register(Command {
+                id: CommandId(id),
+                label,
+                category: cat,
+                action: Arc::new(Quit),
+            });
+        }
+        r
+    }
+
+    #[test]
+    fn settings_state_inserts_a_header_per_distinct_category() {
+        let s = SettingsState::from_registry(&settings_reg());
+        let headers: Vec<_> = s
+            .rows()
+            .iter()
+            .filter_map(|r| match r {
+                SettingsRow::Header(name) => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        // Three categories (File, Edit, App) → three headers, in
+        // registration order. Edit's two commands share the same header.
+        assert_eq!(headers, vec!["File", "Edit", "App"]);
+    }
+
+    #[test]
+    fn settings_state_initial_selection_skips_first_header() {
+        let s = SettingsState::from_registry(&settings_reg());
+        assert!(matches!(s.rows()[s.selected()], SettingsRow::Command(_)));
+    }
+
+    #[test]
+    fn settings_state_move_selection_skips_headers_and_wraps() {
+        let mut s = SettingsState::from_registry(&settings_reg());
+        // Walk forward through every command row; each step must land
+        // on a `Command`, never on a `Header`.
+        for _ in 0..10 {
+            s.move_selection(1);
+            assert!(
+                matches!(s.rows()[s.selected()], SettingsRow::Command(_)),
+                "selection landed on a header at idx {}",
+                s.selected(),
+            );
+        }
+    }
+
+    #[test]
+    fn settings_pane_esc_signals_dismiss() {
+        let mut p = SettingsPane::from_registry(&settings_reg());
+        let r = p.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(r, Outcome::Consumed);
+        assert_eq!(p.drain_outcome(), ModalOutcome::Dismiss);
+    }
+
+    #[test]
+    fn settings_pane_arrow_keys_move_and_consume() {
+        let mut p = SettingsPane::from_registry(&settings_reg());
+        let initial = p.state.selected();
+        let r = p.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(r, Outcome::Consumed);
+        assert_ne!(p.state.selected(), initial);
+        assert_eq!(p.drain_outcome(), ModalOutcome::None);
     }
 }

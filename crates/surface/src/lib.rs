@@ -32,8 +32,9 @@ pub use dispatch::refilter_completion;
 pub use frame::FrameId;
 pub use layout::{Axis, Direction, SidebarSlot};
 pub use modal::{
-    ModalOutcome, PaletteState, PalettePane, SymbolPickerPane, SymbolsKind, SymbolsState,
-    SymbolsStatus, format_chord, palette_area, render_palette, render_symbols, symbols_area,
+    ModalOutcome, PaletteState, PalettePane, SettingsPane, SettingsRow, SettingsState,
+    SymbolPickerPane, SymbolsKind, SymbolsState, SymbolsStatus, format_chord, palette_area,
+    render_palette, render_settings, render_symbols, settings_area, symbols_area,
 };
 pub use devix_editor::{CompletionState, CompletionStatus, HoverState, HoverStatus};
 pub use view::{ScrollMode, View, ViewId};

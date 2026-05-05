@@ -7,8 +7,8 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind};
 use devix_core::HandleCtx;
 use devix_surface::{
-    Context, EditorCommand, ModalOutcome, PalettePane, SymbolPickerPane, TabStripHit, Viewport,
-    chord_from_key, cmd,
+    Context, EditorCommand, ModalOutcome, PalettePane, SettingsPane, SymbolPickerPane,
+    TabStripHit, Viewport, chord_from_key, cmd,
 };
 
 use crate::app::App;
@@ -161,6 +161,9 @@ fn drain_modal_outcome(app: &mut App) -> ModalOutcome {
         return p.drain_outcome();
     }
     if let Some(s) = any.downcast_mut::<SymbolPickerPane>() {
+        return s.drain_outcome();
+    }
+    if let Some(s) = any.downcast_mut::<SettingsPane>() {
         return s.drain_outcome();
     }
     ModalOutcome::None

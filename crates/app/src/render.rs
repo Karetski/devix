@@ -24,8 +24,9 @@ use devix_ui::{
 };
 use devix_editor::{EditorPane, SidebarSlotPane, TabbedPane};
 use devix_surface::{
-    Document, FrameId, LeafRef, PalettePane, ScrollMode, SidebarSlot, SymbolPickerPane, View,
-    Surface, palette_area, render_palette, render_symbols, symbols_area,
+    Document, FrameId, LeafRef, PalettePane, ScrollMode, SettingsPane, SidebarSlot,
+    SymbolPickerPane, View, Surface, palette_area, render_palette, render_settings,
+    render_symbols, settings_area, symbols_area,
 };
 
 use crate::app::App;
@@ -253,6 +254,15 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
             );
         } else if let Some(s) = any.and_then(|a| a.downcast_ref::<SymbolPickerPane>()) {
             render_symbols(&s.state, &app.theme, symbols_area(editor_area), frame);
+        } else if let Some(s) = any.and_then(|a| a.downcast_ref::<SettingsPane>()) {
+            render_settings(
+                &s.state,
+                &app.commands,
+                &app.keymap,
+                &app.theme,
+                settings_area(editor_area),
+                frame,
+            );
         } else {
             let mut overlay_ctx = RenderCtx { frame };
             modal.render(editor_area, &mut overlay_ctx);
