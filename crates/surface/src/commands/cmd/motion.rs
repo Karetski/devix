@@ -2,8 +2,8 @@
 
 use devix_core::Action;
 
-use crate::context::Context;
-use crate::dispatch;
+use crate::commands::context::Context;
+use crate::commands::dispatch;
 
 pub struct MoveLeft { pub extend: bool }
 impl<'a> Action<Context<'a>> for MoveLeft {

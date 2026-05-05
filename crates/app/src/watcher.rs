@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use devix_commands::cmd;
+use devix_surface::cmd;
 
 use crate::app::App;
 use crate::events::run_command;

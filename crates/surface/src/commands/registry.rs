@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::cmd::EditorCommand;
+use crate::commands::cmd::EditorCommand;
 
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
 pub struct CommandId(pub &'static str);
@@ -71,7 +71,7 @@ impl CommandRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cmd::Quit;
+    use crate::commands::cmd::Quit;
 
     #[test]
     fn register_and_resolve() {

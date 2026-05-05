@@ -2,25 +2,25 @@
 
 use devix_core::Action;
 
-use crate::context::Context;
+use crate::commands::context::Context;
 
 pub struct Copy;
 impl<'a> Action<Context<'a>> for Copy {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        crate::dispatch::do_copy(ctx);
+        crate::commands::dispatch::do_copy(ctx);
     }
 }
 
 pub struct Cut;
 impl<'a> Action<Context<'a>> for Cut {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        crate::dispatch::do_cut(ctx);
+        crate::commands::dispatch::do_cut(ctx);
     }
 }
 
 pub struct Paste;
 impl<'a> Action<Context<'a>> for Paste {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        crate::dispatch::do_paste(ctx);
+        crate::commands::dispatch::do_paste(ctx);
     }
 }

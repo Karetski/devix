@@ -31,7 +31,6 @@ devix-workspace = { path = "crates/workspace" }
 devix-editor = { path = "crates/editor" }
 devix-syntax = { path = "crates/syntax" }
 devix-surface = { path = "crates/surface" }
-devix-commands = { path = "crates/commands" }
 devix-plugin = { path = "crates/plugin" }
 
 [profile.release]

@@ -9,7 +9,7 @@ use anyhow::Result;
 use crossterm::event::{self, Event};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
-use devix_commands::{CommandRegistry, Keymap, build_registry, default_keymap};
+use devix_surface::{CommandRegistry, Keymap, build_registry, default_keymap};
 use devix_core::{Clipboard, Theme};
 use devix_surface::Surface;
 
@@ -141,7 +141,7 @@ pub fn run<B: Backend>(terminal: &mut Terminal<B>, path: Option<PathBuf>) -> Res
 
         if app.pending_scroll != 0 {
             let delta = std::mem::take(&mut app.pending_scroll);
-            run_command(&mut app, std::sync::Arc::new(devix_commands::cmd::ScrollBy(delta)));
+            run_command(&mut app, std::sync::Arc::new(devix_surface::cmd::ScrollBy(delta)));
         }
     }
     Ok(())

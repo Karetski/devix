@@ -2,7 +2,7 @@
 
 use devix_core::Action;
 
-use crate::context::Context;
+use crate::commands::context::Context;
 
 pub struct NewTab;
 impl<'a> Action<Context<'a>> for NewTab {

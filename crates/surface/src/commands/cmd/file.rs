@@ -2,7 +2,7 @@
 
 use devix_core::Action;
 
-use crate::context::Context;
+use crate::commands::context::Context;
 
 /// Quit the editor. The simplest possible action: flips the run flag.
 pub struct Quit;

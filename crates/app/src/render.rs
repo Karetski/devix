@@ -16,7 +16,7 @@ use devix_core::{Pane, RenderCtx, SidebarSlot};
 use devix_surface::RenderServices;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use devix_commands::PalettePane;
+use devix_surface::PalettePane;
 use devix_ui::{PaletteRow, palette_area, render_palette};
 
 use crate::app::App;
@@ -145,7 +145,7 @@ fn paint_palette(p: &PalettePane, app: &App, editor_area: Rect, frame: &mut Fram
         let chord_str = app
             .keymap
             .chord_for(id)
-            .map(devix_commands::format_chord)
+            .map(devix_surface::format_chord)
             .unwrap_or_default();
         chords.push(chord_str);
         row_data.push((cmd.label.to_string(), cmd.category.unwrap_or(""), i));

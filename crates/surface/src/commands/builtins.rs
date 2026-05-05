@@ -6,8 +6,8 @@
 
 use std::sync::Arc;
 
-use crate::cmd::{self, EditorCommand};
-use crate::registry::{Command, CommandId, CommandRegistry};
+use crate::commands::cmd::{self, EditorCommand};
+use crate::commands::registry::{Command, CommandId, CommandRegistry};
 use devix_core::layout::SidebarSlot;
 
 pub const PALETTE_OPEN:        CommandId = CommandId("palette.open");

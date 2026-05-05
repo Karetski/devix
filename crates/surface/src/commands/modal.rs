@@ -17,8 +17,8 @@ use devix_core::{HandleCtx, Outcome, Pane, Rect, RenderCtx};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32String};
 
-use crate::keymap::Chord;
-use crate::registry::{CommandId, CommandRegistry};
+use crate::commands::keymap::Chord;
+use crate::commands::registry::{CommandId, CommandRegistry};
 
 /// Side-effect requested by a modal Pane during input handling. The host
 /// reads and clears this after `Pane::handle` returns; modals signal
@@ -223,8 +223,8 @@ pub fn format_chord(chord: Chord) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cmd::Quit;
-    use crate::registry::{Command, CommandId, CommandRegistry};
+    use crate::commands::cmd::Quit;
+    use crate::commands::registry::{Command, CommandId, CommandRegistry};
     use std::sync::Arc;
 
     fn reg() -> CommandRegistry {

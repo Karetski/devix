@@ -1,10 +1,10 @@
 //! Mouse-driven commands: scroll, click, drag.
 
 use devix_core::Action;
-use devix_surface::view::ScrollMode;
+use crate::view::ScrollMode;
 
-use crate::context::Context;
-use crate::dispatch;
+use crate::commands::context::Context;
+use crate::commands::dispatch;
 
 pub struct ScrollBy(pub isize);
 impl<'a> Action<Context<'a>> for ScrollBy {

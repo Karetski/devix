@@ -3,8 +3,8 @@
 use devix_core::Clipboard;
 use devix_core::Rect;
 
-use crate::registry::CommandRegistry;
-use devix_surface::Surface;
+use crate::commands::registry::CommandRegistry;
+use crate::Surface;
 
 #[derive(Copy, Clone, Default)]
 pub struct Viewport {

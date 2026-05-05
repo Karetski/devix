@@ -4,8 +4,8 @@
 
 use devix_text::{Buffer, delete_each_tx, delete_range_tx, replace_selection_tx};
 
-use crate::context::{Context, Viewport};
-use devix_surface::view::{ScrollMode, View};
+use crate::commands::context::{Context, Viewport};
+use crate::view::{ScrollMode, View};
 
 pub(crate) fn page_step(v: Viewport) -> usize { v.height.saturating_sub(1).max(1) as usize }
 

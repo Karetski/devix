@@ -5,7 +5,7 @@
 
 use devix_core::Action;
 
-use crate::context::Context;
+use crate::commands::context::Context;
 
 pub mod clipboard;
 pub mod edit;
@@ -56,9 +56,9 @@ pub(crate) fn downcast_modal_mut<'a, T: 'static>(ctx: &'a mut Context<'_>) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::Viewport;
-    use crate::registry::CommandRegistry;
-    use devix_surface::Surface;
+    use crate::commands::context::Viewport;
+    use crate::commands::registry::CommandRegistry;
+    use crate::Surface;
 
     fn make_ctx<'a>(
         ws: &'a mut Surface,
@@ -106,7 +106,7 @@ mod tests {
             action.invoke(&mut ctx);
         }
         let fid = ws.active_frame().unwrap();
-        let frame = devix_surface::find_frame(ws.root.as_ref(), fid).unwrap();
+        let frame = crate::find_frame(ws.root.as_ref(), fid).unwrap();
         assert_eq!(frame.tabs.len(), 3);
     }
 
@@ -123,7 +123,7 @@ mod tests {
             ws.modal
                 .as_ref()
                 .and_then(|m| m.as_any())
-                .map(|a| a.is::<crate::modal::PalettePane>())
+                .map(|a| a.is::<crate::commands::modal::PalettePane>())
                 .unwrap_or(false),
             "modal slot should hold a PalettePane",
         );
@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn close_modal_clears_any_modal() {
         let mut ws = Surface::open(None).unwrap();
-        ws.modal = Some(Box::new(crate::modal::PalettePane::from_registry(
+        ws.modal = Some(Box::new(crate::commands::modal::PalettePane::from_registry(
             &CommandRegistry::default(),
         )));
         let mut clipboard = devix_core::NoClipboard;

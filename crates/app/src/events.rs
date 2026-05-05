@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind};
-use devix_commands::{
+use devix_surface::{
     Context, EditorCommand, ModalOutcome, PalettePane, Viewport, chord_from_key, cmd,
 };
 use devix_core::HandleCtx;

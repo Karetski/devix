@@ -8,7 +8,7 @@
 use devix_core::Action;
 use devix_core::layout::{Axis, Direction, SidebarSlot};
 
-use crate::context::Context;
+use crate::commands::context::Context;
 
 pub struct SplitVertical;
 impl<'a> Action<Context<'a>> for SplitVertical {

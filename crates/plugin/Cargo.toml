@@ -10,10 +10,9 @@ ratatui.workspace = true
 tokio.workspace = true
 mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }
 devix-core.workspace = true
-devix-commands.workspace = true
+devix-surface.workspace = true
 crossterm.workspace = true
 
 [dev-dependencies]
-devix-surface.workspace = true
 devix-editor.workspace = true
 devix-ui.workspace = true

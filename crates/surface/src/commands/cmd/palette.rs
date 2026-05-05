@@ -2,8 +2,8 @@
 
 use devix_core::Action;
 
-use crate::context::Context;
-use crate::modal::PalettePane;
+use crate::commands::context::Context;
+use crate::commands::modal::PalettePane;
 
 pub struct OpenPalette;
 impl<'a> Action<Context<'a>> for OpenPalette {

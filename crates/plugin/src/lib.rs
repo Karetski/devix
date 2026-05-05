@@ -47,7 +47,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result, anyhow};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton};
-use devix_commands::{Chord, Context, EditorCommand};
+use devix_surface::{Chord, Context, EditorCommand};
 use devix_core::{Action, Event, HandleCtx, Outcome, Pane, Rect, RenderCtx, SidebarSlot};
 use mlua::{Function, Lua, LuaOptions, RegistryKey, StdLib, Table, UserData,
     UserDataMethods, Value};

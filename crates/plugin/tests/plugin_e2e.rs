@@ -14,7 +14,7 @@ use devix_core::Pane;
 use devix_plugin::{
     LuaPane, PluginInput, PluginMsg, PluginRuntime, make_command_action, parse_chord,
 };
-use devix_commands::{Command, CommandId, CommandRegistry, Context, Keymap, Viewport};
+use devix_surface::{Command, CommandId, CommandRegistry, Context, Keymap, Viewport};
 use devix_core::SidebarSlot;
 use devix_surface::Surface;
 use ratatui::Terminal;

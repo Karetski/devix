@@ -7,7 +7,7 @@ use std::sync::Arc;
 use devix_plugin::{
     CommandSpec, LuaPane, PluginMsg, PluginPane, PluginRuntime, default_plugin_path,
 };
-use devix_commands::{Command, CommandId, CommandRegistry, Keymap, cmd};
+use devix_surface::{Command, CommandId, CommandRegistry, Keymap, cmd};
 use devix_core::SidebarSlot;
 
 use crate::app::App;

@@ -10,5 +10,7 @@ devix-core.workspace = true
 devix-editor.workspace = true
 devix-workspace.workspace = true
 devix-ui.workspace = true
+crossterm.workspace = true
+nucleo-matcher.workspace = true
 slotmap = "1"
 anyhow = { workspace = true }

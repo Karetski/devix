@@ -209,7 +209,6 @@ dependencies = [
  "anyhow",
  "arboard",
  "crossterm",
- "devix-commands",
  "devix-core",
  "devix-editor",
  "devix-plugin",
@@ -217,20 +216,6 @@ dependencies = [
  "devix-text",
  "devix-ui",
  "ratatui",
-]
-
-[[package]]
-name = "devix-commands"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crossterm",
- "devix-core",
- "devix-editor",
- "devix-surface",
- "devix-text",
- "devix-ui",
- "nucleo-matcher",
 ]
 
 [[package]]
@@ -263,7 +248,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "crossterm",
- "devix-commands",
  "devix-core",
  "devix-editor",
  "devix-surface",
@@ -278,11 +262,13 @@ name = "devix-surface"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "crossterm",
  "devix-core",
  "devix-editor",
  "devix-text",
  "devix-ui",
  "devix-workspace",
+ "nucleo-matcher",
  "slotmap",
 ]
 

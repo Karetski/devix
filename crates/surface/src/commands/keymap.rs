@@ -15,9 +15,9 @@ use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::builtins as cmd_id;
-use crate::cmd::{self, EditorCommand};
-use crate::registry::{CommandId, CommandRegistry};
+use crate::commands::builtins as cmd_id;
+use crate::commands::cmd::{self, EditorCommand};
+use crate::commands::registry::{CommandId, CommandRegistry};
 use devix_core::layout::{Direction, SidebarSlot};
 
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
