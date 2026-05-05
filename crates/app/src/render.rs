@@ -22,7 +22,7 @@ use devix_ui::{
     SidebarPane as SidebarChrome, StatusInfo, StatusPane, TabStripPane, layout_tabstrip,
     tab_strip_layout,
 };
-use devix_views::{EditorPane, SidebarSlotPane, TabbedPane};
+use devix_editor::{EditorPane, SidebarSlotPane, TabbedPane};
 use devix_surface::{
     Document, FrameId, LeafRef, PalettePane, ScrollMode, SidebarSlot, SymbolPickerPane, View,
     Surface, palette_area, render_palette, render_symbols, symbols_area,

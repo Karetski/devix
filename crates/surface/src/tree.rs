@@ -5,7 +5,7 @@
 //! structural Panes here are *long-lived* (owned by the surface) and
 //! `'static` (so they can opt into `Pane::as_any` for downcasting). They
 //! hold IDs / slots, not borrowed editor state — render-time Panes
-//! (`devix-views`'s `TabbedPane`, `SidebarSlotPane`) are still built per
+//! (`devix-editor`'s `TabbedPane`, `SidebarSlotPane`) are still built per
 //! frame with surface borrows.
 //!
 //! Why two trees?
@@ -37,7 +37,7 @@ pub struct LayoutSplit {
 
 impl Pane for LayoutSplit {
     fn render(&self, _: Rect, _: &mut RenderCtx<'_, '_>) {
-        // Structural — the render tree paints. SplitPane in `devix-views`
+        // Structural — the render tree paints. SplitPane in `devix-editor`
         // is the render-side equivalent.
     }
 

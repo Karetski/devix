@@ -1,6 +1,6 @@
 //! Pure ratatui widgets — design-system primitives with no awareness of
 //! surface, buffer, or LSP types. Surface-coupled renderers (editor,
-//! palette, symbols) live in `devix-views`.
+//! palette, symbols) live in `devix-editor`.
 
 pub mod layout;
 pub mod popup;

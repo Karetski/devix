@@ -13,9 +13,10 @@ use devix_lsp::{char_in_rope, position_in_rope};
 use lsp_types::CompletionTextEdit;
 
 use crate::context::{Context, Viewport};
-use crate::view::{CompletionState, ScrollMode, View, ViewId};
+use crate::view::{ScrollMode, View, ViewId};
+use devix_editor::CompletionState;
 #[cfg(test)]
-use crate::view::CompletionStatus;
+use devix_editor::CompletionStatus;
 use crate::surface::{LspChannel, Surface};
 
 // ---------------------------------------------------------------------------

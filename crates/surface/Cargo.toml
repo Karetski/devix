@@ -8,9 +8,8 @@ rust-version.workspace = true
 crossterm.workspace = true
 devix-text.workspace = true
 devix-core.workspace = true
-devix-document.workspace = true
+devix-editor.workspace = true
 devix-lsp.workspace = true
-devix-syntax.workspace = true
 lsp-types.workspace = true
 tokio.workspace = true
 arboard = { version = "3.4", default-features = false }

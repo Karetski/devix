@@ -22,9 +22,8 @@ use devix_text::{Buffer, Range, Selection};
 use devix_core::{Event, HandleCtx, Outcome, Pane, RenderCtx, Theme};
 use devix_syntax::HighlightSpan;
 use devix_ui::{CompletionLine, Popup, PopupAnchor, PopupContent, render_popup};
-use devix_surface::{
-    CompletionState, CompletionStatus, DocDiagnostic, HoverState, HoverStatus,
-};
+use crate::document::DocDiagnostic;
+use crate::popup_state::{CompletionState, CompletionStatus, HoverState, HoverStatus};
 use lsp_types::DiagnosticSeverity;
 use ratatui::style::Color;
 

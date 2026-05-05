@@ -21,9 +21,9 @@ pub use tree::{
 // Re-exported so callers building commands don't have to depend on devix-lsp
 // directly for the trigger discriminator.
 pub use devix_lsp::CompletionTrigger;
-// Document model lives in `devix-document`; re-exported here so existing
-// callers (app, views) continue to import via `devix_surface::*`.
-pub use devix_document::{DocDiagnostic, DocId, Document};
+// Document model lives in `devix-editor`; re-exported so callers can keep
+// importing via `devix_surface::*` (one import path for editor state).
+pub use devix_editor::{DocDiagnostic, DocId, Document};
 pub use builtins::{build_registry, register_builtins};
 pub use command::{Command, CommandId, CommandRegistry};
 pub use keymap::{Chord, Keymap, chord_from_key, default_keymap};
@@ -35,7 +35,6 @@ pub use modal::{
     ModalOutcome, PaletteState, PalettePane, SymbolPickerPane, SymbolsKind, SymbolsState,
     SymbolsStatus, format_chord, palette_area, render_palette, render_symbols, symbols_area,
 };
-pub use view::{
-    CompletionState, CompletionStatus, HoverState, HoverStatus, ScrollMode, View, ViewId,
-};
+pub use devix_editor::{CompletionState, CompletionStatus, HoverState, HoverStatus};
+pub use view::{ScrollMode, View, ViewId};
 pub use surface::{LeafRef, RenderCache, Surface, TabHit, TabStripCache, TabStripHit};

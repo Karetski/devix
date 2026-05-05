@@ -1,16 +1,20 @@
 [package]
-name = "devix-document"
+name = "devix-editor"
 edition.workspace = true
 version.workspace = true
 rust-version.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+ratatui.workspace = true
 ropey.workspace = true
+crossterm.workspace = true
 tokio.workspace = true
 lsp-types.workspace = true
 devix-text.workspace = true
+devix-core.workspace = true
 devix-syntax.workspace = true
 devix-lsp.workspace = true
+devix-ui.workspace = true
 slotmap = "1"
 notify = "6"

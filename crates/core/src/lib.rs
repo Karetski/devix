@@ -11,9 +11,9 @@
 //! - [`Pane`] — the universal display unit (`UIView` analogue).
 //! - [`Action`] — invocable behavior, first-class (one type per command).
 //! - `Document` — text data, decoupled from any view (lives in
-//!   `devix-document` and will surface here later).
-//! - `Surface` — the editor root (will replace `Surface`; lives outside
-//!   `core` because it owns concrete state).
+//!   `devix-editor`; surface keeps the registry on the `Surface` struct).
+//! - `Surface` — the editor root (lives in `devix-surface`, owns concrete
+//!   state — kept outside `core` so the trait surface stays minimal).
 //!
 //! Anything plugins ever depend on lives here. Keep the surface small.
 

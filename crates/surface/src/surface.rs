@@ -23,7 +23,7 @@ use ratatui::layout::Rect;
 use slotmap::SlotMap;
 use tokio::sync::mpsc;
 
-use devix_document::{DocId, Document};
+use devix_editor::{DocId, Document};
 use crate::frame::{FrameId, mint_id};
 use crate::layout::SidebarSlot;
 use crate::tree::{LayoutFrame, LeafId, find_frame, pane_at_indices, pane_leaf_id};

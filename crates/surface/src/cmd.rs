@@ -520,7 +520,7 @@ impl<'a> Action<Context<'a>> for DeleteForward {
 pub struct Hover;
 impl<'a> Action<Context<'a>> for Hover {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        use crate::view::{HoverState, HoverStatus};
+        use devix_editor::{HoverState, HoverStatus};
         use devix_lsp::LspCommand;
         let Some(req) = crate::dispatch::lsp_position_request(ctx.surface) else { return };
         let _ = req.wiring.sink.send(LspCommand::Hover {
@@ -551,7 +551,7 @@ impl<'a> Action<Context<'a>> for GotoDefinition {
 pub struct TriggerCompletion(pub devix_lsp::CompletionTrigger);
 impl<'a> Action<Context<'a>> for TriggerCompletion {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        use crate::view::{CompletionState, CompletionStatus};
+        use devix_editor::{CompletionState, CompletionStatus};
         use devix_lsp::LspCommand;
         let Some(req) = crate::dispatch::lsp_position_request(ctx.surface) else { return };
         let _ = req.wiring.sink.send(LspCommand::Completion {

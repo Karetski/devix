@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use devix_core::Pane;
 
-use devix_document::{DocId, Document};
+use devix_editor::{DocId, Document};
 use crate::frame::mint_id;
 use crate::layout::{Axis, SidebarSlot};
 use crate::tree::{
