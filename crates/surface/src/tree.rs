@@ -1,12 +1,12 @@
 //! Structural Pane tree — the layout source-of-truth.
 //!
 //! Phase 3c of the architecture refactor: replace the closed `Node` enum
-//! with a tree of `Box<dyn Pane>` rooted at `Workspace.root`. The
-//! structural Panes here are *long-lived* (owned by the workspace) and
+//! with a tree of `Box<dyn Pane>` rooted at `Surface.root`. The
+//! structural Panes here are *long-lived* (owned by the surface) and
 //! `'static` (so they can opt into `Pane::as_any` for downcasting). They
 //! hold IDs / slots, not borrowed editor state — render-time Panes
 //! (`devix-views`'s `TabbedPane`, `SidebarSlotPane`) are still built per
-//! frame with workspace borrows.
+//! frame with surface borrows.
 //!
 //! Why two trees?
 //!
@@ -87,7 +87,7 @@ impl Pane for LayoutSplit {
 /// Editor-frame leaf. Owns the per-frame state directly — tabs, active
 /// index, tab-strip scroll, and the one-shot recenter flag — so each
 /// "frame" in the layout tree is its own self-contained Pane. Phase 3c
-/// follow-up: replaced the indirection through `Workspace.frames:
+/// follow-up: replaced the indirection through `Surface.frames:
 /// SlotMap<FrameId, Frame>` with direct ownership.
 ///
 /// `frame: FrameId` stays as a stable identifier the render cache
@@ -187,7 +187,7 @@ impl Pane for LayoutSidebar {
 
 /// Walk the structural tree by `children()` *index* — no area needed,
 /// because we navigate through `LayoutSplit.children` directly. Use
-/// this for path-only navigation (e.g. resolving `Workspace.focus` to
+/// this for path-only navigation (e.g. resolving `Surface.focus` to
 /// its leaf); use `core::walk::pane_at_path` when you also need the
 /// rect each child occupies.
 pub fn pane_at_indices<'a>(root: &'a dyn Pane, path: &[usize]) -> Option<&'a dyn Pane> {
@@ -214,15 +214,15 @@ pub fn pane_leaf_id(pane: &dyn Pane) -> Option<LeafRef> {
 }
 
 /// Identity of a leaf in the structural tree. `LeafId` was an internal
-/// alias kept while the legacy `LeafRef` lived in `workspace.rs`; now
+/// alias kept while the legacy `LeafRef` lived in `surface.rs`; now
 /// it's just a re-export so callers can `use tree::LeafRef` without
 /// going through the parent module.
-pub use crate::workspace::LeafRef;
+pub use crate::surface::LeafRef;
 pub type LeafId = LeafRef;
 
 /// Find the `LayoutFrame` for `frame` by walking the tree. Returns
 /// `None` if no leaf with that `FrameId` exists. The structural tree
-/// is the only place per-frame state lives now, so all `Workspace`
+/// is the only place per-frame state lives now, so all `Surface`
 /// accessors that used to do `ws.frames[fid]` go through this.
 pub fn find_frame(root: &dyn Pane, frame: FrameId) -> Option<&LayoutFrame> {
     if let Some(f) = root.as_any().and_then(|a| a.downcast_ref::<LayoutFrame>()) {
@@ -305,12 +305,12 @@ fn walk(pane: &dyn Pane, area: Rect, out: &mut Vec<(LeafRef, Rect)>) {
 
 /// Tree-mutation helpers — the write-side counterpart to
 /// `pane_at_indices`. They take `&mut Box<dyn Pane>` rooted at
-/// `Workspace.root` and rewrite it in place.
+/// `Surface.root` and rewrite it in place.
 ///
 /// All four ops the editor needs (replace a leaf with a subtree, remove
 /// the leaf at a path, lift the root into a Split when toggling the
 /// first sidebar, collapse a Split that's been reduced to a single
-/// child) live here. Workspace `ops` calls them; the structural tree is
+/// child) live here. Surface `ops` calls them; the structural tree is
 /// the source of truth.
 pub mod mutate {
     use super::{LayoutSplit, Pane};

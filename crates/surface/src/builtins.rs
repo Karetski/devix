@@ -48,7 +48,7 @@ pub const LSP_HOVER:                  CommandId = CommandId("lsp.hover");
 pub const LSP_GOTO_DEFINITION:        CommandId = CommandId("lsp.goto_definition");
 pub const LSP_COMPLETION_TRIGGER:     CommandId = CommandId("lsp.completion.trigger");
 pub const LSP_DOCUMENT_SYMBOLS:       CommandId = CommandId("lsp.symbols.document");
-pub const LSP_WORKSPACE_SYMBOLS:      CommandId = CommandId("lsp.symbols.workspace");
+pub const LSP_WORKSPACE_SYMBOLS:      CommandId = CommandId("lsp.symbols.surface");
 
 pub fn register_builtins(reg: &mut CommandRegistry) {
     let r = |reg: &mut CommandRegistry,
@@ -95,7 +95,7 @@ pub fn register_builtins(reg: &mut CommandRegistry) {
     r(reg, LSP_GOTO_DEFINITION,      "Go to Definition",       "Language", Arc::new(cmd::GotoDefinition));
     r(reg, LSP_COMPLETION_TRIGGER,   "Trigger Completion",     "Language", Arc::new(cmd::TriggerCompletion(CompletionTrigger::Manual)));
     r(reg, LSP_DOCUMENT_SYMBOLS,     "Document Symbols",       "Language", Arc::new(cmd::ShowDocumentSymbols));
-    r(reg, LSP_WORKSPACE_SYMBOLS,    "Workspace Symbols",      "Language", Arc::new(cmd::ShowWorkspaceSymbols));
+    r(reg, LSP_WORKSPACE_SYMBOLS,    "Surface Symbols",      "Language", Arc::new(cmd::ShowWorkspaceSymbols));
 }
 
 pub fn build_registry() -> CommandRegistry {

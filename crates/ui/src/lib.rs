@@ -1,5 +1,5 @@
 //! Pure ratatui widgets — design-system primitives with no awareness of
-//! workspace, buffer, or LSP types. Workspace-coupled renderers (editor,
+//! surface, buffer, or LSP types. Surface-coupled renderers (editor,
 //! palette, symbols) live in `devix-views`.
 
 pub mod layout;

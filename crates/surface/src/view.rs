@@ -1,5 +1,5 @@
 //! View = per-frame editor state (selection + sticky col + scroll).
-//! Owned by Workspace, indexed by ViewId.
+//! Owned by Surface, indexed by ViewId.
 
 use devix_text::{Range, Selection, Transaction};
 use lsp_types::CompletionItem;

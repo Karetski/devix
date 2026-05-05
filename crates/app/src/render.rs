@@ -12,7 +12,7 @@
 //!    the frame just painted; no view, document, or scroll mutation happens.
 //!
 //! Per PLAN.md rule 3 ("render is pure"), the second pass MUST NOT touch
-//! anything in `Workspace` other than the `RenderCache`.
+//! anything in `Surface` other than the `RenderCache`.
 
 use devix_core::{Pane, RenderCtx};
 use ratatui::Frame;
@@ -23,9 +23,9 @@ use devix_ui::{
     tab_strip_layout,
 };
 use devix_views::{EditorPane, SidebarSlotPane, TabbedPane};
-use devix_workspace::{
+use devix_surface::{
     Document, FrameId, LeafRef, PalettePane, ScrollMode, SidebarSlot, SymbolPickerPane, View,
-    Workspace, palette_area, render_palette, render_symbols, symbols_area,
+    Surface, palette_area, render_palette, render_symbols, symbols_area,
 };
 
 use crate::app::App;
@@ -39,10 +39,10 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     let status_area = chunks[1];
 
     let leaves =
-        devix_workspace::leaves_with_rects(app.workspace.root.as_ref(), editor_area);
+        devix_surface::leaves_with_rects(app.surface.root.as_ref(), editor_area);
 
     // Phase 1 — layout: scroll-into-view + clamp.
-    layout_pass(&leaves, &mut app.workspace);
+    layout_pass(&leaves, &mut app.surface);
 
     // Phase 2 — paint (pure, plus render-cache writes).
     paint(&leaves, app, frame);
@@ -50,12 +50,12 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     render_status(frame, status_area, app);
 
     // Modal Panes paint last (z-order is paint order in ratatui). The
-    // modal slot lives on `Workspace`; the host downcasts to known modal
-    // types for their workspace-aux render path (palette needs the
+    // modal slot lives on `Surface`; the host downcasts to known modal
+    // types for their surface-aux render path (palette needs the
     // command registry + keymap; symbols needs the theme), then falls
     // back to the modal Pane's own `render` for plugin-contributed
     // modals — the framework never matches on a kind enum.
-    if let Some(modal) = app.workspace.modal.as_ref() {
+    if let Some(modal) = app.surface.modal.as_ref() {
         let any = modal.as_any();
         if let Some(p) = any.and_then(|a| a.downcast_ref::<PalettePane>()) {
             render_palette(
@@ -79,7 +79,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
 /// the cursor in view (Anchored mode) or against a clamped offset (Free mode),
 /// and run the tab-strip's pre-paint scroll math.  No painting, no cache
 /// writes — those happen in [`paint`].
-fn layout_pass(leaves: &[(LeafRef, Rect)], ws: &mut Workspace) {
+fn layout_pass(leaves: &[(LeafRef, Rect)], ws: &mut Surface) {
     for (leaf, rect) in leaves {
         let LeafRef::Frame(fid) = leaf else { continue };
         let strip_area = Rect { height: 1, ..*rect };
@@ -87,7 +87,7 @@ fn layout_pass(leaves: &[(LeafRef, Rect)], ws: &mut Workspace) {
 
         // Tab-strip layout: clamp on resize/tab-close and consume the
         // recenter-active one-shot. Done here so paint can stay pure.
-        let tabs: Vec<devix_ui::TabInfo> = match devix_workspace::find_frame(ws.root.as_ref(), *fid) {
+        let tabs: Vec<devix_ui::TabInfo> = match devix_surface::find_frame(ws.root.as_ref(), *fid) {
             Some(frame) => frame
                 .tabs
                 .iter()
@@ -104,9 +104,9 @@ fn layout_pass(leaves: &[(LeafRef, Rect)], ws: &mut Workspace) {
                 .collect(),
             None => continue,
         };
-        let Some(active_tab) = devix_workspace::find_frame(ws.root.as_ref(), *fid)
+        let Some(active_tab) = devix_surface::find_frame(ws.root.as_ref(), *fid)
             .map(|f| f.active_tab) else { continue };
-        let Some(f) = devix_workspace::find_frame_mut(&mut ws.root, *fid) else { continue };
+        let Some(f) = devix_surface::find_frame_mut(&mut ws.root, *fid) else { continue };
         layout_tabstrip(
             &tabs,
             active_tab,
@@ -115,7 +115,7 @@ fn layout_pass(leaves: &[(LeafRef, Rect)], ws: &mut Workspace) {
             strip_area,
         );
 
-        let Some(vid) = devix_workspace::find_frame(ws.root.as_ref(), *fid)
+        let Some(vid) = devix_surface::find_frame(ws.root.as_ref(), *fid)
             .and_then(|f| f.active_view()) else { continue };
         let view = &ws.views[vid];
         let doc = &ws.documents[view.doc];
@@ -151,11 +151,11 @@ fn layout_pass(leaves: &[(LeafRef, Rect)], ws: &mut Workspace) {
 
 /// Pure paint via the composite Pane tree. Run in two passes:
 ///
-/// 1. `populate_cache` pre-fills the workspace's `RenderCache` (sidebar
+/// 1. `populate_cache` pre-fills the surface's `RenderCache` (sidebar
 ///    rects, frame body rects, tab-strip hit lists) using read-only
 ///    layout helpers — no painting, no view/document mutation.
 /// 2. `paint_leaves` builds a `TabbedPane` or `SidebarSlotPane` per leaf
-///    and calls its `render`. Each Pane is `&self`-pure; the workspace
+///    and calls its `render`. Each Pane is `&self`-pure; the surface
 ///    is borrowed shared, not mutably.
 ///
 /// Splitting the work this way is what lets `Pane::render(&self)` stay
@@ -163,7 +163,7 @@ fn layout_pass(leaves: &[(LeafRef, Rect)], ws: &mut Workspace) {
 /// renderer was running — the new shape moves them ahead of paint into
 /// pure layout math.
 fn paint(leaves: &[(LeafRef, Rect)], app: &mut App, frame: &mut Frame<'_>) {
-    populate_cache(leaves, &mut app.workspace);
+    populate_cache(leaves, &mut app.surface);
     paint_leaves(leaves, app, frame);
 }
 
@@ -171,7 +171,7 @@ fn paint(leaves: &[(LeafRef, Rect)], app: &mut App, frame: &mut Frame<'_>) {
 /// (frame body rect, sidebar rect, tab-strip hits/content width) via
 /// read-only helpers, and writes the result to `RenderCache`. No
 /// painting, no scroll mutation (that already happened in `layout_pass`).
-fn populate_cache(leaves: &[(LeafRef, Rect)], ws: &mut Workspace) {
+fn populate_cache(leaves: &[(LeafRef, Rect)], ws: &mut Surface) {
     ws.render_cache.frame_rects.clear();
     ws.render_cache.sidebar_rects.clear();
     ws.render_cache.tab_strips.clear();
@@ -184,7 +184,7 @@ fn populate_cache(leaves: &[(LeafRef, Rect)], ws: &mut Workspace) {
                 let strip_area = Rect { height: 1, ..*rect };
                 let body_area = frame_body_rect(*rect);
                 let tabs = build_tab_infos(ws, *fid);
-                let Some(frame_state) = devix_workspace::find_frame(ws.root.as_ref(), *fid)
+                let Some(frame_state) = devix_surface::find_frame(ws.root.as_ref(), *fid)
                 else { continue };
                 let active = frame_state.active_tab;
                 let scroll = frame_state.tab_strip_scroll;
@@ -192,11 +192,11 @@ fn populate_cache(leaves: &[(LeafRef, Rect)], ws: &mut Workspace) {
                     tab_strip_layout(&tabs, active, scroll, strip_area);
                 let hits = hits_pure
                     .iter()
-                    .map(|h| devix_workspace::TabHit { idx: h.idx, rect: h.rect })
+                    .map(|h| devix_surface::TabHit { idx: h.idx, rect: h.rect })
                     .collect();
                 ws.render_cache.tab_strips.insert(
                     *fid,
-                    devix_workspace::TabStripCache {
+                    devix_surface::TabStripCache {
                         strip_rect: strip_area,
                         content_width,
                         hits,
@@ -208,7 +208,7 @@ fn populate_cache(leaves: &[(LeafRef, Rect)], ws: &mut Workspace) {
     }
 }
 
-/// Paint pass: build a `Pane` per leaf and render it. The workspace is
+/// Paint pass: build a `Pane` per leaf and render it. The surface is
 /// borrowed shared — every mutation already happened in `layout_pass` /
 /// `populate_cache`.
 fn paint_leaves(leaves: &[(LeafRef, Rect)], app: &App, frame: &mut Frame<'_>) {
@@ -227,13 +227,13 @@ fn paint_leaves(leaves: &[(LeafRef, Rect)], app: &App, frame: &mut Frame<'_>) {
     }
 }
 
-/// Construct a `TabbedPane` for `frame`. Borrows from the workspace; the
+/// Construct a `TabbedPane` for `frame`. Borrows from the surface; the
 /// returned Pane lives only as long as the borrow.
 fn build_tabbed_pane<'a>(app: &'a App, frame: FrameId) -> TabbedPane<'a> {
-    let f = devix_workspace::find_frame(app.workspace.root.as_ref(), frame)
+    let f = devix_surface::find_frame(app.surface.root.as_ref(), frame)
         .expect("active frame must exist in tree");
     let strip = TabStripPane {
-        tabs: build_tab_infos(&app.workspace, frame),
+        tabs: build_tab_infos(&app.surface, frame),
         active: f.active_tab,
         scroll: f.tab_strip_scroll,
     };
@@ -242,15 +242,15 @@ fn build_tabbed_pane<'a>(app: &'a App, frame: FrameId) -> TabbedPane<'a> {
     // EditorPane against a zero-length scratch borrow — the renderer just
     // paints nothing.
     let view_id = f.active_view().expect("frame must have an active view");
-    let view = &app.workspace.views[view_id];
-    let doc = &app.workspace.documents[view.doc];
+    let view = &app.surface.views[view_id];
+    let doc = &app.surface.documents[view.doc];
     // Highlights are scoped to a generous viewport; the actual paint area
     // lives downstream (TabbedPane.children() splits) but the over-set is
     // safe — highlights past the body just don't render. Using the cached
     // body rect from the previous frame would be exact but couples the
     // build to render order.
     let cached_body = app
-        .workspace
+        .surface
         .render_cache
         .frame_rects
         .get(&frame)
@@ -266,7 +266,7 @@ fn build_tabbed_pane<'a>(app: &'a App, frame: FrameId) -> TabbedPane<'a> {
         theme: &app.theme,
         highlights,
         diagnostics: doc.diagnostics(),
-        active: app.workspace.active_frame() == Some(frame),
+        active: app.surface.active_frame() == Some(frame),
         hover: view.hover.as_ref(),
         completion: view.completion.as_ref(),
     };
@@ -280,11 +280,11 @@ fn build_sidebar_pane<'a>(app: &'a App, slot: SidebarSlot) -> SidebarSlotPane<'a
         SidebarSlot::Left => "left",
         SidebarSlot::Right => "right",
     };
-    let focused = devix_workspace::pane_at_indices(
-        app.workspace.root.as_ref(),
-        &app.workspace.focus,
+    let focused = devix_surface::pane_at_indices(
+        app.surface.root.as_ref(),
+        &app.surface.focus,
     )
-    .and_then(devix_workspace::pane_leaf_id)
+    .and_then(devix_surface::pane_leaf_id)
     .map(|id| matches!(id, LeafRef::Sidebar(s) if s == slot))
     .unwrap_or(false);
     SidebarSlotPane {
@@ -296,8 +296,8 @@ fn build_sidebar_pane<'a>(app: &'a App, slot: SidebarSlot) -> SidebarSlotPane<'a
 /// Build the per-tab label info for a frame's strip. Same logic as the
 /// previous inline build in `layout_pass` / `paint_frame`, factored so
 /// both the cache pass and the render pass produce identical labels.
-fn build_tab_infos(ws: &Workspace, frame: FrameId) -> Vec<devix_ui::TabInfo> {
-    let Some(frame_state) = devix_workspace::find_frame(ws.root.as_ref(), frame) else {
+fn build_tab_infos(ws: &Surface, frame: FrameId) -> Vec<devix_ui::TabInfo> {
+    let Some(frame_state) = devix_surface::find_frame(ws.root.as_ref(), frame) else {
         return Vec::new();
     };
     frame_state
@@ -345,8 +345,8 @@ fn visible_byte_range(doc: &Document, view: &View, height_rows: usize) -> (usize
 }
 
 fn render_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let Some(view) = app.workspace.active_view() else { return };
-    let doc = &app.workspace.documents[view.doc];
+    let Some(view) = app.surface.active_view() else { return };
+    let doc = &app.surface.documents[view.doc];
     let path_str = doc.buffer.path().map(|p| p.display().to_string());
     let head = view.primary().head;
     let (errors, warnings) = count_diagnostics(doc);

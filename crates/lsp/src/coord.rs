@@ -4,7 +4,7 @@
 //!
 //! Identity: documents are addressed by `lsp_types::Uri` end-to-end. The App
 //! is responsible for the `Uri ↔ workspace::DocId` mapping at the boundary,
-//! which keeps `devix-lsp` from depending on `devix-workspace`.
+//! which keeps `devix-lsp` from depending on `devix-surface`.
 //!
 //! Lifecycle: `LspClient`s are spawned lazily on first `LspCommand::Open` for
 //! a (root, language) pair via the supplied `Spawner` trait. The default

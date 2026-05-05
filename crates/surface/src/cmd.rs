@@ -20,7 +20,7 @@ use crate::context::Context;
 /// Storage shape: `Box<dyn EditorCommand>`.
 ///
 /// HRTB (`for<'a> Action<Context<'a>>`) is what makes the storage
-/// possible — `Context<'a>` borrows from the workspace, so its lifetime
+/// possible — `Context<'a>` borrows from the surface, so its lifetime
 /// is per-call, not `'static`. The action type itself stays `'static`
 /// (no fields with lifetimes), which is what the trait's bound requires.
 pub trait EditorCommand: for<'a> Action<Context<'a>> {}
@@ -39,7 +39,7 @@ impl<'a> Action<Context<'a>> for Quit {
 pub struct Save;
 impl<'a> Action<Context<'a>> for Save {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some(d) = ctx.workspace.active_doc_mut() else { return };
+        let Some(d) = ctx.surface.active_doc_mut() else { return };
         let msg = match d.buffer.save() {
             Ok(()) => "saved".to_string(),
             Err(e) => format!("save failed: {e}"),
@@ -51,7 +51,7 @@ impl<'a> Action<Context<'a>> for Save {
 pub struct KeepBufferIgnoreDisk;
 impl<'a> Action<Context<'a>> for KeepBufferIgnoreDisk {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        if let Some(d) = ctx.workspace.active_doc_mut() {
+        if let Some(d) = ctx.surface.active_doc_mut() {
             d.disk_changed_pending = false;
         }
         ctx.status.set("kept buffer; disk change ignored");
@@ -63,28 +63,28 @@ impl<'a> Action<Context<'a>> for KeepBufferIgnoreDisk {
 pub struct NewTab;
 impl<'a> Action<Context<'a>> for NewTab {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        ctx.workspace.new_tab();
+        ctx.surface.new_tab();
     }
 }
 
 pub struct NextTab;
 impl<'a> Action<Context<'a>> for NextTab {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        ctx.workspace.next_tab();
+        ctx.surface.next_tab();
     }
 }
 
 pub struct PrevTab;
 impl<'a> Action<Context<'a>> for PrevTab {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        ctx.workspace.prev_tab();
+        ctx.surface.prev_tab();
     }
 }
 
 pub struct ForceCloseTab;
 impl<'a> Action<Context<'a>> for ForceCloseTab {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        ctx.workspace.close_active_tab(true);
+        ctx.surface.close_active_tab(true);
         ctx.status.clear();
     }
 }
@@ -92,41 +92,41 @@ impl<'a> Action<Context<'a>> for ForceCloseTab {
 // --- Splits / frames -------------------------------------------------------
 //
 // `SplitVertical` / `SplitHorizontal` are named for the *dividing line* the
-// user expects to see; the workspace's `Axis` describes the layout direction
+// user expects to see; the surface's `Axis` describes the layout direction
 // children are arranged in. So a "vertical split" produces children laid
 // out horizontally — flip in the impls.
 
 pub struct SplitVertical;
 impl<'a> Action<Context<'a>> for SplitVertical {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        ctx.workspace.split_active(crate::layout::Axis::Horizontal);
+        ctx.surface.split_active(crate::layout::Axis::Horizontal);
     }
 }
 
 pub struct SplitHorizontal;
 impl<'a> Action<Context<'a>> for SplitHorizontal {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        ctx.workspace.split_active(crate::layout::Axis::Vertical);
+        ctx.surface.split_active(crate::layout::Axis::Vertical);
     }
 }
 
 pub struct CloseFrame;
 impl<'a> Action<Context<'a>> for CloseFrame {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        ctx.workspace.close_active_frame();
+        ctx.surface.close_active_frame();
     }
 }
 
 // --- Modal Panes ----------------------------------------------------------
 //
-// All modal commands operate on `ctx.workspace.modal`. Concrete pane types
+// All modal commands operate on `ctx.surface.modal`. Concrete pane types
 // are looked up via `as_any_mut()` downcast — the framework treats the slot
 // as a generic `Box<dyn Pane>` and never matches on a kind enum.
 
 pub struct OpenPalette;
 impl<'a> Action<Context<'a>> for OpenPalette {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        ctx.workspace.modal = Some(Box::new(crate::modal::PalettePane::from_registry(
+        ctx.surface.modal = Some(Box::new(crate::modal::PalettePane::from_registry(
             ctx.commands,
         )));
     }
@@ -136,7 +136,7 @@ pub struct ClosePalette;
 impl<'a> Action<Context<'a>> for ClosePalette {
     fn invoke(&self, ctx: &mut Context<'a>) {
         if modal_is::<crate::modal::PalettePane>(ctx) {
-            ctx.workspace.modal = None;
+            ctx.surface.modal = None;
         }
     }
 }
@@ -147,12 +147,12 @@ impl<'a> Action<Context<'a>> for ClosePalette {
 pub struct CloseModal;
 impl<'a> Action<Context<'a>> for CloseModal {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        ctx.workspace.modal = None;
+        ctx.surface.modal = None;
     }
 }
 
 fn modal_is<T: 'static>(ctx: &Context<'_>) -> bool {
-    ctx.workspace
+    ctx.surface
         .modal
         .as_ref()
         .and_then(|m| m.as_any())
@@ -170,14 +170,14 @@ fn modal_is<T: 'static>(ctx: &Context<'_>) -> bool {
 pub struct ToggleSidebar(pub crate::layout::SidebarSlot);
 impl<'a> Action<Context<'a>> for ToggleSidebar {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        ctx.workspace.toggle_sidebar(self.0);
+        ctx.surface.toggle_sidebar(self.0);
     }
 }
 
 pub struct FocusDir(pub crate::layout::Direction);
 impl<'a> Action<Context<'a>> for FocusDir {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        ctx.workspace.focus_dir(self.0);
+        ctx.surface.focus_dir(self.0);
     }
 }
 
@@ -200,7 +200,7 @@ impl<'a> Action<Context<'a>> for PaletteSetQuery {
 }
 
 fn downcast_modal_mut<'a, T: 'static>(ctx: &'a mut Context<'_>) -> Option<&'a mut T> {
-    ctx.workspace
+    ctx.surface
         .modal
         .as_mut()?
         .as_any_mut()?
@@ -210,8 +210,8 @@ fn downcast_modal_mut<'a, T: 'static>(ctx: &'a mut Context<'_>) -> Option<&'a mu
 pub struct CompletionMove(pub isize);
 impl<'a> Action<Context<'a>> for CompletionMove {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some((_, vid, _)) = ctx.workspace.active_ids() else { return };
-        let Some(state) = ctx.workspace.views[vid].completion.as_mut() else { return };
+        let Some((_, vid, _)) = ctx.surface.active_ids() else { return };
+        let Some(state) = ctx.surface.views[vid].completion.as_mut() else { return };
         if state.filtered.is_empty() {
             return;
         }
@@ -225,8 +225,8 @@ impl<'a> Action<Context<'a>> for CompletionMove {
 pub struct CompletionDismiss;
 impl<'a> Action<Context<'a>> for CompletionDismiss {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some((_, vid, _)) = ctx.workspace.active_ids() else { return };
-        ctx.workspace.views[vid].completion = None;
+        let Some((_, vid, _)) = ctx.surface.active_ids() else { return };
+        ctx.surface.views[vid].completion = None;
     }
 }
 
@@ -234,7 +234,7 @@ pub struct CloseSymbols;
 impl<'a> Action<Context<'a>> for CloseSymbols {
     fn invoke(&self, ctx: &mut Context<'a>) {
         if modal_is::<crate::modal::SymbolPickerPane>(ctx) {
-            ctx.workspace.modal = None;
+            ctx.surface.modal = None;
         }
     }
 }
@@ -253,9 +253,9 @@ impl<'a> Action<Context<'a>> for SymbolsMove {
 pub struct Undo;
 impl<'a> Action<Context<'a>> for Undo {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some((_, vid, did)) = ctx.workspace.active_ids() else { return };
-        if let Some(sel) = ctx.workspace.documents[did].undo() {
-            ctx.workspace.views[vid].adopt_selection(sel);
+        let Some((_, vid, did)) = ctx.surface.active_ids() else { return };
+        if let Some(sel) = ctx.surface.documents[did].undo() {
+            ctx.surface.views[vid].adopt_selection(sel);
             ctx.status.clear();
         } else {
             ctx.status.set("nothing to undo");
@@ -266,9 +266,9 @@ impl<'a> Action<Context<'a>> for Undo {
 pub struct Redo;
 impl<'a> Action<Context<'a>> for Redo {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some((_, vid, did)) = ctx.workspace.active_ids() else { return };
-        if let Some(sel) = ctx.workspace.documents[did].redo() {
-            ctx.workspace.views[vid].adopt_selection(sel);
+        let Some((_, vid, did)) = ctx.surface.active_ids() else { return };
+        if let Some(sel) = ctx.surface.documents[did].redo() {
+            ctx.surface.views[vid].adopt_selection(sel);
             ctx.status.clear();
         } else {
             ctx.status.set("nothing to redo");
@@ -280,9 +280,9 @@ pub struct SelectAll;
 impl<'a> Action<Context<'a>> for SelectAll {
     fn invoke(&self, ctx: &mut Context<'a>) {
         use devix_text::{Range, Selection};
-        let Some((_, vid, did)) = ctx.workspace.active_ids() else { return };
-        let end = ctx.workspace.documents[did].buffer.len_chars();
-        ctx.workspace.views[vid].adopt_selection(Selection::single(Range::new(0, end)));
+        let Some((_, vid, did)) = ctx.surface.active_ids() else { return };
+        let end = ctx.surface.documents[did].buffer.len_chars();
+        ctx.surface.views[vid].adopt_selection(Selection::single(Range::new(0, end)));
     }
 }
 
@@ -291,7 +291,7 @@ impl<'a> Action<Context<'a>> for SelectAll {
 pub struct OpenPath(pub std::path::PathBuf);
 impl<'a> Action<Context<'a>> for OpenPath {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        match ctx.workspace.open_path_replace_current(self.0.clone()) {
+        match ctx.surface.open_path_replace_current(self.0.clone()) {
             Ok(_) => ctx.status.clear(),
             Err(e) => ctx.status.set(format!("open failed: {e}")),
         }
@@ -301,7 +301,7 @@ impl<'a> Action<Context<'a>> for OpenPath {
 pub struct CloseTab;
 impl<'a> Action<Context<'a>> for CloseTab {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        if !ctx.workspace.close_active_tab(false) {
+        if !ctx.surface.close_active_tab(false) {
             ctx.status.set("unsaved changes — Ctrl+S to save, Ctrl+Shift+W to force close");
         } else {
             ctx.status.clear();
@@ -312,13 +312,13 @@ impl<'a> Action<Context<'a>> for CloseTab {
 pub struct ReloadFromDisk;
 impl<'a> Action<Context<'a>> for ReloadFromDisk {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some((_, vid, did)) = ctx.workspace.active_ids() else { return };
-        let res = ctx.workspace.documents[did].reload_from_disk();
+        let Some((_, vid, did)) = ctx.surface.active_ids() else { return };
+        let res = ctx.surface.documents[did].reload_from_disk();
         match res {
             Ok(()) => {
-                let max = ctx.workspace.documents[did].buffer.len_chars();
-                ctx.workspace.documents[did].disk_changed_pending = false;
-                ctx.workspace.views[vid].selection.clamp(max);
+                let max = ctx.surface.documents[did].buffer.len_chars();
+                ctx.surface.documents[did].disk_changed_pending = false;
+                ctx.surface.views[vid].selection.clamp(max);
                 ctx.status.set("reloaded from disk");
             }
             Err(e) => ctx.status.set(format!("reload failed: {e}")),
@@ -491,9 +491,9 @@ impl<'a> Action<Context<'a>> for DeleteBack {
             Some((start, head))
         });
         if let Some(state) = saved {
-            if let Some((_, vid, _)) = ctx.workspace.active_ids() {
-                ctx.workspace.views[vid].completion = Some(state);
-                crate::dispatch::refilter_completion(ctx.workspace, vid);
+            if let Some((_, vid, _)) = ctx.surface.active_ids() {
+                ctx.surface.views[vid].completion = Some(state);
+                crate::dispatch::refilter_completion(ctx.surface, vid);
             }
         }
     }
@@ -522,13 +522,13 @@ impl<'a> Action<Context<'a>> for Hover {
     fn invoke(&self, ctx: &mut Context<'a>) {
         use crate::view::{HoverState, HoverStatus};
         use devix_lsp::LspCommand;
-        let Some(req) = crate::dispatch::lsp_position_request(ctx.workspace) else { return };
+        let Some(req) = crate::dispatch::lsp_position_request(ctx.surface) else { return };
         let _ = req.wiring.sink.send(LspCommand::Hover {
             uri: req.uri,
             position: req.position,
             anchor_char: req.head,
         });
-        ctx.workspace.views[req.vid].hover = Some(HoverState {
+        ctx.surface.views[req.vid].hover = Some(HoverState {
             anchor_char: req.head,
             status: HoverStatus::Pending,
         });
@@ -539,7 +539,7 @@ pub struct GotoDefinition;
 impl<'a> Action<Context<'a>> for GotoDefinition {
     fn invoke(&self, ctx: &mut Context<'a>) {
         use devix_lsp::LspCommand;
-        let Some(req) = crate::dispatch::lsp_position_request(ctx.workspace) else { return };
+        let Some(req) = crate::dispatch::lsp_position_request(ctx.surface) else { return };
         let _ = req.wiring.sink.send(LspCommand::GotoDefinition {
             uri: req.uri,
             position: req.position,
@@ -553,17 +553,17 @@ impl<'a> Action<Context<'a>> for TriggerCompletion {
     fn invoke(&self, ctx: &mut Context<'a>) {
         use crate::view::{CompletionState, CompletionStatus};
         use devix_lsp::LspCommand;
-        let Some(req) = crate::dispatch::lsp_position_request(ctx.workspace) else { return };
+        let Some(req) = crate::dispatch::lsp_position_request(ctx.surface) else { return };
         let _ = req.wiring.sink.send(LspCommand::Completion {
             uri: req.uri,
             position: req.position,
             anchor_char: req.head,
             trigger: self.0.clone(),
         });
-        let did = ctx.workspace.views[req.vid].doc;
+        let did = ctx.surface.views[req.vid].doc;
         let query_start =
-            crate::dispatch::ident_start_at(&ctx.workspace.documents[did].buffer, req.head);
-        ctx.workspace.views[req.vid].completion = Some(CompletionState {
+            crate::dispatch::ident_start_at(&ctx.surface.documents[did].buffer, req.head);
+        ctx.surface.views[req.vid].completion = Some(CompletionState {
             anchor_char: req.head,
             query_start,
             items: Vec::new(),
@@ -588,9 +588,9 @@ pub struct ScrollBy(pub isize);
 impl<'a> Action<Context<'a>> for ScrollBy {
     fn invoke(&self, ctx: &mut Context<'a>) {
         use crate::view::ScrollMode;
-        let Some((_, vid, did)) = ctx.workspace.active_ids() else { return };
-        let line_count = ctx.workspace.documents[did].buffer.line_count();
-        let v = &mut ctx.workspace.views[vid];
+        let Some((_, vid, did)) = ctx.surface.active_ids() else { return };
+        let line_count = ctx.surface.documents[did].buffer.line_count();
+        let v = &mut ctx.surface.views[vid];
         let max_top = line_count.saturating_sub(1);
         let next = (v.scroll_top() as isize).saturating_add(self.0);
         let clamped = next.clamp(0, max_top as isize) as usize;
@@ -606,18 +606,18 @@ impl<'a> Action<Context<'a>> for ShowDocumentSymbols {
     fn invoke(&self, ctx: &mut Context<'a>) {
         use crate::modal::{SymbolPickerPane, SymbolsKind};
         use devix_lsp::LspCommand;
-        let Some((_, _vid, did)) = ctx.workspace.active_ids() else { return };
-        let Some(wiring) = ctx.workspace.lsp_channel() else {
+        let Some((_, _vid, did)) = ctx.surface.active_ids() else { return };
+        let Some(wiring) = ctx.surface.lsp_channel() else {
             ctx.status.set("LSP not attached for this document");
             return;
         };
-        let Some(uri) = ctx.workspace.documents[did].lsp_uri().cloned() else {
+        let Some(uri) = ctx.surface.documents[did].lsp_uri().cloned() else {
             ctx.status.set("no symbols: doc not attached to a language server");
             return;
         };
         let pane = SymbolPickerPane::new(SymbolsKind::Document, Some(uri.clone()));
         let _ = wiring.sink.send(LspCommand::DocumentSymbols { uri, epoch: pane.state.epoch });
-        ctx.workspace.modal = Some(Box::new(pane));
+        ctx.surface.modal = Some(Box::new(pane));
     }
 }
 
@@ -626,16 +626,16 @@ impl<'a> Action<Context<'a>> for ShowWorkspaceSymbols {
     fn invoke(&self, ctx: &mut Context<'a>) {
         use crate::modal::{SymbolPickerPane, SymbolsKind};
         use devix_lsp::LspCommand;
-        let Some(wiring) = ctx.workspace.lsp_channel() else {
+        let Some(wiring) = ctx.surface.lsp_channel() else {
             ctx.status.set("LSP not attached");
             return;
         };
-        let pane = SymbolPickerPane::new(SymbolsKind::Workspace, None);
+        let pane = SymbolPickerPane::new(SymbolsKind::Surface, None);
         let _ = wiring.sink.send(LspCommand::WorkspaceSymbols {
             query: pane.state.query.clone(),
             epoch: pane.state.epoch,
         });
-        ctx.workspace.modal = Some(Box::new(pane));
+        ctx.surface.modal = Some(Box::new(pane));
     }
 }
 
@@ -645,31 +645,31 @@ impl<'a> Action<Context<'a>> for SymbolsSetQuery {
         use crate::modal::SymbolsKind;
         use devix_lsp::LspCommand;
         let Some(s) = downcast_modal_mut::<crate::modal::SymbolPickerPane>(ctx) else { return };
-        let needs_refetch = s.state.kind == SymbolsKind::Workspace;
+        let needs_refetch = s.state.kind == SymbolsKind::Surface;
         s.state.set_query(self.0.clone());
         if needs_refetch {
             let epoch = s.state.epoch;
             let query = s.state.query.clone();
-            if let Some(wiring) = ctx.workspace.lsp_channel() {
+            if let Some(wiring) = ctx.surface.lsp_channel() {
                 let _ = wiring.sink.send(LspCommand::WorkspaceSymbols { query, epoch });
             }
         }
     }
 }
 
-/// Refetch workspace-symbols using the modal's current query. Called by
+/// Refetch surface-symbols using the modal's current query. Called by
 /// the responder chain after the modal Pane signals
-/// `ModalOutcome::Refetch` (typing a char / backspace in workspace mode).
+/// `ModalOutcome::Refetch` (typing a char / backspace in surface mode).
 pub struct RefetchWorkspaceSymbols;
 impl<'a> Action<Context<'a>> for RefetchWorkspaceSymbols {
     fn invoke(&self, ctx: &mut Context<'a>) {
         use crate::modal::SymbolsKind;
         use devix_lsp::LspCommand;
         let Some(s) = downcast_modal_mut::<crate::modal::SymbolPickerPane>(ctx) else { return };
-        if s.state.kind != SymbolsKind::Workspace { return }
+        if s.state.kind != SymbolsKind::Surface { return }
         let epoch = s.state.epoch;
         let query = s.state.query.clone();
-        if let Some(wiring) = ctx.workspace.lsp_channel() {
+        if let Some(wiring) = ctx.surface.lsp_channel() {
             let _ = wiring.sink.send(LspCommand::WorkspaceSymbols { query, epoch });
         }
     }
@@ -680,7 +680,7 @@ impl<'a> Action<Context<'a>> for SymbolsAccept {
     fn invoke(&self, ctx: &mut Context<'a>) {
         let location = downcast_modal_mut::<crate::modal::SymbolPickerPane>(ctx)
             .and_then(|s| s.state.selected_symbol().map(|sym| sym.location.clone()));
-        ctx.workspace.modal = None;
+        ctx.surface.modal = None;
         if let Some(loc) = location {
             crate::dispatch::jump_to_location(ctx, loc);
         }
@@ -699,11 +699,11 @@ impl<'a> Action<Context<'a>> for ClickAt {
         // Prefer focusing-by-click first; the existing dispatch arm relies on
         // `click_to_char_idx` to also resolve which frame's body the click
         // landed in. Keep that here.
-        ctx.workspace.focus_at_screen(self.col, self.row);
+        ctx.surface.focus_at_screen(self.col, self.row);
         let Some(idx) = crate::dispatch::click_to_char_idx(ctx, self.col, self.row) else {
             return;
         };
-        if let Some(v) = ctx.workspace.active_view_mut() {
+        if let Some(v) = ctx.surface.active_view_mut() {
             v.move_to(idx, self.extend, false);
         }
     }
@@ -715,7 +715,7 @@ impl<'a> Action<Context<'a>> for DragAt {
         let Some(idx) = crate::dispatch::click_to_char_idx(ctx, self.col, self.row) else {
             return;
         };
-        if let Some(v) = ctx.workspace.active_view_mut() {
+        if let Some(v) = ctx.surface.active_view_mut() {
             v.move_to(idx, true, false);
         }
     }
@@ -737,7 +737,7 @@ impl<'a> Action<Context<'a>> for PaletteAccept {
         // immutable registry borrow before invoking — `invoke` takes
         // `&mut Context`, and the registry borrow goes through `ctx`.
         let chosen = ctx
-            .workspace
+            .surface
             .modal
             .as_ref()
             .and_then(|m| m.as_any())
@@ -747,7 +747,7 @@ impl<'a> Action<Context<'a>> for PaletteAccept {
                     .selected_command_id()
                     .and_then(|id| ctx.commands.resolve(id))
             });
-        ctx.workspace.modal = None;
+        ctx.surface.modal = None;
         if let Some(action) = chosen {
             action.invoke(ctx);
         }
@@ -766,9 +766,9 @@ impl<'a> Action<Context<'a>> for InsertChar {
             drop(saved);
             TriggerCompletion(CompletionTrigger::Char(self.0)).invoke(ctx);
         } else if let Some(state) = saved {
-            if let Some((_, vid, _)) = ctx.workspace.active_ids() {
-                ctx.workspace.views[vid].completion = Some(state);
-                crate::dispatch::refilter_completion(ctx.workspace, vid);
+            if let Some((_, vid, _)) = ctx.surface.active_ids() {
+                ctx.surface.views[vid].completion = Some(state);
+                crate::dispatch::refilter_completion(ctx.surface, vid);
             }
         }
     }
@@ -779,17 +779,17 @@ mod tests {
     use super::*;
     use crate::command::CommandRegistry;
     use crate::context::{StatusLine, Viewport};
-    use crate::workspace::Workspace;
+    use crate::surface::Surface;
 
     fn make_ctx<'a>(
-        ws: &'a mut Workspace,
+        ws: &'a mut Surface,
         clipboard: &'a mut Option<arboard::Clipboard>,
         status: &'a mut StatusLine,
         quit: &'a mut bool,
         commands: &'a CommandRegistry,
     ) -> Context<'a> {
         Context {
-            workspace: ws,
+            surface: ws,
             clipboard,
             status,
             quit,
@@ -800,7 +800,7 @@ mod tests {
 
     #[test]
     fn quit_sets_the_quit_flag_through_the_trait() {
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         let mut clipboard = None;
         let mut status = StatusLine::default();
         let mut quit = false;
@@ -817,7 +817,7 @@ mod tests {
 
     #[test]
     fn parameterized_commands_dispatch_through_trait_objects() {
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         let mut clipboard = None;
         let mut status = StatusLine::default();
         let mut quit = false;
@@ -838,7 +838,7 @@ mod tests {
 
     #[test]
     fn open_palette_populates_modal_slot() {
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         let mut clipboard = None;
         let mut status = StatusLine::default();
         let mut quit = false;
@@ -858,7 +858,7 @@ mod tests {
 
     #[test]
     fn close_modal_clears_any_modal() {
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         ws.modal = Some(Box::new(crate::modal::PalettePane::from_registry(
             &CommandRegistry::default(),
         )));

@@ -11,6 +11,6 @@ crossterm.workspace = true
 devix-text.workspace = true
 devix-core.workspace = true
 devix-syntax.workspace = true
-devix-workspace.workspace = true
+devix-surface.workspace = true
 devix-ui.workspace = true
 lsp-types.workspace = true

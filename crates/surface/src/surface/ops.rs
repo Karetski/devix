@@ -1,8 +1,8 @@
-//! Mutating operations on a Workspace: tabs, frames/splits, sidebars,
+//! Mutating operations on a Surface: tabs, frames/splits, sidebars,
 //! file-open routing. Kept separate from focus/hit-test so each concern stays
 //! reviewable on its own.
 //!
-//! Phase 3c write-side: layout mutations rewrite `Workspace.root`
+//! Phase 3c write-side: layout mutations rewrite `Surface.root`
 //! directly via `crate::tree::mutate` helpers — no `Node` enum, no
 //! `sync_root` rebuild. The structural Pane tree is the source of truth.
 
@@ -20,9 +20,9 @@ use crate::tree::{
 };
 use crate::view::{ScrollMode, View, ViewId};
 
-use super::{Workspace, canonicalize_or_keep};
+use super::{Surface, canonicalize_or_keep};
 
-impl Workspace {
+impl Surface {
     /// Open a fresh empty buffer in a new tab on the active frame.
     pub fn new_tab(&mut self) {
         let Some(fid) = self.active_frame() else { return };

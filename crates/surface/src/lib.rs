@@ -9,9 +9,9 @@ pub mod frame;
 pub mod keymap;
 pub mod layout;
 pub mod modal;
+pub mod surface;
 pub mod tree;
 pub mod view;
-pub mod workspace;
 
 pub use cmd::EditorCommand;
 pub use tree::{
@@ -22,7 +22,7 @@ pub use tree::{
 // directly for the trigger discriminator.
 pub use devix_lsp::CompletionTrigger;
 // Document model lives in `devix-document`; re-exported here so existing
-// callers (app, views) continue to import via `devix_workspace::*`.
+// callers (app, views) continue to import via `devix_surface::*`.
 pub use devix_document::{DocDiagnostic, DocId, Document};
 pub use builtins::{build_registry, register_builtins};
 pub use command::{Command, CommandId, CommandRegistry};
@@ -38,4 +38,4 @@ pub use modal::{
 pub use view::{
     CompletionState, CompletionStatus, HoverState, HoverStatus, ScrollMode, View, ViewId,
 };
-pub use workspace::{LeafRef, RenderCache, TabHit, TabStripCache, TabStripHit, Workspace};
+pub use surface::{LeafRef, RenderCache, Surface, TabHit, TabStripCache, TabStripHit};

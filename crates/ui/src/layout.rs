@@ -11,7 +11,7 @@
 //!   geometry plus edge clip information.
 //! * **Scroll math** ([`scroll_by`], [`set_scroll`], [`ensure_visible`]) —
 //!   free functions that mutate a raw `(u32, u32)` scroll offset against a
-//!   `(content, viewport)` pair. Workspace stores scroll as a plain tuple so
+//!   `(content, viewport)` pair. Surface stores scroll as a plain tuple so
 //!   the model crate has no view dependency; renderers and input handlers
 //!   reach for the math here.
 //!

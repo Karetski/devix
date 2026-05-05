@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind};
 use devix_core::HandleCtx;
-use devix_workspace::{
+use devix_surface::{
     Context, EditorCommand, ModalOutcome, PalettePane, SymbolPickerPane, TabStripHit, Viewport,
     chord_from_key, cmd,
 };
@@ -32,12 +32,12 @@ pub fn handle_key(ev: Event, code: KeyCode, mods: KeyModifiers, app: &mut App) {
     // come back as flags drained via `ModalOutcome`. Any keys it doesn't
     // claim are silently swallowed — modal mode is input-modal: letting
     // Ctrl+S still save with the palette open would be surprising.
-    if app.workspace.modal.is_some() {
+    if app.surface.modal.is_some() {
         dispatch_modal_event(app, &ev);
         return;
     }
 
-    let pending = app.workspace.active_doc().map(|d| d.disk_changed_pending).unwrap_or(false);
+    let pending = app.surface.active_doc().map(|d| d.disk_changed_pending).unwrap_or(false);
     if pending && mods.contains(KeyModifiers::CONTROL) {
         let lower = match code {
             KeyCode::Char(c) => Some(c.to_ascii_lowercase()),
@@ -81,7 +81,7 @@ pub fn handle_key(ev: Event, code: KeyCode, mods: KeyModifiers, app: &mut App) {
 }
 
 fn completion_open(app: &App) -> bool {
-    app.workspace
+    app.surface
         .active_view()
         .map(|v| v.completion.is_some())
         .unwrap_or(false)
@@ -95,7 +95,7 @@ fn completion_open(app: &App) -> bool {
 fn dispatch_modal_event(app: &mut App, ev: &Event) {
     {
         let modal = app
-            .workspace
+            .surface
             .modal
             .as_mut()
             .expect("dispatch_modal_event requires a modal");
@@ -126,7 +126,7 @@ fn dispatch_modal_event(app: &mut App, ev: &Event) {
 }
 
 fn modal_is<T: 'static>(app: &App) -> bool {
-    app.workspace
+    app.surface
         .modal
         .as_ref()
         .and_then(|m| m.as_any())
@@ -136,7 +136,7 @@ fn modal_is<T: 'static>(app: &App) -> bool {
 
 fn drain_modal_outcome(app: &mut App) -> ModalOutcome {
     let Some(any) = app
-        .workspace
+        .surface
         .modal
         .as_mut()
         .and_then(|m| m.as_any_mut())
@@ -156,7 +156,7 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
     // Modal swallows mouse so clicks never reach the editor or tab strip.
     // Left-click dismisses (matches most editors' click-out UX); modal-
     // specific mouse handling is a future polish item.
-    if app.workspace.modal.is_some() {
+    if app.surface.modal.is_some() {
         if matches!(me.kind, MouseEventKind::Down(MouseButton::Left)) {
             run_command(app, Arc::new(cmd::CloseModal));
         }
@@ -167,11 +167,11 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
         MouseEventKind::Down(MouseButton::Left) => {
             // Tab-strip clicks are not editor clicks: don't fall through to
             // ClickAt or we'd reposition the caret on a phantom row.
-            if let Some(hit) = app.workspace.tab_strip_hit(me.column, me.row) {
+            if let Some(hit) = app.surface.tab_strip_hit(me.column, me.row) {
                 handle_tab_strip_click(app, hit);
                 return;
             }
-            app.workspace.focus_at_screen(me.column, me.row);
+            app.surface.focus_at_screen(me.column, me.row);
             let extend = me.modifiers.contains(KeyModifiers::SHIFT);
             run_command(app, Arc::new(cmd::ClickAt {
                 col: me.column, row: me.row, extend,
@@ -187,10 +187,10 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
             // horizontally (vertical-wheel-as-horizontal-scroll, like browsers
             // do). When the strip already fits, fall through so the wheel
             // reaches the editor instead of being silently swallowed.
-            if let Some(fid) = app.workspace.frame_at_strip(me.column, me.row) {
-                if app.workspace.tab_strip_can_scroll(fid) {
+            if let Some(fid) = app.surface.frame_at_strip(me.column, me.row) {
+                if app.surface.tab_strip_can_scroll(fid) {
                     let delta: isize = if matches!(me.kind, MouseEventKind::ScrollUp) { -2 } else { 2 };
-                    app.workspace.scroll_tab_strip(fid, delta);
+                    app.surface.scroll_tab_strip(fid, delta);
                     app.dirty = true;
                     return;
                 }
@@ -201,10 +201,10 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
         MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
             // Real horizontal scroll (trackpad swipe). Only meaningful on the
             // tab strip; the editor is not horizontally scrollable today.
-            if let Some(fid) = app.workspace.frame_at_strip(me.column, me.row) {
-                if app.workspace.tab_strip_can_scroll(fid) {
+            if let Some(fid) = app.surface.frame_at_strip(me.column, me.row) {
+                if app.surface.tab_strip_can_scroll(fid) {
                     let delta: isize = if matches!(me.kind, MouseEventKind::ScrollLeft) { -2 } else { 2 };
-                    app.workspace.scroll_tab_strip(fid, delta);
+                    app.surface.scroll_tab_strip(fid, delta);
                     app.dirty = true;
                 }
             }
@@ -215,8 +215,8 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
 
 fn handle_tab_strip_click(app: &mut App, hit: TabStripHit) {
     let TabStripHit::Tab { frame, idx } = hit;
-    app.workspace.focus_frame(frame);
-    app.workspace.activate_tab(frame, idx);
+    app.surface.focus_frame(frame);
+    app.surface.activate_tab(frame, idx);
     app.dirty = true;
 }
 
@@ -225,12 +225,12 @@ pub fn run_command(app: &mut App, action: Arc<dyn EditorCommand>) {
     // time. Mouse handlers update focus before calling this, so reading from
     // the render cache here picks up the new frame's body rect.
     let rect = app
-        .workspace
+        .surface
         .active_frame()
-        .and_then(|fid| app.workspace.render_cache.frame_rects.get(&fid).copied())
+        .and_then(|fid| app.surface.render_cache.frame_rects.get(&fid).copied())
         .unwrap_or_default();
     let gutter_width = app
-        .workspace
+        .surface
         .active_doc()
         .map(|d| (d.buffer.line_count().to_string().len() as u16) + 2)
         .unwrap_or(0);
@@ -243,7 +243,7 @@ pub fn run_command(app: &mut App, action: Arc<dyn EditorCommand>) {
     };
 
     let mut cx = Context {
-        workspace: &mut app.workspace,
+        surface: &mut app.surface,
         clipboard: &mut app.clipboard,
         status: &mut app.status,
         quit: &mut app.quit,

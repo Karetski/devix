@@ -8,8 +8,8 @@ use crossterm::event;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use devix_core::Theme;
-use devix_workspace::{
-    CommandRegistry, Keymap, StatusLine, Workspace, build_registry, default_keymap,
+use devix_surface::{
+    CommandRegistry, Keymap, StatusLine, Surface, build_registry, default_keymap,
 };
 
 use crate::clipboard;
@@ -19,7 +19,7 @@ use crate::render::render;
 use crate::watcher::drain_disk_events;
 
 pub struct App {
-    pub workspace: Workspace,
+    pub surface: Surface,
     pub commands: CommandRegistry,
     pub keymap: Keymap,
     pub theme: Theme,
@@ -39,21 +39,21 @@ const POLL_TIMEOUT: Duration = Duration::from_millis(100);
 
 impl App {
     pub fn new(path: Option<PathBuf>) -> Result<Self> {
-        let mut workspace = Workspace::open(path)?;
+        let mut surface = Surface::open(path)?;
         let clipboard = clipboard::init();
 
         // LSP setup is best-effort: if it fails we still launch the editor
         // without server integration rather than refusing to open a file.
         let lsp = match setup_lsp() {
             Ok((sink, encoding, wiring)) => {
-                workspace.attach_lsp(sink, encoding);
+                surface.attach_lsp(sink, encoding);
                 Some(wiring)
             }
             Err(_) => None,
         };
 
         Ok(Self {
-            workspace,
+            surface,
             commands: build_registry(),
             keymap: default_keymap(),
             theme: Theme::default(),
@@ -93,7 +93,7 @@ pub fn run<B: Backend>(terminal: &mut Terminal<B>, path: Option<PathBuf>) -> Res
 
         if app.pending_scroll != 0 {
             let delta = std::mem::take(&mut app.pending_scroll);
-            run_command(&mut app, std::sync::Arc::new(devix_workspace::cmd::ScrollBy(delta)));
+            run_command(&mut app, std::sync::Arc::new(devix_surface::cmd::ScrollBy(delta)));
         }
     }
     Ok(())

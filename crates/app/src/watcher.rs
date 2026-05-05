@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use devix_workspace::cmd;
+use devix_surface::cmd;
 
 use crate::app::App;
 use crate::events::run_command;
@@ -13,8 +13,8 @@ pub fn drain_disk_events(app: &mut App) {
     // Phase 1: collect which DocIds saw events. Holding `&mut documents`
     // across the iteration would conflict with the active-doc reads/writes
     // below, so the drain is split into a read pass + a write pass.
-    let mut affected: Vec<devix_workspace::DocId> = Vec::new();
-    for (id, doc) in app.workspace.documents.iter() {
+    let mut affected: Vec<devix_surface::DocId> = Vec::new();
+    for (id, doc) in app.surface.documents.iter() {
         let Some(rx) = doc.disk_rx.as_ref() else { continue };
         let mut got = false;
         while rx.try_recv().is_ok() { got = true; }
@@ -26,13 +26,13 @@ pub fn drain_disk_events(app: &mut App) {
     // can produce a status-bar prompt for it. Background docs accumulate the
     // pending flag silently.
     let active_doc_id = app
-        .workspace
+        .surface
         .active_view()
         .map(|v| v.doc);
 
     let mut active_dirty = false;
     for did in &affected {
-        let doc = &mut app.workspace.documents[*did];
+        let doc = &mut app.surface.documents[*did];
         if doc.buffer.dirty() {
             doc.disk_changed_pending = true;
             if Some(*did) == active_doc_id { active_dirty = true; }
@@ -44,9 +44,9 @@ pub fn drain_disk_events(app: &mut App) {
             // Routes through Document so tree-sitter reparses and LSP gets a
             // full-text resync — bypassing this and touching the buffer
             // directly leaves stale highlight spans and a desynced server.
-            if app.workspace.documents[*did].reload_from_disk().is_ok() {
-                let max = app.workspace.documents[*did].buffer.len_chars();
-                for view in app.workspace.views.values_mut() {
+            if app.surface.documents[*did].reload_from_disk().is_ok() {
+                let max = app.surface.documents[*did].buffer.len_chars();
+                for view in app.surface.views.values_mut() {
                     if view.doc == *did {
                         view.selection.clamp(max);
                     }

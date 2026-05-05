@@ -22,7 +22,7 @@ use devix_text::{Buffer, Range, Selection};
 use devix_core::{Event, HandleCtx, Outcome, Pane, RenderCtx, Theme};
 use devix_syntax::HighlightSpan;
 use devix_ui::{CompletionLine, Popup, PopupAnchor, PopupContent, render_popup};
-use devix_workspace::{
+use devix_surface::{
     CompletionState, CompletionStatus, DocDiagnostic, HoverState, HoverStatus,
 };
 use lsp_types::DiagnosticSeverity;
@@ -130,7 +130,7 @@ pub fn render_editor(view: EditorView<'_>, area: Rect, frame: &mut Frame<'_>) ->
 /// `EditorView` carries, plus everything that used to be inlined in
 /// `app::render::paint_frame` (active-frame cursor placement, optional
 /// hover/completion children). Borrowed for now because the view/document
-/// state still lives in `Workspace`; Phase 3's layout-tree migration will
+/// state still lives in `Surface`; Phase 3's layout-tree migration will
 /// shrink that god-object and let `EditorPane` hold the state directly.
 ///
 /// Hover and completion render as child `Pane`s underneath. Their anchors
@@ -148,7 +148,7 @@ pub struct EditorPane<'a> {
     /// tree-sitter query that produced the spans.
     pub highlights: Vec<HighlightSpan>,
     pub diagnostics: &'a [DocDiagnostic],
-    /// True only for the workspace's focused frame. Drives the terminal
+    /// True only for the surface's focused frame. Drives the terminal
     /// cursor (`Frame::set_cursor_position`); inactive editor panes paint
     /// their text but do not steal the cursor.
     pub active: bool,

@@ -11,7 +11,7 @@ use devix_lsp::{
     Coordinator, CoordinatorConfig, LanguageConfig, LspCommand, LspEvent, SubprocessSpawner,
     char_in_rope, uri_to_path,
 };
-use devix_workspace::{CompletionStatus, HoverStatus, SymbolPickerPane, refilter_completion};
+use devix_surface::{CompletionStatus, HoverStatus, SymbolPickerPane, refilter_completion};
 use lsp_types::{CompletionItem, Location, PositionEncodingKind};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
@@ -31,7 +31,7 @@ pub struct LspWiring {
 }
 
 /// Build the runtime, spawn the coordinator, and return the change sink +
-/// event receiver wrapper. Caller threads `sink` into `Workspace::attach_lsp`.
+/// event receiver wrapper. Caller threads `sink` into `Surface::attach_lsp`.
 pub fn setup_lsp() -> Result<(mpsc::UnboundedSender<LspCommand>, PositionEncodingKind, LspWiring)> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -47,7 +47,7 @@ pub fn setup_lsp() -> Result<(mpsc::UnboundedSender<LspCommand>, PositionEncodin
     // Slice 1 advertises utf-8 in initialize and assumes the server agrees.
     // rust-analyzer accepts utf-8; if some other server we add later refuses,
     // its diagnostics positions will be slightly off (but not crashy) until
-    // we plumb per-client encoding back through the workspace.
+    // we plumb per-client encoding back through the surface.
     let encoding = PositionEncodingKind::UTF8;
     Ok((changes_tx, encoding, LspWiring { runtime, events_rx }))
 }
@@ -82,8 +82,8 @@ pub fn drain_lsp_events(app: &mut App) {
         match ev {
             LspEvent::Diagnostics(p) => {
                 let Ok(target_path) = uri_to_path(&p.uri) else { continue };
-                let mut found: Option<devix_workspace::DocId> = None;
-                for (id, doc) in app.workspace.documents.iter() {
+                let mut found: Option<devix_surface::DocId> = None;
+                for (id, doc) in app.surface.documents.iter() {
                     let Some(uri) = doc.lsp_uri() else { continue };
                     if let Ok(doc_path) = uri_to_path(uri) {
                         if same_path(&doc_path, &target_path) {
@@ -93,7 +93,7 @@ pub fn drain_lsp_events(app: &mut App) {
                     }
                 }
                 if let Some(id) = found {
-                    app.workspace.documents[id].set_diagnostics(p.diagnostics);
+                    app.surface.documents[id].set_diagnostics(p.diagnostics);
                 }
             }
             LspEvent::ShowMessage { level, text } => {
@@ -137,7 +137,7 @@ fn apply_symbols_response(
     epoch: u64,
     symbols: Vec<devix_lsp::FlatSymbol>,
 ) {
-    let Some(any) = app.workspace.modal.as_mut().and_then(|m| m.as_any_mut()) else { return };
+    let Some(any) = app.surface.modal.as_mut().and_then(|m| m.as_any_mut()) else { return };
     let Some(pane) = any.downcast_mut::<SymbolPickerPane>() else { return };
     if pane.state.epoch != epoch { return; }
     if let Some(uri) = response_uri {
@@ -151,8 +151,8 @@ fn apply_symbols_response(
 /// or dismissed) are dropped.
 fn apply_completion_response(app: &mut App, uri: &lsp_types::Uri, anchor_char: usize, items: Vec<CompletionItem>) {
     let Ok(target_path) = uri_to_path(uri) else { return };
-    let mut target_did: Option<devix_workspace::DocId> = None;
-    for (id, doc) in app.workspace.documents.iter() {
+    let mut target_did: Option<devix_surface::DocId> = None;
+    for (id, doc) in app.surface.documents.iter() {
         let Some(doc_uri) = doc.lsp_uri() else { continue };
         let Ok(doc_path) = uri_to_path(doc_uri) else { continue };
         if same_path(&doc_path, &target_path) {
@@ -161,8 +161,8 @@ fn apply_completion_response(app: &mut App, uri: &lsp_types::Uri, anchor_char: u
         }
     }
     let Some(did) = target_did else { return };
-    let mut hit_vid: Option<devix_workspace::ViewId> = None;
-    for (vid, view) in app.workspace.views.iter() {
+    let mut hit_vid: Option<devix_surface::ViewId> = None;
+    for (vid, view) in app.surface.views.iter() {
         if view.doc != did { continue; }
         let Some(state) = view.completion.as_ref() else { continue };
         if state.anchor_char == anchor_char {
@@ -172,11 +172,11 @@ fn apply_completion_response(app: &mut App, uri: &lsp_types::Uri, anchor_char: u
     }
     let Some(vid) = hit_vid else { return };
     {
-        let state = app.workspace.views[vid].completion.as_mut().unwrap();
+        let state = app.surface.views[vid].completion.as_mut().unwrap();
         state.set_items(items);
         state.status = CompletionStatus::Ready;
     }
-    refilter_completion(&mut app.workspace, vid);
+    refilter_completion(&mut app.surface, vid);
 }
 
 /// Match the response against an open view of `uri` whose `hover.anchor_char`
@@ -185,8 +185,8 @@ fn apply_completion_response(app: &mut App, uri: &lsp_types::Uri, anchor_char: u
 /// nothing to undo.
 fn apply_hover_response(app: &mut App, uri: &lsp_types::Uri, anchor_char: usize, contents: Vec<String>) {
     let Ok(target_path) = uri_to_path(uri) else { return };
-    let mut target_did: Option<devix_workspace::DocId> = None;
-    for (id, doc) in app.workspace.documents.iter() {
+    let mut target_did: Option<devix_surface::DocId> = None;
+    for (id, doc) in app.surface.documents.iter() {
         let Some(doc_uri) = doc.lsp_uri() else { continue };
         let Ok(doc_path) = uri_to_path(doc_uri) else { continue };
         if same_path(&doc_path, &target_path) {
@@ -195,7 +195,7 @@ fn apply_hover_response(app: &mut App, uri: &lsp_types::Uri, anchor_char: usize,
         }
     }
     let Some(did) = target_did else { return };
-    for view in app.workspace.views.values_mut() {
+    for view in app.surface.views.values_mut() {
         if view.doc != did {
             continue;
         }
@@ -240,9 +240,9 @@ fn apply_definition_response(
 
     // If `target_path` is open in any view of any frame, prefer that — it
     // avoids replacing the user's current tab.
-    let mut hit: Option<devix_workspace::ViewId> = None;
-    'outer: for (vid, view) in app.workspace.views.iter() {
-        let doc = &app.workspace.documents[view.doc];
+    let mut hit: Option<devix_surface::ViewId> = None;
+    'outer: for (vid, view) in app.surface.views.iter() {
+        let doc = &app.surface.documents[view.doc];
         let Some(doc_path) = doc.buffer.path() else { continue };
         if same_path(doc_path, &target_path) {
             hit = Some(vid);
@@ -250,31 +250,31 @@ fn apply_definition_response(
         }
     }
     if let Some(vid) = hit {
-        if let Some((fid, idx)) = frame_owning_view(&app.workspace, vid) {
-            app.workspace.focus_frame(fid);
+        if let Some((fid, idx)) = frame_owning_view(&app.surface, vid) {
+            app.surface.focus_frame(fid);
             // Best-effort: select the matching tab so the focused view is
             // the one we hit.
-            app.workspace.activate_tab(fid, idx);
+            app.surface.activate_tab(fid, idx);
         }
         position_cursor_at(app, vid, target_pos);
         return;
     }
 
-    if let Err(e) = app.workspace.open_path_replace_current(target_path) {
+    if let Err(e) = app.surface.open_path_replace_current(target_path) {
         app.status.set(format!("goto-def open failed: {e}"));
         return;
     }
-    if let Some((_, vid, _)) = app.workspace.active_ids() {
+    if let Some((_, vid, _)) = app.surface.active_ids() {
         position_cursor_at(app, vid, target_pos);
     }
 }
 
 fn frame_owning_view(
-    ws: &devix_workspace::Workspace,
-    vid: devix_workspace::ViewId,
-) -> Option<(devix_workspace::FrameId, usize)> {
-    for fid in devix_workspace::frame_ids(ws.root.as_ref()) {
-        if let Some(frame) = devix_workspace::find_frame(ws.root.as_ref(), fid) {
+    ws: &devix_surface::Surface,
+    vid: devix_surface::ViewId,
+) -> Option<(devix_surface::FrameId, usize)> {
+    for fid in devix_surface::frame_ids(ws.root.as_ref()) {
+        if let Some(frame) = devix_surface::find_frame(ws.root.as_ref(), fid) {
             if let Some(idx) = frame.tabs.iter().position(|&v| v == vid) {
                 return Some((fid, idx));
             }
@@ -283,22 +283,22 @@ fn frame_owning_view(
     None
 }
 
-fn position_cursor_at(app: &mut App, vid: devix_workspace::ViewId, pos: lsp_types::Position) {
-    let did = app.workspace.views[vid].doc;
-    let rope = app.workspace.documents[did].buffer.rope();
+fn position_cursor_at(app: &mut App, vid: devix_surface::ViewId, pos: lsp_types::Position) {
+    let did = app.surface.views[vid].doc;
+    let rope = app.surface.documents[did].buffer.rope();
     // Use the negotiated encoding to resolve the LSP position. Treating
     // `pos.character` as raw chars-in-line silently mispositions the cursor
     // on any line containing non-ASCII (utf-16 default counts code units;
     // utf-8 negotiation counts bytes).
     let encoding = app
-        .workspace
+        .surface
         .lsp_encoding()
         .unwrap_or(PositionEncodingKind::UTF16);
     let idx = char_in_rope(rope, pos.line, pos.character, &encoding)
         .unwrap_or_else(|| rope.len_chars());
-    let v = &mut app.workspace.views[vid];
+    let v = &mut app.surface.views[vid];
     v.move_to(idx, false, false);
-    v.scroll_mode = devix_workspace::ScrollMode::Anchored;
+    v.scroll_mode = devix_surface::ScrollMode::Anchored;
 }
 
 fn message_prefix(t: lsp_types::MessageType) -> &'static str {

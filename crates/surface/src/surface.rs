@@ -1,4 +1,4 @@
-//! Workspace = aggregate of all editor state owned across the layout tree:
+//! Surface = aggregate of all editor state owned across the layout tree:
 //! documents, views, frames, plus the layout root, focus path, and the
 //! per-frame render-rect cache.
 //!
@@ -9,7 +9,7 @@
 //! * [`hittest`] — screen-coord → leaf / tab-strip resolution and tab-strip
 //!   scroll forwarding.
 //!
-//! Submodules add `impl Workspace { ... }` blocks; this file owns the struct,
+//! Submodules add `impl Surface { ... }` blocks; this file owns the struct,
 //! its constructor, and the unconditional read-side accessors.
 
 use std::collections::HashMap;
@@ -43,7 +43,7 @@ pub enum LeafRef {
 
 /// One clickable tab region produced by the tab-strip render. Stored in the
 /// render cache and consumed by hit-testing. Defined here (rather than in
-/// `devix-ui`) so the workspace model has no view-layer dependency.
+/// `devix-ui`) so the surface model has no view-layer dependency.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct TabHit {
     pub idx: usize,
@@ -73,7 +73,7 @@ pub enum TabStripHit {
     Tab { frame: FrameId, idx: usize },
 }
 
-pub struct Workspace {
+pub struct Surface {
     pub documents: SlotMap<DocId, Document>,
     pub views: SlotMap<ViewId, View>,
     /// Structural Pane tree — the layout source of truth, and **also**
@@ -97,7 +97,7 @@ pub struct Workspace {
     /// LSP coordinator sink + the encoding it negotiated. Set via
     /// `attach_lsp` after the App spawns the coordinator. New documents
     /// created with a recognized language auto-attach; on `None` the
-    /// workspace runs without LSP integration.
+    /// surface runs without LSP integration.
     pub(crate) lsp: Option<LspChannel>,
 }
 
@@ -107,8 +107,8 @@ pub(crate) struct LspChannel {
     pub encoding: PositionEncodingKind,
 }
 
-impl Workspace {
-    /// Create a workspace with a single frame, single tab, single view.
+impl Surface {
+    /// Create a surface with a single frame, single tab, single view.
     /// `path` is opened if Some; otherwise an empty scratch buffer is used.
     pub fn open(path: Option<PathBuf>) -> Result<Self> {
         let mut documents: SlotMap<DocId, Document> = SlotMap::with_key();
@@ -141,7 +141,7 @@ impl Workspace {
         })
     }
 
-    /// Wire this workspace to an LSP coordinator. Stores the sink and
+    /// Wire this surface to an LSP coordinator. Stores the sink and
     /// triggers `LspCommand::Open` for every existing document with a known
     /// language. Subsequent `open_path_*` calls auto-attach.
     ///
@@ -163,8 +163,8 @@ impl Workspace {
         self.lsp.clone()
     }
 
-    /// Negotiated LSP position encoding, when the workspace is attached.
-    /// Exposed so callers outside the workspace crate (the App-side event
+    /// Negotiated LSP position encoding, when the surface is attached.
+    /// Exposed so callers outside the surface crate (the App-side event
     /// drain) can resolve LSP positions against ropes without having to
     /// pull the private `LspChannel` shape.
     pub fn lsp_encoding(&self) -> Option<PositionEncodingKind> {
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn fresh_workspace_has_one_frame_one_view() {
-        let ws = Workspace::open(None).unwrap();
+        let ws = Surface::open(None).unwrap();
         assert_eq!(frame_ids(ws.root.as_ref()).len(), 1);
         assert_eq!(ws.views.len(), 1);
         assert_eq!(ws.documents.len(), 1);
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn new_tab_then_close_returns_to_previous() {
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         let original_view = ws.active_view().unwrap().doc;
 
         ws.new_tab();
@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn close_last_tab_leaves_a_scratch_tab() {
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         assert!(ws.close_active_tab(false));
         let fid = ws.active_frame().unwrap();
         let frame = find_frame(ws.root.as_ref(), fid).unwrap();
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn dirty_close_refused_force_close_succeeds() {
         use devix_text::{Selection, replace_selection_tx};
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         let did = ws.active_view().unwrap().doc;
         let tx = replace_selection_tx(&ws.documents[did].buffer, &Selection::point(0), "hi");
         ws.documents[did].buffer.apply(tx);
@@ -272,7 +272,7 @@ mod tests {
         let p = dir.join("a.txt");
         std::fs::write(&p, "abc").unwrap();
 
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         let v1 = ws.open_path_replace_current(p.clone()).unwrap();
         let did1 = ws.views[v1].doc;
         ws.new_tab();
@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn split_creates_a_second_frame_and_focuses_it() {
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         let original_fid = ws.active_frame().unwrap();
         ws.split_active(crate::layout::Axis::Horizontal);
         assert_eq!(frame_ids(ws.root.as_ref()).len(), 2);
@@ -302,7 +302,7 @@ mod tests {
     fn closing_one_split_child_collapses_back_to_single_frame() {
         use crate::layout::Axis;
         use crate::tree::LayoutFrame;
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         ws.split_active(Axis::Horizontal);
         assert_eq!(frame_ids(ws.root.as_ref()).len(), 2);
         ws.close_active_frame();
@@ -314,7 +314,7 @@ mod tests {
     #[test]
     fn toggle_left_sidebar_adds_then_removes_it() {
         use crate::tree::LayoutSplit;
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         ws.toggle_sidebar(SidebarSlot::Left);
         let split = ws
             .root
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn focus_dir_right_after_split_returns_to_original() {
         use crate::layout::{Axis, Direction};
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         let original = ws.active_frame().unwrap();
         ws.split_active(Axis::Horizontal);
         let new_fid = ws.active_frame().unwrap();
@@ -350,7 +350,7 @@ mod tests {
     fn focus_dir_left_at_edge_with_sidebar_enters_sidebar() {
         use crate::layout::Direction;
         use crate::tree::{LeafId, pane_at_indices, pane_leaf_id};
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         ws.toggle_sidebar(SidebarSlot::Left);
         ws.focus_dir(Direction::Left);
         let pane = pane_at_indices(ws.root.as_ref(), &ws.focus).expect("focus resolves");
@@ -364,7 +364,7 @@ mod tests {
     fn scroll_clamps_at_zero_and_at_end() {
         use devix_text::{Selection, replace_selection_tx};
 
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         let did = ws.active_view().unwrap().doc;
         let txt = "x\n".repeat(100);
         let tx = replace_selection_tx(&ws.documents[did].buffer, &Selection::point(0), &txt);
@@ -385,7 +385,7 @@ mod tests {
     fn closing_focused_sidebar_lands_focus_on_a_frame() {
         use crate::layout::Direction;
         use crate::tree::{LeafId, pane_at_indices, pane_leaf_id};
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         ws.toggle_sidebar(SidebarSlot::Left);
         ws.focus_dir(Direction::Left);
         let pane = pane_at_indices(ws.root.as_ref(), &ws.focus).expect("focus resolves");
@@ -405,7 +405,7 @@ mod tests {
     fn closing_one_of_three_split_children_keeps_two_remaining() {
         use crate::layout::Axis;
         use crate::tree::{LayoutSplit, LeafId, pane_at_indices, pane_leaf_id};
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         ws.split_active(Axis::Horizontal);
         ws.split_active(Axis::Horizontal);
         assert_eq!(frame_ids(ws.root.as_ref()).len(), 3);
@@ -429,7 +429,7 @@ mod tests {
         let p = dir.join("a.txt");
         std::fs::write(&p, "abc").unwrap();
 
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         let v1 = ws.open_path_replace_current(p.clone()).unwrap();
         let did1 = ws.views[v1].doc;
 
@@ -443,7 +443,7 @@ mod tests {
 
     #[test]
     fn tab_strip_hit_returns_tab_under_cursor() {
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         ws.new_tab();
         let fid = ws.active_frame().unwrap();
         let strip = TabStripCache {
@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn activate_tab_focuses_clicked_index() {
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         ws.new_tab();
         ws.new_tab();
         let fid = ws.active_frame().unwrap();
@@ -482,7 +482,7 @@ mod tests {
 
     #[test]
     fn scroll_tab_strip_clamps_to_content_minus_strip_width() {
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         let fid = ws.active_frame().unwrap();
         ws.render_cache.tab_strips.insert(fid, TabStripCache {
             strip_rect: Rect { x: 0, y: 0, width: 20, height: 1 },
@@ -497,7 +497,7 @@ mod tests {
 
     #[test]
     fn scroll_tab_strip_noop_when_content_fits() {
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         let fid = ws.active_frame().unwrap();
         ws.render_cache.tab_strips.insert(fid, TabStripCache {
             strip_rect: Rect { x: 0, y: 0, width: 20, height: 1 },
@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn frame_at_strip_resolves_full_strip_row() {
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         let fid = ws.active_frame().unwrap();
         ws.render_cache.tab_strips.insert(fid, TabStripCache {
             strip_rect: Rect { x: 0, y: 4, width: 30, height: 1 },
@@ -523,7 +523,7 @@ mod tests {
 
     #[test]
     fn next_tab_requests_recenter_but_click_does_not() {
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         ws.new_tab();
         let fid = ws.active_frame().unwrap();
         find_frame_mut(&mut ws.root, fid).unwrap().recenter_active = false;
@@ -539,7 +539,7 @@ mod tests {
 
     #[test]
     fn activate_tab_does_not_change_tab_scroll() {
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         ws.new_tab();
         ws.new_tab();
         let fid = ws.active_frame().unwrap();
@@ -552,7 +552,7 @@ mod tests {
     #[test]
     fn focus_frame_jumps_focus_across_a_split() {
         use crate::layout::Axis;
-        let mut ws = Workspace::open(None).unwrap();
+        let mut ws = Surface::open(None).unwrap();
         let original = ws.active_frame().unwrap();
         ws.split_active(Axis::Horizontal);
         let new_fid = ws.active_frame().unwrap();

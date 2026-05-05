@@ -1,5 +1,5 @@
 [package]
-name = "devix-workspace"
+name = "devix-surface"
 edition.workspace = true
 version.workspace = true
 rust-version.workspace = true

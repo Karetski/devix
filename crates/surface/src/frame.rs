@@ -2,7 +2,7 @@
 //!
 //! Phase 3c follow-up: frames now own their state directly on
 //! `LayoutFrame` (in `crate::tree`); there's no `Frame` struct or
-//! `Workspace.frames` slotmap any more. `FrameId` survives because the
+//! `Surface.frames` slotmap any more. `FrameId` survives because the
 //! render cache (`render_cache.frame_rects`, `tab_strips`) keys against
 //! it across renders — the layout tree's pointer identity is too
 //! fragile for that role (refs move on tree mutation).

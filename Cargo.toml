@@ -32,7 +32,7 @@ devix-ui = { path = "crates/ui" }
 devix-views = { path = "crates/views" }
 devix-syntax = { path = "crates/syntax" }
 devix-lsp = { path = "crates/lsp" }
-devix-workspace = { path = "crates/workspace" }
+devix-surface = { path = "crates/surface" }
 
 [profile.release]
 lto = "thin"

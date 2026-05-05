@@ -1,6 +1,6 @@
 //! Modal panes and their owned state.
 //!
-//! The architecture target: a head-of-tree slot on `Workspace` holds
+//! The architecture target: a head-of-tree slot on `Surface` holds
 //! `Option<Box<dyn Pane>>`. When set, the modal sits at the head of the
 //! responder chain — the dispatcher gives it first crack at every input
 //! event before the focused-leaf path. There is no closed `Overlay` enum
@@ -12,7 +12,7 @@
 //! LSP-refetch happen through small "outcome" flags that the host drains
 //! after `handle` returns. This keeps the framework `&dyn Pane`-generic
 //! while still letting modal panes signal side effects that need
-//! workspace-wide context (the active document, the LSP channel, the
+//! surface-wide context (the active document, the LSP channel, the
 //! command registry).
 
 use std::any::Any;
@@ -38,7 +38,7 @@ use crate::keymap::{Chord, Keymap};
 /// invoke another command, request an LSP refetch).
 ///
 /// `Pane::handle` is the input gate, but `Pane` is in `core` and cannot
-/// see the workspace's `Context` — so close / accept / refetch are
+/// see the surface's `Context` — so close / accept / refetch are
 /// expressed as flags here, drained by the host with a single
 /// `as_any_mut().downcast_mut()` per-modal-type. Plugins contributing
 /// new modals expose their own `drain_outcome` and the host's drain
@@ -48,7 +48,7 @@ pub enum ModalOutcome {
     None,
     Dismiss,
     Accept,
-    /// Workspace symbols re-queries the LSP on every keystroke; the
+    /// Surface symbols re-queries the LSP on every keystroke; the
     /// modal Pane stores the new query locally, and the host fires the
     /// `LspCommand::WorkspaceSymbols` request.
     Refetch,
@@ -61,7 +61,7 @@ pub enum ModalOutcome {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SymbolsKind {
     Document,
-    Workspace,
+    Surface,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -73,16 +73,16 @@ pub enum SymbolsStatus {
 }
 
 /// Symbol picker overlay state. Powers both `textDocument/documentSymbol`
-/// (Ctrl+O — local outline) and `workspace/symbol` (Ctrl+Shift+O —
+/// (Ctrl+O — local outline) and `surface/symbol` (Ctrl+Shift+O —
 /// project-wide search). Document mode populates `items` once and
-/// client-filters; workspace mode re-fetches on every query change and
+/// client-filters; surface mode re-fetches on every query change and
 /// overwrites `items` from the response.
 pub struct SymbolsState {
     pub kind: SymbolsKind,
     /// Bumped on every query change so stale responses can be discarded
     /// when the user has typed past the issuing query.
     pub epoch: u64,
-    /// Originating doc URI (for `Document` mode); `None` for workspace.
+    /// Originating doc URI (for `Document` mode); `None` for surface.
     pub origin_uri: Option<Uri>,
     pub query: String,
     pub items: Vec<FlatSymbol>,
@@ -274,7 +274,7 @@ impl PaletteState {
 /// Command palette as a modal Pane. Owns its state outright; the Theme,
 /// CommandRegistry, and Keymap are passed in through render context
 /// (host-resolved so the palette doesn't need to know how those are
-/// stored on the workspace).
+/// stored on the surface).
 pub struct PalettePane {
     pub state: PaletteState,
     outcome: ModalOutcome,
@@ -334,9 +334,9 @@ impl PalettePane {
 impl Pane for PalettePane {
     /// Stub; the host renders the palette via [`render_palette`] after
     /// downcasting through [`Pane::as_any`]. Drawing the registered
-    /// commands needs the workspace's `CommandRegistry` and `Keymap`,
+    /// commands needs the surface's `CommandRegistry` and `Keymap`,
     /// which `core::RenderCtx` deliberately doesn't know about — keeping
-    /// `core` workspace-agnostic. Plugins contributing self-contained
+    /// `core` surface-agnostic. Plugins contributing self-contained
     /// modals override this to render themselves.
     fn render(&self, _area: Rect, _ctx: &mut RenderCtx<'_, '_>) {}
 
@@ -410,7 +410,7 @@ impl SymbolPickerPane {
                 let mut q = self.state.query.clone();
                 q.pop();
                 self.state.set_query(q);
-                if self.state.kind == SymbolsKind::Workspace {
+                if self.state.kind == SymbolsKind::Surface {
                     self.outcome = ModalOutcome::Refetch;
                 }
                 Outcome::Consumed
@@ -421,7 +421,7 @@ impl SymbolPickerPane {
                 let mut q = self.state.query.clone();
                 q.push(c);
                 self.state.set_query(q);
-                if self.state.kind == SymbolsKind::Workspace {
+                if self.state.kind == SymbolsKind::Surface {
                     self.outcome = ModalOutcome::Refetch;
                 }
                 Outcome::Consumed
@@ -434,7 +434,7 @@ impl SymbolPickerPane {
 impl Pane for SymbolPickerPane {
     /// Stub; see [`PalettePane::render`] for the rationale. Host dispatch
     /// in `app::render` downcasts and calls [`render_symbols`] with the
-    /// workspace's [`Theme`].
+    /// surface's [`Theme`].
     fn render(&self, _area: Rect, _ctx: &mut RenderCtx<'_, '_>) {}
 
     fn handle(&mut self, ev: &Event, _area: Rect, _ctx: &mut HandleCtx<'_>) -> Outcome {
@@ -599,7 +599,7 @@ pub fn render_symbols(state: &SymbolsState, theme: &Theme, area: Rect, frame: &m
 
     let title = match state.kind {
         SymbolsKind::Document => " Document Symbols ",
-        SymbolsKind::Workspace => " Workspace Symbols ",
+        SymbolsKind::Surface => " Surface Symbols ",
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -841,7 +841,7 @@ mod tests {
 
     #[test]
     fn symbols_state_set_query_bumps_epoch() {
-        let mut s = SymbolsState::new(SymbolsKind::Workspace, None);
+        let mut s = SymbolsState::new(SymbolsKind::Surface, None);
         let initial_epoch = s.epoch;
         s.set_query("foo".into());
         assert!(s.epoch > initial_epoch);
@@ -903,7 +903,7 @@ mod tests {
 
     #[test]
     fn symbol_picker_workspace_typing_signals_refetch() {
-        let mut sp = SymbolPickerPane::new(SymbolsKind::Workspace, None);
+        let mut sp = SymbolPickerPane::new(SymbolsKind::Surface, None);
         sp.handle_key(KeyCode::Char('f'), KeyModifiers::NONE);
         assert_eq!(sp.drain_outcome(), ModalOutcome::Refetch);
     }

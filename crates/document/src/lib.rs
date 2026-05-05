@@ -1,5 +1,5 @@
 //! Document = Buffer + filesystem-watcher attachment + tree-sitter highlighter.
-//! Owned by Workspace.
+//! Owned by Surface.
 //!
 //! All buffer mutations should go through `Document::apply_tx` /
 //! `Document::undo` / `Document::redo` / `Document::reload_from_disk` rather
@@ -257,7 +257,7 @@ impl Document {
     }
 
     /// Send `LspCommand::Close` and clear the sink. Called from
-    /// `Workspace::try_remove_orphan_doc` before the Document is dropped.
+    /// `Surface::try_remove_orphan_doc` before the Document is dropped.
     pub fn detach_lsp(&mut self) {
         let Some(sink) = self.lsp_sink.take() else { return };
         let Some(uri) = self.lsp_uri.take() else { return };

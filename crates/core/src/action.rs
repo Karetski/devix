@@ -1,7 +1,7 @@
 //! `Action` — invocable behavior, first-class.
 //!
 //! Today's editor command set lives in a 50-variant enum the dispatcher
-//! match-arms over (`devix_workspace::Action`). This trait is the
+//! match-arms over (`devix_surface::Action`). This trait is the
 //! Lattner-shaped replacement: each command becomes a struct that
 //! implements `Action`. Keymaps map chords to `Box<dyn Action<Ctx>>`,
 //! the palette stores them too, and plugins contribute new commands by
@@ -14,7 +14,7 @@
 //! `impl Action<HostCtx<'_>> for MyCmd` and the storage works.
 //!
 //! `core` does not define a concrete `Ctx` — it would either be empty
-//! (useless) or workspace-typed (closed). Keeping `Ctx` generic is what
+//! (useless) or surface-typed (closed). Keeping `Ctx` generic is what
 //! lets `core` stay the stable plugin surface.
 
 /// One editor command. Self-describing, value-typed, plugin-extendable.

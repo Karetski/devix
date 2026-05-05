@@ -3,7 +3,7 @@
 use ratatui::layout::Rect;
 
 use crate::command::CommandRegistry;
-use crate::workspace::Workspace;
+use crate::surface::Surface;
 
 #[derive(Default)]
 pub struct StatusLine(Option<String>);
@@ -36,7 +36,7 @@ impl From<(Rect, u16)> for Viewport {
 }
 
 pub struct Context<'a> {
-    pub workspace: &'a mut Workspace,
+    pub surface: &'a mut Surface,
     pub clipboard: &'a mut Option<arboard::Clipboard>,
     pub status: &'a mut StatusLine,
     pub quit: &'a mut bool,

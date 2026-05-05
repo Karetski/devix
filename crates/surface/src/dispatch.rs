@@ -16,7 +16,7 @@ use crate::context::{Context, Viewport};
 use crate::view::{CompletionState, ScrollMode, View, ViewId};
 #[cfg(test)]
 use crate::view::CompletionStatus;
-use crate::workspace::{LspChannel, Workspace};
+use crate::surface::{LspChannel, Surface};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -37,7 +37,7 @@ pub(crate) struct LspPositionRequest {
     pub(crate) head: usize,
 }
 
-pub(crate) fn lsp_position_request(ws: &Workspace) -> Option<LspPositionRequest> {
+pub(crate) fn lsp_position_request(ws: &Surface) -> Option<LspPositionRequest> {
     let (_, vid, did) = ws.active_ids()?;
     let wiring = ws.lsp_channel()?;
     let doc = &ws.documents[did];
@@ -55,38 +55,38 @@ pub(crate) fn move_to_with(
     extend: bool,
     motion: impl FnOnce(&Buffer, usize) -> usize,
 ) {
-    let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-    let head = cx.workspace.views[vid].primary().head;
-    let to = motion(&cx.workspace.documents[did].buffer, head);
-    cx.workspace.views[vid].move_to(to, extend, false);
+    let Some((_, vid, did)) = cx.surface.active_ids() else { return };
+    let head = cx.surface.views[vid].primary().head;
+    let to = motion(&cx.surface.documents[did].buffer, head);
+    cx.surface.views[vid].move_to(to, extend, false);
 }
 
 pub(crate) fn move_vertical(cx: &mut Context<'_>, down: bool, extend: bool) {
-    let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-    let head = cx.workspace.views[vid].primary().head;
-    let col = cx.workspace.views[vid]
+    let Some((_, vid, did)) = cx.surface.active_ids() else { return };
+    let head = cx.surface.views[vid].primary().head;
+    let col = cx.surface.views[vid]
         .target_col
-        .unwrap_or_else(|| cx.workspace.documents[did].buffer.col_of_char(head));
+        .unwrap_or_else(|| cx.surface.documents[did].buffer.col_of_char(head));
     let new = if down {
-        cx.workspace.documents[did].buffer.move_down(head, Some(col))
+        cx.surface.documents[did].buffer.move_down(head, Some(col))
     } else {
-        cx.workspace.documents[did].buffer.move_up(head, Some(col))
+        cx.surface.documents[did].buffer.move_up(head, Some(col))
     };
-    let v = &mut cx.workspace.views[vid];
+    let v = &mut cx.surface.views[vid];
     v.target_col = Some(col);
     v.move_to(new, extend, true);
 }
 
 pub(crate) fn replace_selection(cx: &mut Context<'_>, text: &str) {
-    let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
+    let Some((_, vid, did)) = cx.surface.active_ids() else { return };
     let tx = replace_selection_tx(
-        &cx.workspace.documents[did].buffer,
-        &cx.workspace.views[vid].selection,
+        &cx.surface.documents[did].buffer,
+        &cx.surface.views[vid].selection,
         text,
     );
     let after = tx.selection_after.clone();
-    cx.workspace.documents[did].apply_tx(tx);
-    let v = &mut cx.workspace.views[vid];
+    cx.surface.documents[did].apply_tx(tx);
+    let v = &mut cx.surface.views[vid];
     v.selection = after;
     reset_motion_state(v);
     cx.status.clear();
@@ -96,23 +96,23 @@ pub(crate) fn delete_primary_or(
     cx: &mut Context<'_>,
     builder: impl FnOnce(&Buffer, usize) -> Option<(usize, usize)>,
 ) {
-    let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-    let prim = cx.workspace.views[vid].primary();
+    let Some((_, vid, did)) = cx.surface.active_ids() else { return };
+    let prim = cx.surface.views[vid].primary();
     let (start, end) = if !prim.is_empty() {
         (prim.start(), prim.end())
     } else {
-        let Some(span) = builder(&cx.workspace.documents[did].buffer, prim.head) else { return };
+        let Some(span) = builder(&cx.surface.documents[did].buffer, prim.head) else { return };
         if span.0 == span.1 { return; }
         span
     };
     let tx = delete_range_tx(
-        &cx.workspace.documents[did].buffer,
-        &cx.workspace.views[vid].selection,
+        &cx.surface.documents[did].buffer,
+        &cx.surface.views[vid].selection,
         start, end,
     );
     let after = tx.selection_after.clone();
-    cx.workspace.documents[did].apply_tx(tx);
-    let v = &mut cx.workspace.views[vid];
+    cx.surface.documents[did].apply_tx(tx);
+    let v = &mut cx.surface.views[vid];
     v.selection = after;
     reset_motion_state(v);
     cx.status.clear();
@@ -141,16 +141,16 @@ fn current_line_span(buf: &Buffer, head: usize) -> (usize, usize) {
 }
 
 pub(crate) fn do_copy(cx: &mut Context<'_>) {
-    let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-    let prim = cx.workspace.views[vid].primary();
+    let Some((_, vid, did)) = cx.surface.active_ids() else { return };
+    let prim = cx.surface.views[vid].primary();
     let (start, end, msg) = if prim.is_empty() {
-        let (s, e) = current_line_span(&cx.workspace.documents[did].buffer, prim.head);
+        let (s, e) = current_line_span(&cx.surface.documents[did].buffer, prim.head);
         (s, e, "copied line")
     } else {
         (prim.start(), prim.end(), "copied")
     };
     if start == end { return; }
-    let text = cx.workspace.documents[did].buffer.slice_to_string(start, end);
+    let text = cx.surface.documents[did].buffer.slice_to_string(start, end);
     let Some(cb) = cx.clipboard.as_mut() else {
         cx.status.set("no system clipboard"); return;
     };
@@ -159,28 +159,28 @@ pub(crate) fn do_copy(cx: &mut Context<'_>) {
 }
 
 pub(crate) fn do_cut(cx: &mut Context<'_>) {
-    let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-    let prim = cx.workspace.views[vid].primary();
+    let Some((_, vid, did)) = cx.surface.active_ids() else { return };
+    let prim = cx.surface.views[vid].primary();
     let (start, end, line_cut) = if prim.is_empty() {
-        let (s, e) = current_line_span(&cx.workspace.documents[did].buffer, prim.head);
+        let (s, e) = current_line_span(&cx.surface.documents[did].buffer, prim.head);
         (s, e, true)
     } else {
         (prim.start(), prim.end(), false)
     };
     if start == end { return; }
-    let text = cx.workspace.documents[did].buffer.slice_to_string(start, end);
+    let text = cx.surface.documents[did].buffer.slice_to_string(start, end);
     let Some(cb) = cx.clipboard.as_mut() else {
         cx.status.set("no system clipboard"); return;
     };
     if cb.set_text(text).is_err() { cx.status.set("clipboard error"); return; }
     let tx = delete_range_tx(
-        &cx.workspace.documents[did].buffer,
-        &cx.workspace.views[vid].selection,
+        &cx.surface.documents[did].buffer,
+        &cx.surface.views[vid].selection,
         start, end,
     );
     let after = tx.selection_after.clone();
-    cx.workspace.documents[did].apply_tx(tx);
-    cx.workspace.views[vid].adopt_selection(after);
+    cx.surface.documents[did].apply_tx(tx);
+    cx.surface.views[vid].adopt_selection(after);
     cx.status.set(if line_cut { "cut line" } else { "cut" });
 }
 
@@ -213,20 +213,20 @@ pub(crate) fn ident_start_at(buf: &Buffer, head: usize) -> usize {
 }
 
 pub(crate) fn take_completion(cx: &mut Context<'_>) -> Option<CompletionState> {
-    let (_, vid, _) = cx.workspace.active_ids()?;
-    cx.workspace.views[vid].completion.take()
+    let (_, vid, _) = cx.surface.active_ids()?;
+    cx.surface.views[vid].completion.take()
 }
 
 pub(crate) fn dismiss_completion(cx: &mut Context<'_>) {
-    let Some((_, vid, _)) = cx.workspace.active_ids() else { return };
-    cx.workspace.views[vid].completion = None;
+    let Some((_, vid, _)) = cx.surface.active_ids() else { return };
+    cx.surface.views[vid].completion = None;
 }
 
 /// Re-rank `state.items` against the prefix `query_start..cursor` from the
 /// rope. If the cursor moved left of `query_start` (user backspaced past
 /// the query origin), drop the popup. Empty-prefix shows everything in
 /// server-given order.
-pub fn refilter_completion(ws: &mut Workspace, vid: ViewId) {
+pub fn refilter_completion(ws: &mut Surface, vid: ViewId) {
     let head = ws.views[vid].primary().head;
     let did = ws.views[vid].doc;
     let Some(state) = ws.views[vid].completion.as_mut() else { return };
@@ -281,14 +281,14 @@ pub fn refilter_completion(ws: &mut Workspace, vid: ViewId) {
 /// insertions, qualified paths, etc.); otherwise replace the identifier
 /// span around the cursor with `insert_text` or `label`.
 pub(crate) fn apply_completion_accept(cx: &mut Context<'_>) {
-    let Some((_, vid, did)) = cx.workspace.active_ids() else { return };
-    let Some(state) = cx.workspace.views[vid].completion.take() else { return };
+    let Some((_, vid, did)) = cx.surface.active_ids() else { return };
+    let Some(state) = cx.surface.views[vid].completion.take() else { return };
     let Some(&idx) = state.filtered.get(state.selected) else { return };
     let Some(item) = state.items.get(idx).cloned() else { return };
 
-    let head = cx.workspace.views[vid].primary().head;
+    let head = cx.surface.views[vid].primary().head;
     let encoding = cx
-        .workspace
+        .surface
         .lsp_channel()
         .map(|w| w.encoding)
         .unwrap_or(lsp_types::PositionEncodingKind::UTF16);
@@ -298,7 +298,7 @@ pub(crate) fn apply_completion_accept(cx: &mut Context<'_>) {
             CompletionTextEdit::Edit(e) => (e.range, e.new_text.clone()),
             CompletionTextEdit::InsertAndReplace(ir) => (ir.replace, ir.new_text.clone()),
         };
-        let rope = cx.workspace.documents[did].buffer.rope();
+        let rope = cx.surface.documents[did].buffer.rope();
         let len = rope.len_chars();
         let s = char_in_rope(rope, range.start.line, range.start.character, &encoding).unwrap_or(len);
         let e = char_in_rope(rope, range.end.line, range.end.character, &encoding).unwrap_or(len);
@@ -310,7 +310,7 @@ pub(crate) fn apply_completion_accept(cx: &mut Context<'_>) {
         (state.query_start, head, txt)
     };
 
-    let buf = &cx.workspace.documents[did].buffer;
+    let buf = &cx.surface.documents[did].buffer;
     let len = buf.len_chars();
     let start = start.min(len);
     let end = end.min(len);
@@ -325,12 +325,12 @@ pub(crate) fn apply_completion_accept(cx: &mut Context<'_>) {
             remove_len: end - start,
             insert: new_text,
         }],
-        selection_before: cx.workspace.views[vid].selection.clone(),
+        selection_before: cx.surface.views[vid].selection.clone(),
         selection_after: Selection::single(Range::point(start + insert_chars)),
     };
     let after = tx.selection_after.clone();
-    cx.workspace.documents[did].apply_tx(tx);
-    cx.workspace.views[vid].adopt_selection(after);
+    cx.surface.documents[did].apply_tx(tx);
+    cx.surface.views[vid].adopt_selection(after);
     cx.status.clear();
 }
 
@@ -343,15 +343,15 @@ pub(crate) fn jump_to_location(cx: &mut Context<'_>, loc: lsp_types::Location) {
     use devix_lsp::uri_to_path;
     let Ok(target_path) = uri_to_path(&loc.uri) else { return };
     let encoding = cx
-        .workspace
+        .surface
         .lsp_channel()
         .map(|w| w.encoding)
         .unwrap_or(lsp_types::PositionEncodingKind::UTF16);
 
     // Prefer an already-open view of the target file.
     let mut hit: Option<crate::view::ViewId> = None;
-    for (vid, view) in cx.workspace.views.iter() {
-        let doc = &cx.workspace.documents[view.doc];
+    for (vid, view) in cx.surface.views.iter() {
+        let doc = &cx.surface.documents[view.doc];
         let Some(p) = doc.buffer.path() else { continue };
         if p == target_path
             || std::fs::canonicalize(p).ok() == std::fs::canonicalize(&target_path).ok()
@@ -363,8 +363,8 @@ pub(crate) fn jump_to_location(cx: &mut Context<'_>, loc: lsp_types::Location) {
     if let Some(vid) = hit {
         // Find the frame owning this view and focus + activate.
         let mut owner: Option<(crate::frame::FrameId, usize)> = None;
-        for fid in crate::tree::frame_ids(cx.workspace.root.as_ref()) {
-            if let Some(frame) = crate::tree::find_frame(cx.workspace.root.as_ref(), fid) {
+        for fid in crate::tree::frame_ids(cx.surface.root.as_ref()) {
+            if let Some(frame) = crate::tree::find_frame(cx.surface.root.as_ref(), fid) {
                 if let Some(idx) = frame.tabs.iter().position(|&v| v == vid) {
                     owner = Some((fid, idx));
                     break;
@@ -372,18 +372,18 @@ pub(crate) fn jump_to_location(cx: &mut Context<'_>, loc: lsp_types::Location) {
             }
         }
         if let Some((fid, idx)) = owner {
-            cx.workspace.focus_frame(fid);
-            cx.workspace.activate_tab(fid, idx);
+            cx.surface.focus_frame(fid);
+            cx.surface.activate_tab(fid, idx);
         }
         place_cursor_at_pos(cx, vid, &loc, &encoding);
         return;
     }
 
-    if let Err(e) = cx.workspace.open_path_replace_current(target_path) {
+    if let Err(e) = cx.surface.open_path_replace_current(target_path) {
         cx.status.set(format!("symbol open failed: {e}"));
         return;
     }
-    if let Some((_, vid, _)) = cx.workspace.active_ids() {
+    if let Some((_, vid, _)) = cx.surface.active_ids() {
         place_cursor_at_pos(cx, vid, &loc, &encoding);
     }
 }
@@ -394,11 +394,11 @@ fn place_cursor_at_pos(
     loc: &lsp_types::Location,
     encoding: &lsp_types::PositionEncodingKind,
 ) {
-    let did = cx.workspace.views[vid].doc;
-    let rope = cx.workspace.documents[did].buffer.rope();
+    let did = cx.surface.views[vid].doc;
+    let rope = cx.surface.documents[did].buffer.rope();
     let idx = char_in_rope(rope, loc.range.start.line, loc.range.start.character, encoding)
         .unwrap_or_else(|| rope.len_chars());
-    let v = &mut cx.workspace.views[vid];
+    let v = &mut cx.surface.views[vid];
     v.move_to(idx, false, false);
     v.scroll_mode = crate::view::ScrollMode::Anchored;
 }
@@ -409,8 +409,8 @@ pub(crate) fn click_to_char_idx(cx: &Context<'_>, col: u16, row: u16) -> Option<
     let text_x = v.x + v.gutter_width;
     let click_col = col.saturating_sub(text_x) as usize;
     let row_in_view = (row - v.y) as usize;
-    let view = cx.workspace.active_view()?;
-    let buf = &cx.workspace.documents.get(view.doc)?.buffer;
+    let view = cx.surface.active_view()?;
+    let buf = &cx.surface.documents.get(view.doc)?.buffer;
     let line = (view.scroll_top() + row_in_view).min(buf.line_count().saturating_sub(1));
     let local_col = click_col.min(buf.line_len_chars(line));
     Some(buf.line_start(line) + local_col)
@@ -419,12 +419,12 @@ pub(crate) fn click_to_char_idx(cx: &Context<'_>, col: u16, row: u16) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::Workspace;
+    use crate::surface::Surface;
     use devix_text::{Buffer, Selection, replace_selection_tx};
     use lsp_types::CompletionItem;
 
-    fn ws_with_text(text: &str) -> (Workspace, crate::view::ViewId) {
-        let mut ws = Workspace::open(None).unwrap();
+    fn ws_with_text(text: &str) -> (Surface, crate::view::ViewId) {
+        let mut ws = Surface::open(None).unwrap();
         let did = ws.active_view().unwrap().doc;
         let buf: &Buffer = &ws.documents[did].buffer;
         let tx = replace_selection_tx(buf, &Selection::point(0), text);
@@ -511,7 +511,7 @@ mod tests {
         });
 
         let mut cx = Context {
-            workspace: &mut ws,
+            surface: &mut ws,
             clipboard: &mut clipboard,
             status: &mut status,
             quit: &mut quit,

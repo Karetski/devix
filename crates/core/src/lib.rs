@@ -12,7 +12,7 @@
 //! - [`Action`] — invocable behavior, first-class (one type per command).
 //! - `Document` — text data, decoupled from any view (lives in
 //!   `devix-document` and will surface here later).
-//! - `Surface` — the editor root (will replace `Workspace`; lives outside
+//! - `Surface` — the editor root (will replace `Surface`; lives outside
 //!   `core` because it owns concrete state).
 //!
 //! Anything plugins ever depend on lives here. Keep the surface small.

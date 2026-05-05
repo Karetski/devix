@@ -195,10 +195,10 @@ dependencies = [
  "crossterm",
  "devix-core",
  "devix-lsp",
+ "devix-surface",
  "devix-text",
  "devix-ui",
  "devix-views",
- "devix-workspace",
  "lsp-types",
  "ratatui",
  "tokio",
@@ -241,6 +241,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "devix-surface"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "crossterm",
+ "devix-core",
+ "devix-document",
+ "devix-lsp",
+ "devix-syntax",
+ "devix-text",
+ "lsp-types",
+ "nucleo-matcher",
+ "ratatui",
+ "slotmap",
+ "tokio",
+]
+
+[[package]]
 name = "devix-syntax"
 version = "0.1.0"
 dependencies = [
@@ -274,32 +293,13 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "devix-core",
+ "devix-surface",
  "devix-syntax",
  "devix-text",
  "devix-ui",
- "devix-workspace",
  "lsp-types",
  "ratatui",
  "ropey",
-]
-
-[[package]]
-name = "devix-workspace"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arboard",
- "crossterm",
- "devix-core",
- "devix-document",
- "devix-lsp",
- "devix-syntax",
- "devix-text",
- "lsp-types",
- "nucleo-matcher",
- "ratatui",
- "slotmap",
- "tokio",
 ]
 
 [[package]]
