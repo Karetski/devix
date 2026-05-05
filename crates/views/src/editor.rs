@@ -18,7 +18,7 @@ use ratatui::widgets::{Paragraph, Widget};
 
 use ropey::Rope;
 
-use devix_buffer::{Buffer, Range, Selection};
+use devix_text::{Buffer, Range, Selection};
 use devix_core::{Event, HandleCtx, Outcome, Pane, RenderCtx, Theme};
 use devix_syntax::HighlightSpan;
 use devix_ui::{CompletionLine, Popup, PopupAnchor, PopupContent, render_popup};
@@ -484,7 +484,7 @@ fn styled_line_spans(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use devix_buffer::{Selection, replace_selection_tx};
+    use devix_text::{Selection, replace_selection_tx};
     use devix_syntax::{Highlighter, Language};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -493,7 +493,7 @@ mod tests {
     /// `render_editor` to a TestBackend. Returns the rendered buffer plus the
     /// theme used so callers can compare cell styles against scope styles.
     fn render_rust(text: &str, width: u16, height: u16) -> (ratatui::buffer::Buffer, Theme) {
-        let mut buf = devix_buffer::Buffer::empty();
+        let mut buf = devix_text::Buffer::empty();
         let tx = replace_selection_tx(&buf, &Selection::point(0), text);
         buf.apply(tx);
 
@@ -555,7 +555,7 @@ mod tests {
         // No language → no highlights → all text cells use the theme's
         // default text style. (The render path here passes empty highlights,
         // matching what Document::highlights returns for unknown extensions.)
-        let mut buf = devix_buffer::Buffer::empty();
+        let mut buf = devix_text::Buffer::empty();
         let tx = replace_selection_tx(&buf, &Selection::point(0), "hello");
         buf.apply(tx);
         let theme = Theme::default();
@@ -590,7 +590,7 @@ mod tests {
 
     #[test]
     fn diagnostic_paints_underline_on_visible_range() {
-        let mut buf = devix_buffer::Buffer::empty();
+        let mut buf = devix_text::Buffer::empty();
         let tx = replace_selection_tx(&buf, &Selection::point(0), "fn main() {}");
         buf.apply(tx);
         let theme = Theme::default();

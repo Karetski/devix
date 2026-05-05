@@ -8,7 +8,7 @@
 //! delegate to — they're the bits of dispatch logic that benefit from
 //! sharing across multiple commands.
 
-use devix_buffer::{Buffer, Change, Range, Selection, Transaction, delete_range_tx, replace_selection_tx};
+use devix_text::{Buffer, Change, Range, Selection, Transaction, delete_range_tx, replace_selection_tx};
 use devix_lsp::{char_in_rope, position_in_rope};
 use lsp_types::CompletionTextEdit;
 
@@ -420,7 +420,7 @@ pub(crate) fn click_to_char_idx(cx: &Context<'_>, col: u16, row: u16) -> Option<
 mod tests {
     use super::*;
     use crate::workspace::Workspace;
-    use devix_buffer::{Buffer, Selection, replace_selection_tx};
+    use devix_text::{Buffer, Selection, replace_selection_tx};
     use lsp_types::CompletionItem;
 
     fn ws_with_text(text: &str) -> (Workspace, crate::view::ViewId) {

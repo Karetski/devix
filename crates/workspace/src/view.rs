@@ -1,7 +1,7 @@
 //! View = per-frame editor state (selection + sticky col + scroll).
 //! Owned by Workspace, indexed by ViewId.
 
-use devix_buffer::{Range, Selection, Transaction};
+use devix_text::{Range, Selection, Transaction};
 use lsp_types::CompletionItem;
 use slotmap::new_key_type;
 

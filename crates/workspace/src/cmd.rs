@@ -279,7 +279,7 @@ impl<'a> Action<Context<'a>> for Redo {
 pub struct SelectAll;
 impl<'a> Action<Context<'a>> for SelectAll {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        use devix_buffer::{Range, Selection};
+        use devix_text::{Range, Selection};
         let Some((_, vid, did)) = ctx.workspace.active_ids() else { return };
         let end = ctx.workspace.documents[did].buffer.len_chars();
         ctx.workspace.views[vid].adopt_selection(Selection::single(Range::new(0, end)));

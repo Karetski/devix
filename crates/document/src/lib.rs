@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc as std_mpsc;
 
 use anyhow::Result;
-use devix_buffer::{Buffer, Selection, Transaction};
+use devix_text::{Buffer, Selection, Transaction};
 use devix_lsp::{LspCommand, Edit as LspEdit, char_in_rope, path_to_uri, translate_changes};
 use devix_syntax::{HighlightSpan, Highlighter, Language, input_edit_for_range};
 use lsp_types::{
@@ -361,7 +361,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use devix_buffer::{Selection, replace_selection_tx};
+    use devix_text::{Selection, replace_selection_tx};
 
     #[test]
     fn empty_document_has_no_path_no_watcher_no_highlighter() {

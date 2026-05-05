@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn dirty_close_refused_force_close_succeeds() {
-        use devix_buffer::{Selection, replace_selection_tx};
+        use devix_text::{Selection, replace_selection_tx};
         let mut ws = Workspace::open(None).unwrap();
         let did = ws.active_view().unwrap().doc;
         let tx = replace_selection_tx(&ws.documents[did].buffer, &Selection::point(0), "hi");
@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn scroll_clamps_at_zero_and_at_end() {
-        use devix_buffer::{Selection, replace_selection_tx};
+        use devix_text::{Selection, replace_selection_tx};
 
         let mut ws = Workspace::open(None).unwrap();
         let did = ws.active_view().unwrap().doc;
