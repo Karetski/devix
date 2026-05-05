@@ -236,7 +236,7 @@ dependencies = [
  "devix-syntax",
  "devix-text",
  "devix-ui",
- "devix-workspace",
+ "notify",
  "ratatui",
  "ropey",
  "slotmap",
@@ -267,7 +267,6 @@ dependencies = [
  "devix-editor",
  "devix-text",
  "devix-ui",
- "devix-workspace",
  "nucleo-matcher",
  "slotmap",
 ]
@@ -299,17 +298,6 @@ dependencies = [
  "crossterm",
  "devix-core",
  "ratatui",
-]
-
-[[package]]
-name = "devix-workspace"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "devix-syntax",
- "devix-text",
- "notify",
- "slotmap",
 ]
 
 [[package]]

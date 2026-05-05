@@ -20,7 +20,7 @@ pub use tree::{
     pane_leaf_id,
 };
 pub use cursor::{Cursor, CursorId, ScrollMode};
-pub use devix_workspace::{DocId, Document};
+pub use devix_editor::{DocId, Document};
 pub use frame::FrameId;
 pub use layout::{Axis, Direction, SidebarSlot};
 pub use surface::{LeafRef, RenderCache, Surface, TabHit, TabStripCache, TabStripHit};

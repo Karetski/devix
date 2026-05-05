@@ -202,7 +202,7 @@ impl Pane for LayoutFrame {
 /// body. Mirrors the helper that lived in `app/render.rs`; moved here
 /// so `LayoutFrame::render` can compute its own highlight window.
 fn visible_byte_range(
-    doc: &devix_workspace::Document,
+    doc: &devix_editor::Document,
     cursor: &crate::cursor::Cursor,
     height_rows: usize,
 ) -> (usize, usize) {

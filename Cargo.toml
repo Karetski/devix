@@ -27,7 +27,6 @@ serde_json = "1"
 devix-core = { path = "crates/core" }
 devix-text = { path = "crates/text" }
 devix-ui = { path = "crates/ui" }
-devix-workspace = { path = "crates/workspace" }
 devix-editor = { path = "crates/editor" }
 devix-syntax = { path = "crates/syntax" }
 devix-surface = { path = "crates/surface" }

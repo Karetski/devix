@@ -21,7 +21,7 @@ use devix_core::Rect;
 use slotmap::SlotMap;
 
 use crate::cursor::{Cursor, CursorId};
-use devix_workspace::{DocId, Document};
+use devix_editor::{DocId, Document};
 
 use crate::frame::{FrameId, mint_id};
 use crate::layout::SidebarSlot;

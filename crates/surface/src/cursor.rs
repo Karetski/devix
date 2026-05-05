@@ -2,7 +2,7 @@
 //! Owned by Surface, indexed by CursorId. One per open tab.
 
 use devix_text::{Range, Selection, Transaction};
-use devix_workspace::DocId;
+use devix_editor::DocId;
 use slotmap::new_key_type;
 
 new_key_type! { pub struct CursorId; }
