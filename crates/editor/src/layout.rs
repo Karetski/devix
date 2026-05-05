@@ -1,61 +1,30 @@
-//! Composite `Pane` types — the layout primitives.
+//! Composite `Pane` types — the per-frame render-tree primitives.
 //!
-//! Three composites cover every layout shape the editor needs today:
+//! Two composites are owned per render call (built on the stack inside
+//! the structural Panes' `render` impls in `devix-surface`'s `tree.rs`):
 //!
-//! - [`SplitPane`]: ratatui-style proportional split along an axis. Children
-//!   are `Box<dyn Pane>` plus an integer weight; recursion is just nesting.
 //! - [`TabbedPane`]: a tab strip pinned to row 0 with one editor body
 //!   beneath. Owns both children as fields so `children()` can hand back
 //!   stable `&dyn Pane` references.
 //! - [`SidebarSlotPane`]: a sidebar bound to an edge slot with optional
-//!   content. For now content is empty (chrome-only), matching today's
-//!   sidebar; the slot exists so plugins can drop a Pane in later.
+//!   content. The slot exists so plugins can drop a Pane in later.
 //!
-//! All three follow the same render shape: walk `children(area)` and
-//! recurse. The Lattner answer to "what does a composite do?" is "the same
-//! thing as the framework": ask each child for its rect, paint it. There's
-//! no special composite API.
+//! Splits don't appear here — `LayoutSplit` in `devix-surface` is the
+//! single split primitive; it owns its layout state and has been
+//! taught to render itself directly. There is no parallel render-tree
+//! `SplitPane` anymore.
+//!
+//! Both composites follow the same render shape: walk `children(area)`
+//! and recurse. The Lattner answer to "what does a composite do?" is
+//! "the same thing as the framework": ask each child for its rect,
+//! paint it.
 
 pub use devix_core::Axis;
 
-use devix_core::{Event, HandleCtx, Outcome, Pane, Rect, RenderCtx, split_rects};
+use devix_core::{Event, HandleCtx, Outcome, Pane, Rect, RenderCtx};
 use devix_ui::{SidebarPane as SidebarChrome, TabStripPane};
 
 use crate::editor::EditorPane;
-
-/// Proportional split: children share the available area along `axis`,
-/// each weighted by its `u16` factor. Mirrors `Node::Split` semantics.
-pub struct SplitPane<'a> {
-    pub axis: Axis,
-    pub children: Vec<(Box<dyn Pane + 'a>, u16)>,
-}
-
-impl<'a> Pane for SplitPane<'a> {
-    fn render(&self, area: Rect, ctx: &mut RenderCtx<'_, '_>) {
-        for (rect, child) in self.children(area) {
-            child.render(rect, ctx);
-        }
-    }
-
-    fn handle(&mut self, _ev: &Event, _area: Rect, _ctx: &mut HandleCtx<'_>) -> Outcome {
-        // Composite layout: events route through the focused child via the
-        // dispatcher walking `children()`, not via the parent matching.
-        Outcome::Ignored
-    }
-
-    fn children(&self, area: Rect) -> Vec<(Rect, &dyn Pane)> {
-        if self.children.is_empty() {
-            return Vec::new();
-        }
-        let weights: Vec<u16> = self.children.iter().map(|(_, w)| *w).collect();
-        let rects = split_rects(area, self.axis, &weights);
-        self.children
-            .iter()
-            .zip(rects.into_iter())
-            .map(|((child, _), rect)| (rect, child.as_ref()))
-            .collect()
-    }
-}
 
 /// One editor frame: tab strip pinned to row 0, active editor body below.
 /// Owns its children as fields so `children()` returns stable references
@@ -147,118 +116,3 @@ impl<'a> Pane for SidebarSlotPane<'a> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use devix_core::{focusable_leaves, pane_at};
-
-    /// A no-op leaf used to exercise the composites without dragging in
-    /// the editor's borrow surface.
-    struct StubLeaf {
-        focusable: bool,
-    }
-    impl Pane for StubLeaf {
-        fn render(&self, _: Rect, _: &mut RenderCtx<'_, '_>) {}
-        fn handle(&mut self, _: &Event, _: Rect, _: &mut HandleCtx<'_>) -> Outcome {
-            Outcome::Ignored
-        }
-        fn is_focusable(&self) -> bool {
-            self.focusable
-        }
-    }
-
-    fn full() -> Rect {
-        Rect { x: 0, y: 0, width: 100, height: 50 }
-    }
-
-    #[test]
-    fn split_horizontal_partitions_children_by_weight() {
-        let split = SplitPane {
-            axis: Axis::Horizontal,
-            children: vec![
-                (Box::new(StubLeaf { focusable: true }), 1),
-                (Box::new(StubLeaf { focusable: true }), 3),
-            ],
-        };
-        let kids = split.children(full());
-        assert_eq!(kids.len(), 2);
-        assert_eq!(kids[0].0.x, 0);
-        assert_eq!(kids[0].0.width, 25); // 1/(1+3) of 100
-        assert_eq!(kids[1].0.x, 25);
-        assert_eq!(kids[1].0.width, 75);
-    }
-
-    #[test]
-    fn split_vertical_partitions_along_y() {
-        let split = SplitPane {
-            axis: Axis::Vertical,
-            children: vec![
-                (Box::new(StubLeaf { focusable: true }), 1),
-                (Box::new(StubLeaf { focusable: true }), 1),
-            ],
-        };
-        let kids = split.children(full());
-        assert_eq!(kids[0].0.y, 0);
-        assert_eq!(kids[0].0.height, 25);
-        assert_eq!(kids[1].0.y, 25);
-    }
-
-    #[test]
-    fn split_pane_at_finds_correct_child() {
-        let split = SplitPane {
-            axis: Axis::Horizontal,
-            children: vec![
-                (Box::new(StubLeaf { focusable: true }), 1),
-                (Box::new(StubLeaf { focusable: true }), 1),
-            ],
-        };
-        // Click in left half lands on the first child.
-        let (rect, _) = pane_at(&split, full(), 10, 10).unwrap();
-        assert_eq!(rect.x, 0);
-        assert_eq!(rect.width, 50);
-        // Click in right half.
-        let (rect, _) = pane_at(&split, full(), 80, 10).unwrap();
-        assert_eq!(rect.x, 50);
-    }
-
-    #[test]
-    fn split_focusable_leaves_returns_paths_in_order() {
-        let split = SplitPane {
-            axis: Axis::Horizontal,
-            children: vec![
-                (Box::new(StubLeaf { focusable: true }), 1),
-                (Box::new(StubLeaf { focusable: false }), 1),
-                (Box::new(StubLeaf { focusable: true }), 1),
-            ],
-        };
-        let leaves = focusable_leaves(&split, full());
-        assert_eq!(leaves.len(), 2, "non-focusable leaf is skipped");
-        assert_eq!(leaves[0].0, vec![0]);
-        assert_eq!(leaves[1].0, vec![2]);
-    }
-
-    #[test]
-    fn nested_split_walks_recursively() {
-        // Outer Vertical split, second child is a Horizontal split.
-        let inner = SplitPane {
-            axis: Axis::Horizontal,
-            children: vec![
-                (Box::new(StubLeaf { focusable: true }), 1),
-                (Box::new(StubLeaf { focusable: true }), 1),
-            ],
-        };
-        let outer = SplitPane {
-            axis: Axis::Vertical,
-            children: vec![
-                (Box::new(StubLeaf { focusable: true }), 1),
-                (Box::new(inner), 1),
-            ],
-        };
-        let leaves = focusable_leaves(&outer, full());
-        // Three leaves: one on top, two on bottom.
-        assert_eq!(leaves.len(), 3);
-        assert_eq!(leaves[0].0, vec![0]);
-        assert_eq!(leaves[1].0, vec![1, 0]);
-        assert_eq!(leaves[2].0, vec![1, 1]);
-    }
-}

@@ -179,11 +179,26 @@ impl Surface {
     pub fn layout(&mut self, area: Rect) {
         use devix_ui::TabInfo;
         use devix_ui::layout::{VRect, ensure_visible, set_scroll};
+        use devix_ui::tab_strip_layout;
         use devix_view::ScrollMode;
+
+        // Reset render-cache for this frame. Both the per-leaf walk
+        // below (for `Frame` leaves' tab-strip + body rects) and the
+        // sidebar arm (for `sidebar_rects`) repopulate it. Hit-testing
+        // and click-routing read these tables.
+        self.render_cache.frame_rects.clear();
+        self.render_cache.sidebar_rects.clear();
+        self.render_cache.tab_strips.clear();
 
         let leaves = crate::tree::leaves_with_rects(self.root.as_ref(), area);
         for (leaf, rect) in leaves {
-            let LeafRef::Frame(fid) = leaf else { continue };
+            let fid = match leaf {
+                LeafRef::Sidebar(slot) => {
+                    self.render_cache.sidebar_rects.insert(slot, rect);
+                    continue;
+                }
+                LeafRef::Frame(fid) => fid,
+            };
             let strip_area = Rect { height: 1, ..rect };
             let body_area = Rect {
                 y: rect.y + 1,
@@ -226,6 +241,25 @@ impl Surface {
                 &mut f.recenter_active,
                 strip_area,
             );
+
+            // Tab-strip hit cache. Recomputed against the post-scroll
+            // strip so click hit-tests align with what's painted.
+            let scroll = f.tab_strip_scroll;
+            let (hits_pure, content_width) =
+                tab_strip_layout(&tabs, active_tab, scroll, strip_area);
+            let hits = hits_pure
+                .iter()
+                .map(|h| crate::surface::TabHit { idx: h.idx, rect: h.rect })
+                .collect();
+            self.render_cache.tab_strips.insert(
+                fid,
+                crate::surface::TabStripCache {
+                    strip_rect: strip_area,
+                    content_width,
+                    hits,
+                },
+            );
+            self.render_cache.frame_rects.insert(fid, body_area);
 
             let Some(vid) =
                 find_frame(self.root.as_ref(), fid).and_then(|f| f.active_view())

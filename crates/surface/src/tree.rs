@@ -1,30 +1,27 @@
-//! Structural Pane tree — the layout source-of-truth.
+//! Structural Pane tree — the layout source-of-truth, *and* the render
+//! tree.
 //!
-//! Phase 3c of the architecture refactor: replace the closed `Node` enum
-//! with a tree of `Box<dyn Pane>` rooted at `Surface.root`. The
-//! structural Panes here are *long-lived* (owned by the surface) and
-//! `'static` (so they can opt into `Pane::as_any` for downcasting). They
-//! hold IDs / slots, not borrowed editor state — render-time Panes
-//! (`devix-editor`'s `TabbedPane`, `SidebarSlotPane`) are still built per
-//! frame with surface borrows.
+//! Phase 3c of the architecture refactor replaced the closed `Node` enum
+//! with a tree of `Box<dyn Pane>` rooted at `Surface.root`. This module
+//! owns that tree: long-lived (owned by the surface), `'static` (so each
+//! Pane opts into `Pane::as_any` for downcasting), and now self-rendering.
 //!
-//! Why two trees?
-//!
-//! - The structural tree is *the* layout. Hit-test, focus walk, and
-//!   directional navigation all walk it via `core::walk::*`.
-//! - The render tree is built per frame because `EditorPane` and friends
-//!   borrow buffer/view/highlight data that's only valid while paint runs.
-//!
-//! Both trees agree on shape: every structural leaf corresponds to one
-//! render leaf. The transition to a single tree happens once `View`
-//! ownership migrates onto `TabbedPane` (Phase 3c follow-up) — at that
-//! point `EditorPane` can own its data and the render tree disappears.
+//! Each leaf paints itself in `render`. `LayoutFrame` builds the
+//! borrowed render-time helpers (`TabbedPane` from `devix-editor`,
+//! `EditorPane`, `TabStripPane`) on the stack inside one render call,
+//! pulling buffer/view/theme/highlight borrows from the scoped TLS the
+//! host opens via `RenderServices::scope`. There is no parallel render
+//! tree built by the binary anymore.
 
 use devix_core::{Event, HandleCtx, Outcome, Pane, Rect, RenderCtx, split_rects};
 use std::any::Any;
 
+use devix_editor::{EditorPane, SidebarSlotPane, TabbedPane};
+use devix_ui::{SidebarPane as SidebarChrome, TabInfo, TabStripPane};
+
 use crate::frame::FrameId;
 use crate::layout::{Axis, SidebarSlot};
+use crate::services::RenderServices;
 
 /// Recursive split. Mirrors `Node::Split` semantics; `children()`
 /// computes child rects via ratatui `Layout`, identical math to the
@@ -35,9 +32,14 @@ pub struct LayoutSplit {
 }
 
 impl Pane for LayoutSplit {
-    fn render(&self, _: Rect, _: &mut RenderCtx<'_, '_>) {
-        // Structural — the render tree paints. SplitPane in `devix-editor`
-        // is the render-side equivalent.
+    fn render(&self, area: Rect, ctx: &mut RenderCtx<'_, '_>) {
+        // Composite layout: walk children() and recurse. Same shape
+        // every composite Pane uses — Lattner's "what does a composite
+        // do? the same thing as the framework: ask each child for its
+        // rect, paint it."
+        for (rect, child) in self.children(area) {
+            child.render(rect, ctx);
+        }
     }
 
     fn handle(&mut self, _: &Event, _: Rect, _: &mut HandleCtx<'_>) -> Outcome {
@@ -122,7 +124,62 @@ impl LayoutFrame {
 }
 
 impl Pane for LayoutFrame {
-    fn render(&self, _: Rect, _: &mut RenderCtx<'_, '_>) {}
+    fn render(&self, area: Rect, ctx: &mut RenderCtx<'_, '_>) {
+        // Surface-side borrows arrive via the scoped TLS the host
+        // opens around the whole `root.render(...)` call. Outside any
+        // scope (e.g. unit tests using Pane directly) this Pane is a
+        // no-op, which matches its previous empty-stub behavior.
+        RenderServices::with(|services| {
+            let Some(view_id) = self.active_view() else { return };
+            let Some(view) = services.views.get(view_id) else { return };
+            let Some(doc) = services.documents.get(view.doc) else { return };
+
+            // Editor body height — 1 row reserved for the tab strip. Same
+            // partition `TabbedPane::children` uses below.
+            let body_height = area.height.saturating_sub(1) as usize;
+            let (start, end) = visible_byte_range(doc, view, body_height);
+            let highlights = doc.highlights(start, end);
+
+            let active = matches!(
+                services.focused_leaf,
+                Some(LeafRef::Frame(fid)) if fid == self.frame,
+            );
+
+            let strip_tabs: Vec<TabInfo> = self
+                .tabs
+                .iter()
+                .filter_map(|vid| {
+                    let v = services.views.get(*vid)?;
+                    let d = services.documents.get(v.doc)?;
+                    let label = d
+                        .buffer
+                        .path()
+                        .and_then(|p| p.file_name())
+                        .and_then(|f| f.to_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| "[scratch]".to_string());
+                    Some(TabInfo { label, dirty: d.buffer.dirty() })
+                })
+                .collect();
+
+            let tabbed = TabbedPane {
+                strip: TabStripPane {
+                    tabs: strip_tabs,
+                    active: self.active_tab,
+                    scroll: self.tab_strip_scroll,
+                },
+                editor: EditorPane {
+                    buffer: &doc.buffer,
+                    selection: &view.selection,
+                    scroll: view.scroll,
+                    theme: services.theme,
+                    highlights,
+                    active,
+                },
+            };
+            tabbed.render(area, ctx);
+        });
+    }
 
     fn handle(&mut self, _: &Event, _: Rect, _: &mut HandleCtx<'_>) -> Outcome {
         Outcome::Ignored
@@ -141,6 +198,27 @@ impl Pane for LayoutFrame {
     }
 }
 
+/// Byte range covering all lines currently visible in `view`'s editor
+/// body. Mirrors the helper that lived in `app/render.rs`; moved here
+/// so `LayoutFrame::render` can compute its own highlight window.
+fn visible_byte_range(
+    doc: &devix_workspace::Document,
+    view: &devix_view::View,
+    height_rows: usize,
+) -> (usize, usize) {
+    let line_count = doc.buffer.line_count();
+    let rope = doc.buffer.rope();
+    let top = view.scroll_top().min(line_count);
+    let bottom = (view.scroll_top() + height_rows).min(line_count);
+    let start = rope.line_to_byte(top);
+    let end = if bottom >= line_count {
+        rope.len_bytes()
+    } else {
+        rope.line_to_byte(bottom)
+    };
+    (start, end)
+}
+
 /// Sidebar-slot leaf. The slot enum (`Left` / `Right`) acts as the
 /// identity; one of each can exist in the tree.
 pub struct LayoutSidebar {
@@ -148,7 +226,24 @@ pub struct LayoutSidebar {
 }
 
 impl Pane for LayoutSidebar {
-    fn render(&self, _: Rect, _: &mut RenderCtx<'_, '_>) {}
+    fn render(&self, area: Rect, ctx: &mut RenderCtx<'_, '_>) {
+        RenderServices::with(|services| {
+            let title = match self.slot {
+                SidebarSlot::Left => "left",
+                SidebarSlot::Right => "right",
+            };
+            let focused = matches!(
+                services.focused_leaf,
+                Some(LeafRef::Sidebar(s)) if s == self.slot,
+            );
+            let content = (services.plugin_sidebar)(self.slot);
+            let slot_pane = SidebarSlotPane {
+                chrome: SidebarChrome { title: title.to_string(), focused },
+                content,
+            };
+            slot_pane.render(area, ctx);
+        });
+    }
 
     fn handle(&mut self, _: &Event, _: Rect, _: &mut HandleCtx<'_>) -> Outcome {
         Outcome::Ignored

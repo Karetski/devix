@@ -10,4 +10,4 @@ pub mod layout;
 
 pub use devix_workspace::{DocId, Document};
 pub use editor::{EditorPane, EditorRenderResult, EditorView, render_editor};
-pub use layout::{Axis, SidebarSlotPane, SplitPane, TabbedPane};
+pub use layout::{Axis, SidebarSlotPane, TabbedPane};
