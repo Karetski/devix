@@ -1,10 +1,10 @@
-//! Terminal input as a `Service`.
+//! Terminal input thread.
 //!
-//! Spawns a thread that calls `crossterm::event::poll(POLL_TIMEOUT)`,
-//! then `read()` when ready, and pushes `LoopMessage::Input` via the
-//! cloned `EventSink`. The poll timeout is what makes shutdown bounded:
-//! `stop()` flips an atomic flag the loop checks each iteration; the
-//! next poll-timeout returns and the thread exits.
+//! `crossterm::event::read()` has no push API and no interrupt, so this
+//! is the one place in the runtime that genuinely owns a poll thread.
+//! `InputThread::spawn` starts it; `shutdown` flips an atomic flag the
+//! poll loop checks each iteration and joins, with a deadline so we
+//! don't hang on a wedged terminal.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,27 +15,22 @@ use anyhow::{Context, Result};
 use crossterm::event;
 
 use crate::event_sink::EventSink;
-use crate::service::Service;
 
 const POLL_TIMEOUT: Duration = Duration::from_millis(100);
 
-#[derive(Default)]
-pub struct InputService {
+pub(crate) struct InputThread {
     join: Option<JoinHandle<()>>,
     stop: Arc<AtomicBool>,
 }
 
-impl Service for InputService {
-    fn name(&self) -> &'static str {
-        "input"
-    }
-
-    fn start(&mut self, sink: EventSink) -> Result<()> {
-        let stop = self.stop.clone();
+impl InputThread {
+    pub(crate) fn spawn(sink: EventSink) -> Result<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_clone = stop.clone();
         let join = thread::Builder::new()
             .name("devix-input".into())
             .spawn(move || {
-                while !stop.load(Ordering::Acquire) {
+                while !stop_clone.load(Ordering::Acquire) {
                     match event::poll(POLL_TIMEOUT) {
                         Ok(true) => match event::read() {
                             Ok(ev) => {
@@ -51,15 +46,14 @@ impl Service for InputService {
                 }
             })
             .context("spawning devix-input thread")?;
-        self.join = Some(join);
-        Ok(())
+        Ok(Self { join: Some(join), stop })
     }
 
-    fn stop(mut self: Box<Self>, deadline: Duration) {
+    /// Signal the thread to stop and join with a deadline. The thread
+    /// observes `stop` within `POLL_TIMEOUT` once the flag is set.
+    pub(crate) fn shutdown(mut self, deadline: Duration) {
         self.stop.store(true, Ordering::Release);
         let Some(join) = self.join.take() else { return };
-        // Best-effort join with a deadline; the input thread exits within
-        // POLL_TIMEOUT once the stop flag is observed.
         let start = Instant::now();
         while !join.is_finished() {
             if start.elapsed() >= deadline {

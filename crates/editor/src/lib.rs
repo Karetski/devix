@@ -8,7 +8,6 @@ pub mod cursor;
 pub mod document;
 pub mod editor;
 pub mod frame;
-pub mod services;
 pub mod tree;
 
 pub use buffer::{BufferRender, EditorPane, EditorRenderResult, render_buffer};
@@ -23,11 +22,7 @@ pub use editor::{
     DiskSink, Editor, LeafRef, RenderCache, TabHit, TabStripCache, TabStripHit, path_to_leaf,
 };
 pub use frame::FrameId;
-pub use services::RenderServices;
-pub use tree::{
-    LayoutFrame, LayoutSidebar, find_frame, find_frame_mut, find_sidebar_mut, frame_ids,
-    leaves_with_rects, pane_at_indices, pane_at_indices_mut, pane_leaf_id, sidebar_present,
-};
+pub use tree::{LayoutCtx, LayoutFrame, LayoutNode, LayoutSidebar, LayoutSplit};
 
 // Layout primitives + composites live in `devix-panes`; re-export the
 // pieces the binary touches so it doesn't have to import both crates.

@@ -15,13 +15,11 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use devix_editor::{
-    EditorCommand, ModalOutcome, PalettePane, TabStripHit, chord_from_key, cmd, leaves_with_rects,
-    pane_at_indices_mut,
+    EditorCommand, ModalOutcome, PalettePane, TabStripHit, chord_from_key, cmd,
 };
-use devix_panes::{HandleCtx, Outcome, Rect, pane_at_path};
+use devix_panes::{HandleCtx, Outcome, Rect};
 
 use crate::context::AppContext;
-use crate::pulse::ScrollAccumulated;
 
 pub fn handle(ev: Event, ctx: &mut AppContext<'_>) {
     match ev {
@@ -183,11 +181,11 @@ fn handle_mouse(ev: Event, me: MouseEvent, ctx: &mut AppContext<'_>) {
             }
             let delta: isize = if matches!(me.kind, MouseEventKind::ScrollUp) { -1 } else { 1 };
             // Defer the scroll so consecutive wheel events coalesce into
-            // one `ScrollBy` per loop iteration; the buffered delta is
-            // delivered as a `ScrollAccumulated` pulse at flush time.
+            // one `ScrollBy` per loop iteration; the deferred closure
+            // posts a pulse that runs the command at flush time.
             let sink = ctx.sink.clone();
             ctx.defer(move |_| {
-                let _ = sink.pulse(ScrollAccumulated { delta });
+                let _ = sink.pulse(move |ctx| ctx.run(&cmd::ScrollBy(delta)));
             });
         }
         MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
@@ -218,23 +216,26 @@ fn run_arc(ctx: &mut AppContext<'_>, action: Arc<dyn EditorCommand>) {
     ctx.run(action.as_ref());
 }
 
-/// Walk the focused-leaf path and invoke `Pane::handle` on it. Returns
-/// `Ignored` if the focus path resolves to nothing.
+/// Walk the focused-leaf path and invoke `LayoutNode::handle_at` on it.
+/// Returns `Ignored` if the focus path resolves to nothing.
 fn dispatch_to_focused_leaf(ctx: &mut AppContext<'_>, ev: &Event) -> Outcome {
     let focus = ctx.editor.focus.clone();
-    let area = pane_at_path(ctx.editor.root.as_ref(), root_area(ctx), &focus)
+    let area = ctx
+        .editor
+        .root
+        .at_path_with_rect(root_area(ctx), &focus)
         .map(|(rect, _)| rect)
         .unwrap_or_default();
-    let Some(leaf) = pane_at_indices_mut(&mut ctx.editor.root, &focus) else {
+    let Some(leaf) = ctx.editor.root.at_path_mut(&focus) else {
         return Outcome::Ignored;
     };
     let mut hctx = HandleCtx::default();
-    leaf.handle(ev, area, &mut hctx)
+    leaf.handle_at(ev, area, &mut hctx)
 }
 
-/// Walk the leaf at screen position (`col`, `row`) and invoke
-/// `Pane::handle` on it. Used for events whose target isn't necessarily
-/// the focused leaf — mouse-wheel scroll over an unfocused sidebar.
+/// Walk the leaf at screen position (`col`, `row`) and dispatch to it.
+/// Used for events whose target isn't the focused leaf — mouse-wheel
+/// scroll over an unfocused sidebar.
 fn dispatch_to_leaf_at(
     ctx: &mut AppContext<'_>,
     col: u16,
@@ -242,20 +243,23 @@ fn dispatch_to_leaf_at(
     ev: &Event,
 ) -> Outcome {
     let area = root_area(ctx);
-    let Some((leaf_ref, leaf_area)) = leaves_with_rects(ctx.editor.root.as_ref(), area)
+    let Some((leaf_ref, leaf_area)) = ctx
+        .editor
+        .root
+        .leaves_with_rects(area)
         .into_iter()
         .find(|(_, r)| col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height)
     else {
         return Outcome::Ignored;
     };
-    let Some(path) = devix_editor::path_to_leaf(ctx.editor.root.as_ref(), area, leaf_ref) else {
+    let Some(path) = ctx.editor.root.path_to_leaf(leaf_ref) else {
         return Outcome::Ignored;
     };
-    let Some(leaf) = pane_at_indices_mut(&mut ctx.editor.root, &path) else {
+    let Some(leaf) = ctx.editor.root.at_path_mut(&path) else {
         return Outcome::Ignored;
     };
     let mut hctx = HandleCtx::default();
-    leaf.handle(ev, leaf_area, &mut hctx)
+    leaf.handle_at(ev, leaf_area, &mut hctx)
 }
 
 /// Reconstruct the editor's root rect from cached leaf rects: the root

@@ -1,12 +1,9 @@
 //! `Application` — the runtime.
 //!
 //! Single struct that owns every long-lived resource by direct field. No
-//! delegate trait, no DI container, no globals. UIKit analogue:
-//! `UIApplication` collapsed with the one true delegate.
-//!
-//! Plugins, LSP, settings reload, debug adapters all extend the runtime
-//! the same way: a new `Service` impl + a new `Pulse` impl. `Application`
-//! exposes no extension fields beyond the `services` Vec.
+//! delegate trait, no DI container, no globals, no `Service` trait
+//! around what is in practice one input thread plus a plugin runtime.
+//! UIKit analogue: `UIApplication` collapsed with the one true delegate.
 
 use std::collections::VecDeque;
 use std::io::{Stdout, stdout};
@@ -20,19 +17,18 @@ use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use devix_editor::{CommandRegistry, Editor, Keymap, RenderServices, pane_at_indices, pane_leaf_id};
-use devix_panes::{Clipboard, RenderCtx, Theme};
+use devix_editor::{CommandRegistry, Editor, Keymap, LayoutCtx};
+use devix_panes::{Clipboard, Theme};
+use devix_plugin::PluginRuntime;
 use ratatui::Terminal;
 use ratatui::backend::{Backend, CrosstermBackend};
 
 use crate::context::AppContext;
 use crate::effect::Effect;
-use crate::event_sink::{EventSink, LoopMessage};
+use crate::event_sink::{EventSink, LoopMessage, PulseFn};
 use crate::events;
-use crate::pulse::Pulse;
+use crate::input::InputThread;
 use crate::render;
-use crate::service::Service;
-use crate::services::input::InputService;
 
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(3);
 
@@ -43,7 +39,11 @@ pub struct Application<B: Backend = CrosstermBackend<Stdout>> {
     pub theme: Theme,
     pub clipboard: Box<dyn Clipboard>,
 
-    services: Vec<Box<dyn Service>>,
+    /// Plugin host, if one was loaded. Holding the runtime keeps its
+    /// worker thread alive; dropping it closes the channels and the
+    /// worker exits.
+    plugin: Option<PluginRuntime>,
+
     pub(crate) effects: VecDeque<Effect>,
     sink: EventSink,
     rx: Receiver<LoopMessage>,
@@ -58,24 +58,12 @@ pub struct Application<B: Backend = CrosstermBackend<Stdout>> {
 }
 
 impl Application<CrosstermBackend<Stdout>> {
-    /// Standard constructor: build the loop channel internally. Use this
-    /// when no producer needs the sink before the application exists.
+    /// Build the application around a pre-built `(EventSink, Receiver)`
+    /// pair. The caller wires producers (the editor's disk watcher, the
+    /// plugin runtime's message sink, future LSP clients) against
+    /// `sink.clone()` before constructing the application; producers
+    /// are born outside the runtime, so the channel has to exist first.
     pub fn new(
-        editor: Editor,
-        commands: CommandRegistry,
-        keymap: Keymap,
-        theme: Theme,
-        clipboard: Box<dyn Clipboard>,
-    ) -> Result<Self> {
-        let (sink, rx) = EventSink::channel();
-        Self::with_channel(editor, commands, keymap, theme, clipboard, sink, rx)
-    }
-
-    /// Constructor that accepts a pre-built `(EventSink, Receiver)`
-    /// pair. Use this when producers (the editor's disk watcher, the
-    /// plugin runtime's message sink, future LSP clients) need a clone
-    /// of the sink wired in before the application is constructed.
-    pub fn with_channel(
         editor: Editor,
         commands: CommandRegistry,
         keymap: Keymap,
@@ -85,13 +73,13 @@ impl Application<CrosstermBackend<Stdout>> {
         rx: Receiver<LoopMessage>,
     ) -> Result<Self> {
         let terminal = build_terminal_with_panic_hook()?;
-        let mut app = Self {
+        Ok(Self {
             editor,
             commands,
             keymap,
             theme,
             clipboard,
-            services: Vec::new(),
+            plugin: None,
             effects: VecDeque::new(),
             sink,
             rx,
@@ -99,23 +87,24 @@ impl Application<CrosstermBackend<Stdout>> {
             quit: false,
             dirty: true,
             owns_tty: true,
-        };
-        app.add_service(InputService::default());
-        Ok(app)
+        })
     }
 }
 
 impl<B: Backend> Application<B> {
-    pub fn add_service(&mut self, s: impl Service) {
-        self.services.push(Box::new(s));
-    }
-
     pub fn sink(&self) -> &EventSink {
         &self.sink
     }
 
+    /// Hand a loaded plugin runtime to the application. The runtime
+    /// already wired its message sink into the loop channel at load
+    /// time; the application just holds it so the worker stays alive.
+    pub fn set_plugin(&mut self, runtime: PluginRuntime) {
+        self.plugin = Some(runtime);
+    }
+
     pub fn run(mut self) -> Result<()> {
-        self.start_services();
+        let input = InputThread::spawn(self.sink.clone())?;
         while !self.quit {
             if self.dirty {
                 self.render()?;
@@ -129,26 +118,12 @@ impl<B: Backend> Application<B> {
             }
             self.flush_effects();
         }
-        self.stop_services(SHUTDOWN_DEADLINE);
+        input.shutdown(SHUTDOWN_DEADLINE);
+        // Dropping the plugin runtime closes its channels; its worker
+        // exits its `tokio::select!` loop.
+        drop(self.plugin.take());
         let _ = self.terminal.show_cursor();
         Ok(())
-    }
-
-    fn start_services(&mut self) {
-        let sink = &self.sink;
-        self.services.retain_mut(|s| match s.start(sink.clone()) {
-            Ok(()) => true,
-            Err(e) => {
-                eprintln!("service {} failed to start: {e}", s.name());
-                false
-            }
-        });
-    }
-
-    fn stop_services(&mut self, deadline: Duration) {
-        for service in self.services.drain(..) {
-            service.stop(deadline);
-        }
     }
 
     fn context(&mut self) -> AppContext<'_> {
@@ -170,11 +145,10 @@ impl<B: Backend> Application<B> {
         }
     }
 
-    fn deliver_pulse(&mut self, p: Box<dyn Pulse>) {
-        let name = p.name();
+    fn deliver_pulse(&mut self, p: PulseFn) {
         let mut ctx = self.context();
-        if catch_unwind(AssertUnwindSafe(|| p.deliver(&mut ctx))).is_err() {
-            eprintln!("pulse {name} panicked; dropping");
+        if catch_unwind(AssertUnwindSafe(|| p(&mut ctx))).is_err() {
+            eprintln!("pulse panicked; dropping");
         }
     }
 
@@ -204,21 +178,15 @@ impl<B: Backend> Application<B> {
             let area = frame.area();
             editor.layout(area);
 
-            let focused_leaf =
-                pane_at_indices(editor.root.as_ref(), &editor.focus).and_then(pane_leaf_id);
-
-            {
-                let services = RenderServices {
-                    documents: &editor.documents,
-                    cursors: &editor.cursors,
-                    theme,
-                    render_cache: &editor.render_cache,
-                    focused_leaf,
-                };
-                let mut ctx = RenderCtx { frame };
-                let root = editor.root.as_ref();
-                services.scope(|| root.render(area, &mut ctx));
-            }
+            let focused_leaf = editor.root.at_path(&editor.focus).and_then(|n| n.leaf_id());
+            let layout_ctx = LayoutCtx {
+                documents: &editor.documents,
+                cursors: &editor.cursors,
+                theme,
+                render_cache: &editor.render_cache,
+                focused_leaf,
+            };
+            editor.root.render(area, frame, &layout_ctx);
 
             if let Some(modal) = editor.modal.as_ref() {
                 render::paint_modal(modal.as_ref(), area, frame, theme, commands, keymap);
@@ -280,7 +248,7 @@ mod test_support {
                 keymap,
                 theme,
                 clipboard,
-                services: Vec::new(),
+                plugin: None,
                 effects: VecDeque::new(),
                 sink,
                 rx,

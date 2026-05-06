@@ -2,13 +2,11 @@
 //! tab activation and tab-strip scroll forwarding live here too because their
 //! input source is the same hit-test cache.
 
-use devix_panes::{pane_at, Pane};
 use devix_panes::Rect;
 
 use crate::frame::FrameId;
-use crate::tree::{LayoutFrame, LayoutSidebar, find_frame_mut};
 
-use super::{LeafRef, TabStripHit, Editor};
+use super::{Editor, TabStripHit};
 use super::focus::path_to_leaf;
 
 impl Editor {
@@ -38,57 +36,42 @@ impl Editor {
     }
 
     /// Whether the tab strip currently overflows its row — i.e., scrolling
-    /// can produce a visible change. Used by the input layer to decide
-    /// whether to consume a wheel event or pass it through to the editor.
+    /// can produce a visible change.
     pub fn tab_strip_can_scroll(&self, frame: FrameId) -> bool {
         let Some(strip) = self.render_cache.tab_strips.get(&frame) else { return false };
         strip.content_width > strip.strip_rect.width as u32
     }
 
     /// Apply a horizontal scroll delta (cells) to a frame's tab strip.
-    /// Inline integer clamp — no view-layer dependency. No-op when content
-    /// fits in the strip.
     pub fn scroll_tab_strip(&mut self, frame: FrameId, delta: isize) {
         let max_x = match self.render_cache.tab_strips.get(&frame) {
             Some(strip) => strip.content_width.saturating_sub(strip.strip_rect.width as u32) as i64,
             None => return,
         };
-        let Some(f) = find_frame_mut(&mut self.root, frame) else { return };
+        let Some(f) = self.root.find_frame_mut(frame) else { return };
         let nx = (f.tab_strip_scroll.0 as i64 + delta as i64).clamp(0, max_x);
         f.tab_strip_scroll.0 = nx as u32;
     }
 
     /// Activate `idx` on `frame` from a click on a visible tab. Does *not*
     /// scroll the strip — the user already picked a tab they could see.
-    /// Out-of-range indices clamp to a valid value.
     pub fn activate_tab(&mut self, frame: FrameId, idx: usize) {
-        let Some(f) = find_frame_mut(&mut self.root, frame) else { return };
+        let Some(f) = self.root.find_frame_mut(frame) else { return };
         if f.tabs.is_empty() { return; }
         f.select_visible(idx.min(f.tabs.len() - 1));
     }
 
     /// Set focus to the leaf whose Rect contains (col, row), if any.
-    ///
-    /// Walks the structural Pane tree via `core::walk::pane_at` and
-    /// downcasts the hit leaf to `LayoutFrame` / `LayoutSidebar` to
-    /// recover the editor's `LeafRef` identity. First consumer of
-    /// `Editor.root` as the authoritative layout — Phase 3c
-    /// strangler step.
     pub fn focus_at_screen(&mut self, col: u16, row: u16) {
         let area = self.outer_editor_area();
-        let Some((_, leaf)) = pane_at(self.root.as_ref(), area, col, row) else {
-            return;
-        };
-        let leaf_ref = pane_to_leaf_ref(leaf);
-        let Some(leaf_ref) = leaf_ref else { return };
-        if let Some(path) = path_to_leaf(self.root.as_ref(), area, leaf_ref) {
+        let Some((_, node)) = self.root.pane_at(area, col, row) else { return };
+        let Some(leaf) = node.leaf_id() else { return };
+        if let Some(path) = path_to_leaf(&self.root, area, leaf) {
             self.focus = path;
         }
     }
 
     /// The total area the layout tree occupies, derived from cached rects.
-    /// Used by hit-testing without re-running a layout pass. Includes tab-strip
-    /// rows so clicks on the strip can resolve to the owning frame.
     fn outer_editor_area(&self) -> Rect {
         let rects: Vec<Rect> = self.render_cache.frame_rects.values().copied()
             .chain(self.render_cache.sidebar_rects.values().copied())
@@ -113,16 +96,3 @@ fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
         && row < rect.y.saturating_add(rect.height)
 }
 
-/// Recover a `LeafRef` from a structural Pane leaf via `as_any` downcast.
-/// Returns `None` for non-leaf Panes (Splits) or unrecognized leaf
-/// types (plugin-contributed in the future).
-fn pane_to_leaf_ref(pane: &dyn Pane) -> Option<LeafRef> {
-    let any = pane.as_any()?;
-    if let Some(f) = any.downcast_ref::<LayoutFrame>() {
-        return Some(LeafRef::Frame(f.frame));
-    }
-    if let Some(s) = any.downcast_ref::<LayoutSidebar>() {
-        return Some(LeafRef::Sidebar(s.slot));
-    }
-    None
-}

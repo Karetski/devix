@@ -1,97 +1,66 @@
-//! Structural Pane tree — the layout source-of-truth, *and* the render
-//! tree.
+//! Structural layout tree — the editor's private layout vocabulary.
 //!
-//! Phase 3c of the architecture refactor replaced the closed `Node` enum
-//! with a tree of `Box<dyn Pane>` rooted at `Editor.root`. This module
-//! owns that tree: long-lived (owned by the editor), `'static` (so each
-//! Pane opts into `Pane::as_any` for downcasting), and now self-rendering.
+//! Splits, frames, sidebars are a *closed* set of node kinds: third
+//! parties don't contribute new layout shapes — they extend through
+//! content (a modal pane, a sidebar pane, an editor command). So the
+//! structural tree is a closed enum, walked by exhaustive match. There
+//! is no `Box<dyn Pane>` for the structural skeleton, no `as_any`
+//! downcasts on the walk, no thread-local services smuggled into a
+//! framework-neutral render trait.
 //!
-//! Each leaf paints itself in `render`. `LayoutFrame` builds the
-//! borrowed render-time helpers (`TabbedPane` from `devix-editor`,
-//! `EditorPane`, `TabStripPane`) on the stack inside one render call,
-//! pulling buffer/cursor/theme/highlight borrows from the scoped TLS the
-//! host opens via `RenderServices::scope`. There is no parallel render
-//! tree built by the binary anymore.
+//! `panes::Pane` keeps its job at the *content boundary*: the modal
+//! slot (`Editor.modal: Option<Box<dyn Pane>>`), plugin-contributed
+//! sidebar content (`LayoutSidebar.content: Option<Box<dyn Pane>>`),
+//! and the chrome widgets (tab strip, sidebar border, palette popup,
+//! editor body) the structural nodes paint into their own rects.
+//!
+//! Render takes editor borrows as a real `&LayoutCtx<'_>` argument.
 
-use devix_panes::{Event, HandleCtx, Outcome, Pane, Rect, RenderCtx, split_rects};
-use std::any::Any;
+use ratatui::Frame;
+use slotmap::SlotMap;
+
+use devix_panes::{
+    Axis, Event, HandleCtx, Outcome, Pane, Rect, RenderCtx, SidebarPane as SidebarChrome,
+    SidebarSlot, TabInfo, TabStripPane, TabbedPane, Theme, split_rects,
+};
 
 use crate::buffer::EditorPane;
-use devix_panes::{SidebarSlotPane, TabbedPane};
-use devix_panes::{SidebarPane as SidebarChrome, TabInfo, TabStripPane};
-
+use crate::cursor::{Cursor, CursorId};
+use crate::document::{DocId, Document};
+use crate::editor::{LeafRef, RenderCache};
 use crate::frame::FrameId;
-use devix_panes::{Axis, SidebarSlot};
-use crate::services::RenderServices;
 
-/// Recursive split. Mirrors `Node::Split` semantics; `children()`
-/// computes child rects via ratatui `Layout`, identical math to the
-/// existing `Node::leaves_with_rects`.
+/// Closed enum of structural layout kinds.
+pub enum LayoutNode {
+    Split(LayoutSplit),
+    Frame(LayoutFrame),
+    Sidebar(LayoutSidebar),
+}
+
+/// Recursive split. Children laid out along `axis` by integer weights;
+/// rect math comes from `split_rects` in `devix-panes`.
 pub struct LayoutSplit {
     pub axis: Axis,
-    pub children: Vec<(Box<dyn Pane>, u16)>,
+    pub children: Vec<(LayoutNode, u16)>,
 }
 
-impl Pane for LayoutSplit {
-    fn render(&self, area: Rect, ctx: &mut RenderCtx<'_, '_>) {
-        // Composite layout: walk children() and recurse. Same shape
-        // every composite Pane uses — Lattner's "what does a composite
-        // do? the same thing as the framework: ask each child for its
-        // rect, paint it."
-        for (rect, child) in self.children(area) {
-            child.render(rect, ctx);
-        }
-    }
-
-    fn handle(&mut self, _: &Event, _: Rect, _: &mut HandleCtx<'_>) -> Outcome {
-        Outcome::Ignored
-    }
-
-    fn children(&self, area: Rect) -> Vec<(Rect, &dyn Pane)> {
-        if self.children.is_empty() {
-            return Vec::new();
-        }
-        let weights: Vec<u16> = self.children.iter().map(|(_, w)| *w).collect();
-        let rects = split_rects(area, self.axis, &weights);
-        self.children
-            .iter()
-            .zip(rects.into_iter())
-            .map(|((child, _), rect)| (rect, child.as_ref()))
-            .collect()
-    }
-
-    fn as_any(&self) -> Option<&dyn Any> {
-        Some(self)
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
-        Some(self)
-    }
-}
-
-/// Editor-frame leaf. Owns the per-frame state directly — tabs, active
-/// index, tab-strip scroll, and the one-shot recenter flag — so each
-/// "frame" in the layout tree is its own self-contained Pane. Phase 3c
-/// follow-up: replaced the indirection through `Editor.frames:
-/// SlotMap<FrameId, Frame>` with direct ownership.
-///
-/// `frame: FrameId` stays as a stable identifier the render cache
-/// (`render_cache.frame_rects`, `tab_strips`) keys against. New frames
-/// are minted via `crate::frame::mint_id()`.
+/// Editor-frame leaf: tabs over a single document body, plus per-frame
+/// chrome scroll state. `frame: FrameId` is the stable identifier the
+/// render cache (`render_cache.frame_rects`, `tab_strips`) keys against.
 pub struct LayoutFrame {
     pub frame: FrameId,
-    pub tabs: Vec<crate::cursor::CursorId>,
+    pub tabs: Vec<CursorId>,
     pub active_tab: usize,
-    /// Scroll offset for this frame's tab strip, in cells.
+    /// Tab-strip scroll offset in cells.
     pub tab_strip_scroll: (u32, u32),
     /// One-shot signal asking the next tab-strip render to scroll the
     /// active tab into view. Set by mutators that change `active_tab`
-    /// (keyboard nav, new tab, close), cleared by the renderer.
+    /// (keyboard nav, new tab, close), cleared by the layout pass.
     pub recenter_active: bool,
 }
 
 impl LayoutFrame {
-    pub fn with_cursor(frame: FrameId, cursor: crate::cursor::CursorId) -> Self {
+    pub fn with_cursor(frame: FrameId, cursor: CursorId) -> Self {
         Self {
             frame,
             tabs: vec![cursor],
@@ -101,8 +70,8 @@ impl LayoutFrame {
         }
     }
 
-    /// Activate a tab and request scroll-to-visible. Use for keyboard
-    /// nav and tab-mutating operations (new/close).
+    /// Activate a tab and request scroll-into-view. Use for keyboard
+    /// nav and tab-mutating ops (new/close).
     pub fn set_active(&mut self, idx: usize) {
         if idx < self.tabs.len() {
             self.active_tab = idx;
@@ -110,101 +79,361 @@ impl LayoutFrame {
         self.recenter_active = true;
     }
 
-    /// Activate a tab without disturbing scroll. Use for click activation
-    /// — the user already pointed at the tab they want.
+    /// Activate without disturbing scroll. Use for click activation —
+    /// the user already pointed at the tab they want.
     pub fn select_visible(&mut self, idx: usize) {
         if idx < self.tabs.len() {
             self.active_tab = idx;
         }
     }
 
-    /// Returns `None` if `tabs` is empty or `active_tab` is out of bounds.
-    pub fn active_cursor(&self) -> Option<crate::cursor::CursorId> {
+    pub fn active_cursor(&self) -> Option<CursorId> {
         self.tabs.get(self.active_tab).copied()
     }
 }
 
-impl Pane for LayoutFrame {
-    fn render(&self, area: Rect, ctx: &mut RenderCtx<'_, '_>) {
-        // Editor-side borrows arrive via the scoped TLS the host
-        // opens around the whole `root.render(...)` call. Outside any
-        // scope (e.g. unit tests using Pane directly) this Pane is a
-        // no-op, which matches its previous empty-stub behavior.
-        RenderServices::with(|services| {
-            let Some(cid) = self.active_cursor() else { return };
-            let Some(cursor) = services.cursors.get(cid) else { return };
-            let Some(doc) = services.documents.get(cursor.doc) else { return };
+/// Sidebar-slot leaf. The slot enum (`Left` / `Right`) acts as the
+/// identity; one of each can exist in the tree. `content` is the Pane
+/// painted inside the chrome — the open extension point where plugins
+/// (and future built-ins like a file tree) drop their leaf in.
+pub struct LayoutSidebar {
+    pub slot: SidebarSlot,
+    pub content: Option<Box<dyn Pane>>,
+}
 
-            // Editor body height — 1 row reserved for the tab strip. Same
-            // partition `TabbedPane::children` uses below.
-            let body_height = area.height.saturating_sub(1) as usize;
-            let (start, end) = visible_byte_range(doc, cursor, body_height);
-            let highlights = doc.highlights(start, end);
-
-            let active = matches!(
-                services.focused_leaf,
-                Some(LeafRef::Frame(fid)) if fid == self.frame,
-            );
-
-            let strip_tabs: Vec<TabInfo> = self
-                .tabs
-                .iter()
-                .filter_map(|cid| {
-                    let c = services.cursors.get(*cid)?;
-                    let d = services.documents.get(c.doc)?;
-                    let label = d
-                        .buffer
-                        .path()
-                        .and_then(|p| p.file_name())
-                        .and_then(|f| f.to_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| "[scratch]".to_string());
-                    Some(TabInfo { label, dirty: d.buffer.dirty() })
-                })
-                .collect();
-
-            let tabbed = TabbedPane {
-                strip: TabStripPane {
-                    tabs: strip_tabs,
-                    active: self.active_tab,
-                    scroll: self.tab_strip_scroll,
-                },
-                body: EditorPane {
-                    buffer: &doc.buffer,
-                    selection: &cursor.selection,
-                    scroll: cursor.scroll,
-                    theme: services.theme,
-                    highlights,
-                    active,
-                },
-            };
-            tabbed.render(area, ctx);
-        });
-    }
-
-    fn handle(&mut self, _: &Event, _: Rect, _: &mut HandleCtx<'_>) -> Outcome {
-        Outcome::Ignored
-    }
-
-    fn is_focusable(&self) -> bool {
-        true
-    }
-
-    fn as_any(&self) -> Option<&dyn Any> {
-        Some(self)
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
-        Some(self)
+impl LayoutSidebar {
+    pub fn empty(slot: SidebarSlot) -> Self {
+        Self { slot, content: None }
     }
 }
 
-/// Byte range covering all lines currently visible in `cursor`'s editor
-/// body. Mirrors the helper that lived in `app/render.rs`; moved here
-/// so `LayoutFrame::render` can compute its own highlight window.
+/// Read-only borrows the structural tree needs at render time.
+/// Replaces the previous TLS-smuggled `RenderServices`. The renderer
+/// constructs one inside `Application::render` and threads it through
+/// every recursive `LayoutNode::render` call.
+pub struct LayoutCtx<'a> {
+    pub documents: &'a SlotMap<DocId, Document>,
+    pub cursors: &'a SlotMap<CursorId, Cursor>,
+    pub theme: &'a Theme,
+    pub render_cache: &'a RenderCache,
+    pub focused_leaf: Option<LeafRef>,
+}
+
+impl LayoutNode {
+    pub fn frame(frame: FrameId, cursor: CursorId) -> Self {
+        LayoutNode::Frame(LayoutFrame::with_cursor(frame, cursor))
+    }
+
+    pub fn sidebar(slot: SidebarSlot) -> Self {
+        LayoutNode::Sidebar(LayoutSidebar::empty(slot))
+    }
+
+    /// Identity of this node as a leaf, or `None` if it's a split.
+    pub fn leaf_id(&self) -> Option<LeafRef> {
+        match self {
+            LayoutNode::Frame(f) => Some(LeafRef::Frame(f.frame)),
+            LayoutNode::Sidebar(s) => Some(LeafRef::Sidebar(s.slot)),
+            LayoutNode::Split(_) => None,
+        }
+    }
+
+    /// Frames and sidebars accept focus; splits don't.
+    pub fn is_focusable(&self) -> bool {
+        matches!(self, LayoutNode::Frame(_) | LayoutNode::Sidebar(_))
+    }
+
+    /// Direct children of this node laid out within `area`. Splits
+    /// distribute by weight; leaves return empty.
+    pub fn children_at(&self, area: Rect) -> Vec<(Rect, &LayoutNode)> {
+        match self {
+            LayoutNode::Split(s) => {
+                if s.children.is_empty() {
+                    return Vec::new();
+                }
+                let weights: Vec<u16> = s.children.iter().map(|(_, w)| *w).collect();
+                let rects = split_rects(area, s.axis, &weights);
+                s.children
+                    .iter()
+                    .zip(rects)
+                    .map(|((child, _), rect)| (rect, child))
+                    .collect()
+            }
+            LayoutNode::Frame(_) | LayoutNode::Sidebar(_) => Vec::new(),
+        }
+    }
+
+    /// Resolve a path of `Split.children` indices to the target node.
+    pub fn at_path(&self, path: &[usize]) -> Option<&LayoutNode> {
+        let mut cur = self;
+        for &idx in path {
+            match cur {
+                LayoutNode::Split(s) => {
+                    let (child, _) = s.children.get(idx)?;
+                    cur = child;
+                }
+                _ => return None,
+            }
+        }
+        Some(cur)
+    }
+
+    /// Mutable counterpart of [`Self::at_path`].
+    pub fn at_path_mut(&mut self, path: &[usize]) -> Option<&mut LayoutNode> {
+        let mut cur: &mut LayoutNode = self;
+        for &idx in path {
+            match cur {
+                LayoutNode::Split(s) => {
+                    if idx >= s.children.len() {
+                        return None;
+                    }
+                    cur = &mut s.children[idx].0;
+                }
+                _ => return None,
+            }
+        }
+        Some(cur)
+    }
+
+    /// Resolve a path and the rect that node occupies inside `area`.
+    pub fn at_path_with_rect(&self, area: Rect, path: &[usize]) -> Option<(Rect, &LayoutNode)> {
+        let mut cur_node = self;
+        let mut cur_area = area;
+        for &idx in path {
+            let kids = cur_node.children_at(cur_area);
+            let (rect, child) = kids.into_iter().nth(idx)?;
+            cur_node = child;
+            cur_area = rect;
+        }
+        Some((cur_area, cur_node))
+    }
+
+    /// Deepest node containing `(col, row)`. Recurses through splits in
+    /// reverse so later children win on overlap (z-order).
+    pub fn pane_at(&self, area: Rect, col: u16, row: u16) -> Option<(Rect, &LayoutNode)> {
+        if !rect_contains(area, col, row) {
+            return None;
+        }
+        let kids = self.children_at(area);
+        for (child_rect, child) in kids.iter().rev() {
+            if let Some(found) = child.pane_at(*child_rect, col, row) {
+                return Some(found);
+            }
+        }
+        Some((area, self))
+    }
+
+    /// Walk the tree, collecting every leaf with the rect it occupies.
+    pub fn leaves_with_rects(&self, area: Rect) -> Vec<(LeafRef, Rect)> {
+        let mut out = Vec::new();
+        collect_leaves(self, area, &mut out);
+        out
+    }
+
+    /// Every `FrameId` in the tree, in tree order.
+    pub fn frames(&self) -> Vec<FrameId> {
+        let mut out = Vec::new();
+        collect_frames(self, &mut out);
+        out
+    }
+
+    /// Whether a sidebar leaf for `slot` is present anywhere in the tree.
+    pub fn sidebar_present(&self, slot: SidebarSlot) -> bool {
+        match self {
+            LayoutNode::Sidebar(s) => s.slot == slot,
+            LayoutNode::Frame(_) => false,
+            LayoutNode::Split(s) => s.children.iter().any(|(c, _)| c.sidebar_present(slot)),
+        }
+    }
+
+    /// Find a frame leaf by id.
+    pub fn find_frame(&self, fid: FrameId) -> Option<&LayoutFrame> {
+        match self {
+            LayoutNode::Frame(f) if f.frame == fid => Some(f),
+            LayoutNode::Frame(_) | LayoutNode::Sidebar(_) => None,
+            LayoutNode::Split(s) => s.children.iter().find_map(|(c, _)| c.find_frame(fid)),
+        }
+    }
+
+    pub fn find_frame_mut(&mut self, fid: FrameId) -> Option<&mut LayoutFrame> {
+        match self {
+            LayoutNode::Frame(f) if f.frame == fid => Some(f),
+            LayoutNode::Frame(_) | LayoutNode::Sidebar(_) => None,
+            LayoutNode::Split(s) => s
+                .children
+                .iter_mut()
+                .find_map(|(c, _)| c.find_frame_mut(fid)),
+        }
+    }
+
+    pub fn find_sidebar_mut(&mut self, slot: SidebarSlot) -> Option<&mut LayoutSidebar> {
+        match self {
+            LayoutNode::Sidebar(s) if s.slot == slot => Some(s),
+            LayoutNode::Sidebar(_) | LayoutNode::Frame(_) => None,
+            LayoutNode::Split(s) => s
+                .children
+                .iter_mut()
+                .find_map(|(c, _)| c.find_sidebar_mut(slot)),
+        }
+    }
+
+    /// Path of `Split.children` indices that leads to `target`, or
+    /// `None` if no such leaf exists.
+    pub fn path_to_leaf(&self, target: LeafRef) -> Option<Vec<usize>> {
+        fn go(node: &LayoutNode, target: LeafRef, out: &mut Vec<usize>) -> bool {
+            if node.leaf_id() == Some(target) {
+                return true;
+            }
+            if let LayoutNode::Split(s) = node {
+                for (i, (child, _)) in s.children.iter().enumerate() {
+                    out.push(i);
+                    if go(child, target, out) {
+                        return true;
+                    }
+                    out.pop();
+                }
+            }
+            false
+        }
+        let mut p = Vec::new();
+        if go(self, target, &mut p) { Some(p) } else { None }
+    }
+
+    /// Render this node into `area`. `LayoutCtx` carries the editor
+    /// borrows leaves need (documents, cursors, theme, focus). No TLS,
+    /// no smuggling.
+    pub fn render(&self, area: Rect, frame: &mut Frame<'_>, ctx: &LayoutCtx<'_>) {
+        match self {
+            LayoutNode::Split(_) => {
+                for (rect, child) in self.children_at(area) {
+                    child.render(rect, frame, ctx);
+                }
+            }
+            LayoutNode::Frame(f) => render_frame(f, area, frame, ctx),
+            LayoutNode::Sidebar(s) => render_sidebar(s, area, frame, ctx),
+        }
+    }
+
+    /// Dispatch an input event to this node. The dispatcher resolves
+    /// the focused leaf (or the leaf under the mouse) and calls this on
+    /// the resulting `&mut LayoutNode`. Splits and frames don't yet
+    /// consume input directly — frames respond to chord-driven commands
+    /// dispatched by the keymap, not to handler walks.
+    pub fn handle_at(&mut self, ev: &Event, area: Rect, hctx: &mut HandleCtx<'_>) -> Outcome {
+        match self {
+            LayoutNode::Split(_) | LayoutNode::Frame(_) => Outcome::Ignored,
+            LayoutNode::Sidebar(s) => match s.content.as_mut() {
+                Some(content) => content.handle(ev, sidebar_inner_rect(area), hctx),
+                None => Outcome::Ignored,
+            },
+        }
+    }
+}
+
+fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
+    col >= rect.x
+        && col < rect.x.saturating_add(rect.width)
+        && row >= rect.y
+        && row < rect.y.saturating_add(rect.height)
+}
+
+fn collect_leaves(node: &LayoutNode, area: Rect, out: &mut Vec<(LeafRef, Rect)>) {
+    if let Some(id) = node.leaf_id() {
+        out.push((id, area));
+        return;
+    }
+    for (rect, child) in node.children_at(area) {
+        collect_leaves(child, rect, out);
+    }
+}
+
+fn collect_frames(node: &LayoutNode, out: &mut Vec<FrameId>) {
+    match node {
+        LayoutNode::Frame(f) => out.push(f.frame),
+        LayoutNode::Sidebar(_) => {}
+        LayoutNode::Split(s) => {
+            for (c, _) in &s.children {
+                collect_frames(c, out);
+            }
+        }
+    }
+}
+
+fn sidebar_inner_rect(area: Rect) -> Rect {
+    let x = area.x.saturating_add(1);
+    let y = area.y.saturating_add(1);
+    let w = area.width.saturating_sub(2);
+    let h = area.height.saturating_sub(2);
+    Rect { x, y, width: w, height: h }
+}
+
+fn render_frame(f: &LayoutFrame, area: Rect, frame: &mut Frame<'_>, ctx: &LayoutCtx<'_>) {
+    let Some(cid) = f.active_cursor() else { return };
+    let Some(cursor) = ctx.cursors.get(cid) else { return };
+    let Some(doc) = ctx.documents.get(cursor.doc) else { return };
+
+    // Editor body height — 1 row reserved for the tab strip.
+    let body_height = area.height.saturating_sub(1) as usize;
+    let (start, end) = visible_byte_range(doc, cursor, body_height);
+    let highlights = doc.highlights(start, end);
+
+    let active = matches!(ctx.focused_leaf, Some(LeafRef::Frame(fid)) if fid == f.frame);
+
+    let strip_tabs: Vec<TabInfo> = f
+        .tabs
+        .iter()
+        .filter_map(|cid| {
+            let c = ctx.cursors.get(*cid)?;
+            let d = ctx.documents.get(c.doc)?;
+            let label = d
+                .buffer
+                .path()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "[scratch]".to_string());
+            Some(TabInfo { label, dirty: d.buffer.dirty() })
+        })
+        .collect();
+
+    let tabbed = TabbedPane {
+        strip: TabStripPane {
+            tabs: strip_tabs,
+            active: f.active_tab,
+            scroll: f.tab_strip_scroll,
+        },
+        body: EditorPane {
+            buffer: &doc.buffer,
+            selection: &cursor.selection,
+            scroll: cursor.scroll,
+            theme: ctx.theme,
+            highlights,
+            active,
+        },
+    };
+    let mut rctx = RenderCtx { frame };
+    tabbed.render(area, &mut rctx);
+}
+
+fn render_sidebar(s: &LayoutSidebar, area: Rect, frame: &mut Frame<'_>, ctx: &LayoutCtx<'_>) {
+    let title = match s.slot {
+        SidebarSlot::Left => "left",
+        SidebarSlot::Right => "right",
+    };
+    let focused = matches!(ctx.focused_leaf, Some(LeafRef::Sidebar(slot)) if slot == s.slot);
+    let chrome = SidebarChrome { title: title.to_string(), focused };
+    let mut rctx = RenderCtx { frame };
+    chrome.render(area, &mut rctx);
+    if let Some(content) = s.content.as_ref() {
+        let inner = sidebar_inner_rect(area);
+        if inner.width > 0 && inner.height > 0 {
+            content.render(inner, &mut rctx);
+        }
+    }
+}
+
 fn visible_byte_range(
-    doc: &crate::document::Document,
-    cursor: &crate::cursor::Cursor,
+    doc: &Document,
+    cursor: &Cursor,
     height_rows: usize,
 ) -> (usize, usize) {
     let line_count = doc.buffer.line_count();
@@ -220,304 +449,25 @@ fn visible_byte_range(
     (start, end)
 }
 
-/// Sidebar-slot leaf. The slot enum (`Left` / `Right`) acts as the
-/// identity; one of each can exist in the tree. `content` is the Pane
-/// painted inside the chrome; installed at startup by whoever owns the
-/// content (today the binary, when a plugin contributes a sidebar pane).
-/// `None` paints an empty slot.
-pub struct LayoutSidebar {
-    pub slot: SidebarSlot,
-    pub content: Option<Box<dyn Pane>>,
-}
-
-impl LayoutSidebar {
-    pub fn empty(slot: SidebarSlot) -> Self {
-        Self { slot, content: None }
-    }
-}
-
-impl Pane for LayoutSidebar {
-    fn render(&self, area: Rect, ctx: &mut RenderCtx<'_, '_>) {
-        RenderServices::with(|services| {
-            let title = match self.slot {
-                SidebarSlot::Left => "left",
-                SidebarSlot::Right => "right",
-            };
-            let focused = matches!(
-                services.focused_leaf,
-                Some(LeafRef::Sidebar(s)) if s == self.slot,
-            );
-            let chrome = SidebarChrome { title: title.to_string(), focused };
-            // SidebarSlotPane wants ownership of `content`; clone-erase
-            // through a small adapter so we can keep `self.content` and
-            // still reuse the existing chrome.
-            let slot_pane = SidebarSlotPane {
-                chrome,
-                content: self.content.as_deref().map(borrowed_pane),
-            };
-            slot_pane.render(area, ctx);
-        });
-    }
-
-    fn handle(&mut self, ev: &Event, area: Rect, ctx: &mut HandleCtx<'_>) -> Outcome {
-        // Sidebar chrome takes one cell of border on each side; route
-        // input to the content using the inner rect when present.
-        if let Some(content) = self.content.as_mut() {
-            let inner = inner_rect_for_chrome(area);
-            return content.handle(ev, inner, ctx);
-        }
-        Outcome::Ignored
-    }
-
-    fn is_focusable(&self) -> bool {
-        true
-    }
-
-    fn as_any(&self) -> Option<&dyn Any> {
-        Some(self)
-    }
-
-    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
-        Some(self)
-    }
-}
-
-fn inner_rect_for_chrome(area: Rect) -> Rect {
-    // Sidebar chrome reserves one cell of border on every side. Mirror
-    // the `SidebarSlotPane` rendering convention.
-    let x = area.x.saturating_add(1);
-    let y = area.y.saturating_add(1);
-    let w = area.width.saturating_sub(2);
-    let h = area.height.saturating_sub(2);
-    Rect { x, y, width: w, height: h }
-}
-
-/// Adapter: re-box a `&dyn Pane` as a `Box<dyn Pane>` that just forwards
-/// `render` to the original. Used so `LayoutSidebar::render` can hand
-/// `SidebarSlotPane` an owned-shaped content while keeping `self.content`
-/// in place. The borrow is bounded by `'p` because the adapter holds a
-/// raw reference; `SidebarSlotPane::render` only calls `render`, so this
-/// is safe within the call.
-fn borrowed_pane<'p>(p: &'p dyn Pane) -> Box<dyn Pane + 'p> {
-    struct Forwarder<'p>(&'p dyn Pane);
-    impl<'p> Pane for Forwarder<'p> {
-        fn render(&self, area: Rect, ctx: &mut RenderCtx<'_, '_>) {
-            self.0.render(area, ctx);
-        }
-        fn handle(&mut self, _: &Event, _: Rect, _: &mut HandleCtx<'_>) -> Outcome {
-            // The adapter is render-only; input never reaches it because
-            // `LayoutSidebar::handle` routes directly to `self.content`.
-            Outcome::Ignored
-        }
-    }
-    Box::new(Forwarder(p))
-}
-
-/// Walk the structural tree by `children()` *index* — no area needed,
-/// because we navigate through `LayoutSplit.children` directly. Use
-/// this for path-only navigation (e.g. resolving `Editor.focus` to
-/// its leaf); use `core::walk::pane_at_path` when you also need the
-/// rect each child occupies.
-pub fn pane_at_indices<'a>(root: &'a dyn Pane, path: &[usize]) -> Option<&'a dyn Pane> {
-    let mut cur = root;
-    for &idx in path {
-        let split = cur.as_any()?.downcast_ref::<LayoutSplit>()?;
-        let (child, _) = split.children.get(idx)?;
-        cur = child.as_ref();
-    }
-    Some(cur)
-}
-
-/// Mutable counterpart of [`pane_at_indices`]. Walks `LayoutSplit`
-/// children by index and returns `&mut Box<dyn Pane>` at the path. Used
-/// by the input dispatcher to call `Pane::handle` on the focused leaf.
-pub fn pane_at_indices_mut<'a>(
-    root: &'a mut Box<dyn Pane>,
-    path: &[usize],
-) -> Option<&'a mut Box<dyn Pane>> {
-    let mut cur: &mut Box<dyn Pane> = root;
-    for &idx in path {
-        let split = cur.as_any_mut().and_then(|a| a.downcast_mut::<LayoutSplit>())?;
-        if idx >= split.children.len() {
-            return None;
-        }
-        cur = &mut split.children[idx].0;
-    }
-    Some(cur)
-}
-
-/// Recover a leaf identity (`LeafRef`) from a structural Pane leaf.
-/// Returns `None` for splits or unrecognized leaf types.
-pub fn pane_leaf_id(pane: &dyn Pane) -> Option<LeafRef> {
-    let any = pane.as_any()?;
-    if let Some(f) = any.downcast_ref::<LayoutFrame>() {
-        return Some(LeafRef::Frame(f.frame));
-    }
-    if let Some(s) = any.downcast_ref::<LayoutSidebar>() {
-        return Some(LeafRef::Sidebar(s.slot));
-    }
-    None
-}
-
-/// Identity of a leaf in the structural tree. `LeafId` was an internal
-/// alias kept while the legacy `LeafRef` lived in `editor.rs`; now
-/// it's just a re-export so callers can `use tree::LeafRef` without
-/// going through the parent module.
-pub use crate::editor::LeafRef;
-pub type LeafId = LeafRef;
-
-/// Find the `LayoutFrame` for `frame` by walking the tree. Returns
-/// `None` if no leaf with that `FrameId` exists. The structural tree
-/// is the only place per-frame state lives now, so all `Editor`
-/// accessors that used to do `ws.frames[fid]` go through this.
-pub fn find_frame(root: &dyn Pane, frame: FrameId) -> Option<&LayoutFrame> {
-    if let Some(f) = root.as_any().and_then(|a| a.downcast_ref::<LayoutFrame>()) {
-        if f.frame == frame { return Some(f); }
-    }
-    if let Some(split) = root.as_any().and_then(|a| a.downcast_ref::<LayoutSplit>()) {
-        for (child, _) in &split.children {
-            if let Some(found) = find_frame(child.as_ref(), frame) {
-                return Some(found);
-            }
-        }
-    }
-    None
-}
-
-/// Whether a sidebar leaf for `slot` is present in the tree.
-pub fn sidebar_present(root: &dyn Pane, slot: SidebarSlot) -> bool {
-    if root
-        .as_any()
-        .and_then(|a| a.downcast_ref::<LayoutSidebar>())
-        .map(|s| s.slot == slot)
-        .unwrap_or(false)
-    {
-        return true;
-    }
-    if let Some(split) = root.as_any().and_then(|a| a.downcast_ref::<LayoutSplit>()) {
-        for (child, _) in &split.children {
-            if sidebar_present(child.as_ref(), slot) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Mutable lookup: walk the tree and return `&mut LayoutSidebar` for the
-/// leaf matching `slot`. Returns `None` if no sidebar with that slot
-/// exists.
-pub fn find_sidebar_mut(root: &mut Box<dyn Pane>, slot: SidebarSlot) -> Option<&mut LayoutSidebar> {
-    let is_target = root
-        .as_any()
-        .and_then(|a| a.downcast_ref::<LayoutSidebar>())
-        .map(|s| s.slot == slot)
-        .unwrap_or(false);
-    if is_target {
-        return root
-            .as_any_mut()
-            .and_then(|a| a.downcast_mut::<LayoutSidebar>());
-    }
-    let split = root.as_any_mut().and_then(|a| a.downcast_mut::<LayoutSplit>())?;
-    for (child, _) in &mut split.children {
-        if let Some(found) = find_sidebar_mut(child, slot) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-/// Mutable counterpart of [`find_frame`]. Walks the tree and returns
-/// `&mut LayoutFrame` for the matching id.
-pub fn find_frame_mut(root: &mut Box<dyn Pane>, frame: FrameId) -> Option<&mut LayoutFrame> {
-    // Match-or-recurse, but with mutable borrows the borrow checker
-    // demands a careful structure: try the root downcast first as an
-    // owned check, then descend via split children.
-    let is_target = root
-        .as_any()
-        .and_then(|a| a.downcast_ref::<LayoutFrame>())
-        .map(|f| f.frame == frame)
-        .unwrap_or(false);
-    if is_target {
-        return root
-            .as_any_mut()
-            .and_then(|a| a.downcast_mut::<LayoutFrame>());
-    }
-    let split = root.as_any_mut().and_then(|a| a.downcast_mut::<LayoutSplit>())?;
-    for (child, _) in &mut split.children {
-        if let Some(found) = find_frame_mut(child, frame) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-/// Iterate every `FrameId` in the tree in left-to-right order. Used by
-/// the LSP and watcher modules to fan out per-frame queries without
-/// having to hold a borrow across the walk.
-pub fn frame_ids(root: &dyn Pane) -> Vec<FrameId> {
-    let mut out = Vec::new();
-    collect_frames(root, &mut out);
-    out
-}
-
-fn collect_frames(pane: &dyn Pane, out: &mut Vec<FrameId>) {
-    if let Some(f) = pane.as_any().and_then(|a| a.downcast_ref::<LayoutFrame>()) {
-        out.push(f.frame);
-        return;
-    }
-    if let Some(split) = pane.as_any().and_then(|a| a.downcast_ref::<LayoutSplit>()) {
-        for (child, _) in &split.children {
-            collect_frames(child.as_ref(), out);
-        }
-    }
-}
-
-/// Walk the structural tree and collect every leaf with the rect it
-/// occupies inside `area`. Sibling order matches the order in which
-/// `children()` returns them. Replaces the old `Node::leaves_with_rects`.
-pub fn leaves_with_rects(root: &dyn Pane, area: Rect) -> Vec<(LeafRef, Rect)> {
-    let mut out = Vec::new();
-    walk(root, area, &mut out);
-    out
-}
-
-fn walk(pane: &dyn Pane, area: Rect, out: &mut Vec<(LeafRef, Rect)>) {
-    if let Some(id) = pane_leaf_id(pane) {
-        out.push((id, area));
-        return;
-    }
-    for (child_rect, child) in pane.children(area) {
-        walk(child, child_rect, out);
-    }
-}
-
-/// Tree-mutation helpers — the write-side counterpart to
-/// `pane_at_indices`. They take `&mut Box<dyn Pane>` rooted at
-/// `Editor.root` and rewrite it in place.
-///
-/// All four ops the editor needs (replace a leaf with a subtree, remove
-/// the leaf at a path, lift the root into a Split when toggling the
-/// first sidebar, collapse a Split that's been reduced to a single
-/// child) live here. Editor `ops` calls them; the structural tree is
-/// the source of truth.
+/// Tree-mutation helpers — same shape as before, but typed against
+/// `LayoutNode` instead of `Box<dyn Pane>`.
 pub mod mutate {
-    use super::{LayoutSplit, Pane};
+    use super::{Axis, LayoutNode, LayoutSplit};
 
-    /// Replace the Pane at `path` with `new`. Empty path replaces the
-    /// root itself. Returns `true` on success; `false` if any index in
-    /// the path is out of range or hits a non-`LayoutSplit` mid-walk.
-    pub fn replace_at(root: &mut Box<dyn Pane>, path: &[usize], new: Box<dyn Pane>) -> bool {
+    /// Replace the node at `path` with `new`. Empty path replaces the
+    /// root. Returns `false` if the path goes out of range or hits a
+    /// non-Split mid-walk.
+    pub fn replace_at(root: &mut LayoutNode, path: &[usize], new: LayoutNode) -> bool {
         if path.is_empty() {
             *root = new;
             return true;
         }
-        let mut cur: &mut Box<dyn Pane> = root;
+        let mut cur: &mut LayoutNode = root;
         for (i, &idx) in path.iter().enumerate() {
             let last = i + 1 == path.len();
-            let split = match cur.as_any_mut().and_then(|a| a.downcast_mut::<LayoutSplit>()) {
-                Some(s) => s,
-                None => return false,
+            let split = match cur {
+                LayoutNode::Split(s) => s,
+                _ => return false,
             };
             if idx >= split.children.len() {
                 return false;
@@ -532,28 +482,27 @@ pub mod mutate {
     }
 
     /// Remove the child at `path` from its parent split. The path must
-    /// have at least one element (you can't remove the root itself
-    /// through this helper). Returns `true` on success.
-    pub fn remove_at(root: &mut Box<dyn Pane>, path: &[usize]) -> bool {
+    /// have at least one element.
+    pub fn remove_at(root: &mut LayoutNode, path: &[usize]) -> bool {
         if path.is_empty() {
             return false;
         }
         let (parent_path, last) = path.split_at(path.len() - 1);
         let leaf_idx = last[0];
-        let mut cur: &mut Box<dyn Pane> = root;
+        let mut cur: &mut LayoutNode = root;
         for &idx in parent_path {
-            let split = match cur.as_any_mut().and_then(|a| a.downcast_mut::<LayoutSplit>()) {
-                Some(s) => s,
-                None => return false,
+            let split = match cur {
+                LayoutNode::Split(s) => s,
+                _ => return false,
             };
             if idx >= split.children.len() {
                 return false;
             }
             cur = &mut split.children[idx].0;
         }
-        let split = match cur.as_any_mut().and_then(|a| a.downcast_mut::<LayoutSplit>()) {
-            Some(s) => s,
-            None => return false,
+        let split = match cur {
+            LayoutNode::Split(s) => s,
+            _ => return false,
         };
         if leaf_idx >= split.children.len() {
             return false;
@@ -563,39 +512,33 @@ pub mod mutate {
     }
 
     /// Recursively replace any `LayoutSplit` with one child by that
-    /// child. Mirrors `Node::collapse_singleton_splits` for the
-    /// structural Pane tree.
-    pub fn collapse_singletons(root: &mut Box<dyn Pane>) {
-        // Walk children first (post-order) so a chain of single-child
-        // splits collapses fully in one pass. Limited recursion: TUI
-        // trees are dozens of nodes, not thousands.
-        if let Some(split) = root.as_any_mut().and_then(|a| a.downcast_mut::<LayoutSplit>()) {
-            for (child, _) in split.children.iter_mut() {
+    /// child. Post-order so a chain of single-child splits collapses
+    /// fully in one pass.
+    pub fn collapse_singletons(root: &mut LayoutNode) {
+        if let LayoutNode::Split(s) = root {
+            for (child, _) in s.children.iter_mut() {
                 collapse_singletons(child);
             }
-            if split.children.len() == 1 {
-                let (only, _) = split.children.remove(0);
+            if s.children.len() == 1 {
+                let (only, _) = s.children.remove(0);
                 *root = only;
             }
         }
     }
 
-    /// Replace the root with a horizontal `LayoutSplit` containing it
-    /// as the only child (weighted 80). Used by `toggle_sidebar` when
+    /// Replace the root with a horizontal Split holding the previous
+    /// root as its sole child (weight 80). Used by `toggle_sidebar` when
     /// the first sidebar opens against a non-split root.
-    pub fn lift_into_horizontal_split(root: &mut Box<dyn Pane>) {
-        // Take the current root by replacing it with a placeholder
-        // empty split, then move the original into the new split's
-        // first child.
-        let placeholder: Box<dyn Pane> = Box::new(LayoutSplit {
-            axis: super::Axis::Horizontal,
+    pub fn lift_into_horizontal_split(root: &mut LayoutNode) {
+        let placeholder = LayoutNode::Split(LayoutSplit {
+            axis: Axis::Horizontal,
             children: Vec::new(),
         });
         let inner = std::mem::replace(root, placeholder);
-        let split = root
-            .as_any_mut()
-            .and_then(|a| a.downcast_mut::<LayoutSplit>())
-            .expect("just installed a LayoutSplit");
+        let split = match root {
+            LayoutNode::Split(s) => s,
+            _ => unreachable!("just installed a Split"),
+        };
         split.children.push((inner, 80));
     }
 }
@@ -603,7 +546,7 @@ pub mod mutate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use devix_panes::{focusable_leaves, pane_at};
+
     fn full() -> Rect {
         Rect { x: 0, y: 0, width: 100, height: 50 }
     }
@@ -612,8 +555,8 @@ mod tests {
         crate::frame::mint_id()
     }
 
-    fn frame(fid: FrameId) -> Box<dyn Pane> {
-        Box::new(LayoutFrame {
+    fn frame_node(fid: FrameId) -> LayoutNode {
+        LayoutNode::Frame(LayoutFrame {
             frame: fid,
             tabs: Vec::new(),
             active_tab: 0,
@@ -622,81 +565,86 @@ mod tests {
         })
     }
 
-    fn sidebar(slot: SidebarSlot) -> Box<dyn Pane> {
-        Box::new(LayoutSidebar::empty(slot))
+    fn sidebar_node(slot: SidebarSlot) -> LayoutNode {
+        LayoutNode::Sidebar(LayoutSidebar::empty(slot))
     }
 
-    fn split(axis: Axis, children: Vec<(Box<dyn Pane>, u16)>) -> Box<dyn Pane> {
-        Box::new(LayoutSplit { axis, children })
+    fn split_node(axis: Axis, children: Vec<(LayoutNode, u16)>) -> LayoutNode {
+        LayoutNode::Split(LayoutSplit { axis, children })
     }
 
     #[test]
-    fn frame_leaf_downcasts_to_frame_id() {
+    fn frame_leaf_pane_at_returns_full_rect() {
         let fid = fake_frame_id();
-        let tree = frame(fid);
-        let (rect, leaf) = pane_at(tree.as_ref(), full(), 50, 25).unwrap();
+        let tree = frame_node(fid);
+        let (rect, leaf) = tree.pane_at(full(), 50, 25).unwrap();
         assert_eq!(rect, full());
-        let f = leaf.as_any().unwrap().downcast_ref::<LayoutFrame>().unwrap();
-        assert_eq!(f.frame, fid);
+        assert_eq!(leaf.leaf_id(), Some(LeafRef::Frame(fid)));
     }
 
     #[test]
     fn split_distributes_children_by_weight() {
         let f1 = fake_frame_id();
         let f2 = fake_frame_id();
-        let tree = split(Axis::Horizontal, vec![(frame(f1), 1), (frame(f2), 3)]);
-        let (rect, leaf) = pane_at(tree.as_ref(), full(), 10, 25).unwrap();
+        let tree = split_node(Axis::Horizontal, vec![(frame_node(f1), 1), (frame_node(f2), 3)]);
+        let (rect, leaf) = tree.pane_at(full(), 10, 25).unwrap();
         assert_eq!(rect.x, 0);
         assert_eq!(rect.width, 25);
-        assert_eq!(leaf.as_any().unwrap().downcast_ref::<LayoutFrame>().unwrap().frame, f1);
-        let (_, leaf) = pane_at(tree.as_ref(), full(), 80, 25).unwrap();
-        assert_eq!(leaf.as_any().unwrap().downcast_ref::<LayoutFrame>().unwrap().frame, f2);
+        assert_eq!(leaf.leaf_id(), Some(LeafRef::Frame(f1)));
+        let (_, leaf) = tree.pane_at(full(), 80, 25).unwrap();
+        assert_eq!(leaf.leaf_id(), Some(LeafRef::Frame(f2)));
     }
 
     #[test]
-    fn focusable_leaves_visits_every_frame() {
+    fn leaves_with_rects_visits_every_leaf_in_tree_order() {
         let f1 = fake_frame_id();
         let f2 = fake_frame_id();
         let f3 = fake_frame_id();
-        let inner = split(Axis::Vertical, vec![(frame(f2), 1), (frame(f3), 1)]);
-        let outer = split(Axis::Horizontal, vec![(frame(f1), 1), (inner, 1)]);
-        let leaves = focusable_leaves(outer.as_ref(), full());
-        assert_eq!(leaves.len(), 3);
+        let inner = split_node(Axis::Vertical, vec![(frame_node(f2), 1), (frame_node(f3), 1)]);
+        let outer = split_node(Axis::Horizontal, vec![(frame_node(f1), 1), (inner, 1)]);
+        let leaves = outer.leaves_with_rects(full());
         let ids: Vec<FrameId> = leaves
             .iter()
-            .map(|(_, _, p)| p.as_any().unwrap().downcast_ref::<LayoutFrame>().unwrap().frame)
+            .filter_map(|(leaf, _)| match leaf {
+                LeafRef::Frame(id) => Some(*id),
+                _ => None,
+            })
             .collect();
         assert_eq!(ids, vec![f1, f2, f3]);
     }
 
     #[test]
-    fn sidebar_leaf_downcasts_to_slot() {
-        let tree = sidebar(SidebarSlot::Left);
-        let (_, leaf) = pane_at(tree.as_ref(), full(), 10, 10).unwrap();
-        let sb = leaf.as_any().unwrap().downcast_ref::<LayoutSidebar>().unwrap();
-        assert_eq!(sb.slot, SidebarSlot::Left);
+    fn sidebar_leaf_id_round_trips() {
+        let tree = sidebar_node(SidebarSlot::Left);
+        let (_, leaf) = tree.pane_at(full(), 10, 10).unwrap();
+        assert_eq!(leaf.leaf_id(), Some(LeafRef::Sidebar(SidebarSlot::Left)));
     }
 
     #[test]
-    fn mutate_replace_at_root_swaps_root() {
+    fn replace_at_root_swaps_root() {
         let f1 = fake_frame_id();
         let f2 = fake_frame_id();
-        let mut tree = frame(f1);
-        assert!(mutate::replace_at(&mut tree, &[], frame(f2)));
-        let f = tree.as_any().unwrap().downcast_ref::<LayoutFrame>().unwrap();
-        assert_eq!(f.frame, f2);
+        let mut tree = frame_node(f1);
+        assert!(mutate::replace_at(&mut tree, &[], frame_node(f2)));
+        assert_eq!(tree.leaf_id(), Some(LeafRef::Frame(f2)));
     }
 
     #[test]
-    fn mutate_remove_at_drops_one_child_and_collapse_flattens() {
+    fn remove_at_drops_one_child_and_collapse_flattens() {
         let f1 = fake_frame_id();
         let f2 = fake_frame_id();
-        let mut tree = split(Axis::Horizontal, vec![(frame(f1), 1), (frame(f2), 1)]);
+        let mut tree = split_node(Axis::Horizontal, vec![(frame_node(f1), 1), (frame_node(f2), 1)]);
         assert!(mutate::remove_at(&mut tree, &[1]));
-        // Now a single-child Split.
         mutate::collapse_singletons(&mut tree);
-        // After collapse the root is the surviving frame.
-        let f = tree.as_any().unwrap().downcast_ref::<LayoutFrame>().unwrap();
-        assert_eq!(f.frame, f1);
+        assert_eq!(tree.leaf_id(), Some(LeafRef::Frame(f1)));
+    }
+
+    #[test]
+    fn path_to_leaf_finds_frame_in_split() {
+        let f1 = fake_frame_id();
+        let f2 = fake_frame_id();
+        let tree = split_node(Axis::Horizontal, vec![(frame_node(f1), 1), (frame_node(f2), 1)]);
+        assert_eq!(tree.path_to_leaf(LeafRef::Frame(f1)), Some(vec![0]));
+        assert_eq!(tree.path_to_leaf(LeafRef::Frame(f2)), Some(vec![1]));
     }
 }

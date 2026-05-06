@@ -1,29 +1,37 @@
-//! `EventSink` and `LoopMessage` — the cross-thread handle that services
-//! use to push messages back to the run loop.
+//! `EventSink` and `LoopMessage` — the cross-thread handle producers use
+//! to push messages back to the run loop.
 //!
-//! Producers (the input thread, the plugin worker, future LSP transports)
-//! receive a clone of `EventSink` from `Service::start`; the run loop owns
-//! the receiver. The channel is `std::sync::mpsc::sync_channel` with a
-//! finite capacity so a slow main loop applies backpressure on the
-//! producer instead of letting messages pile up unbounded.
+//! There is exactly one cross-thread message kind: "do this on the main
+//! thread", carried as a boxed `FnOnce(&mut AppContext)`. Producers stay
+//! in their own crates and import only `EventSink` and the closure they
+//! send; there is no central `Pulse` trait or god-set of typed pulse
+//! structs that the runtime must know about.
+//!
+//! The channel is `std::sync::mpsc::sync_channel` with a finite capacity
+//! so a slow main loop applies backpressure on the producer rather than
+//! letting messages pile up unbounded.
 
 use std::sync::mpsc::{Receiver, SendError, SyncSender, sync_channel};
 
-use crate::pulse::Pulse;
+use crate::context::AppContext;
 
 /// Run-loop channel capacity. Producers block once the run loop is this
 /// far behind — backpressure rather than unbounded growth.
 const CHANNEL_CAPACITY: usize = 1024;
 
+/// Boxed closure that the run loop invokes against an `AppContext`. The
+/// HRTB on the lifetime lets the closure accept whatever lifetime the
+/// context is reborrowed at on the delivery iteration.
+pub type PulseFn = Box<dyn for<'a> FnOnce(&mut AppContext<'a>) + Send>;
+
 /// One thing the run loop wakes up to handle.
 pub enum LoopMessage {
     Input(crossterm::event::Event),
-    Pulse(Box<dyn Pulse>),
+    Pulse(PulseFn),
     Quit,
 }
 
-/// Cross-thread wake handle. Cheap to clone; cloned once per `Service` at
-/// `start()`.
+/// Cross-thread wake handle. Cheap to clone.
 #[derive(Clone)]
 pub struct EventSink(pub(crate) SyncSender<LoopMessage>);
 
@@ -44,9 +52,12 @@ impl EventSink {
         self.0.send(LoopMessage::Input(ev))
     }
 
-    /// Push a typed pulse into the run loop.
-    pub fn pulse<P: Pulse>(&self, p: P) -> Result<(), SendError<LoopMessage>> {
-        self.0.send(LoopMessage::Pulse(Box::new(p)))
+    /// Push a closure to run on the main thread against `AppContext`.
+    pub fn pulse<F>(&self, f: F) -> Result<(), SendError<LoopMessage>>
+    where
+        F: for<'a> FnOnce(&mut AppContext<'a>) + Send + 'static,
+    {
+        self.0.send(LoopMessage::Pulse(Box::new(f)))
     }
 
     /// Ask the run loop to exit from outside the main thread (signal
