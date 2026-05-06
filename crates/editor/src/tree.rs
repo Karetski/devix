@@ -221,9 +221,19 @@ fn visible_byte_range(
 }
 
 /// Sidebar-slot leaf. The slot enum (`Left` / `Right`) acts as the
-/// identity; one of each can exist in the tree.
+/// identity; one of each can exist in the tree. `content` is the Pane
+/// painted inside the chrome; installed at startup by whoever owns the
+/// content (today the binary, when a plugin contributes a sidebar pane).
+/// `None` paints an empty slot.
 pub struct LayoutSidebar {
     pub slot: SidebarSlot,
+    pub content: Option<Box<dyn Pane>>,
+}
+
+impl LayoutSidebar {
+    pub fn empty(slot: SidebarSlot) -> Self {
+        Self { slot, content: None }
+    }
 }
 
 impl Pane for LayoutSidebar {
@@ -237,16 +247,25 @@ impl Pane for LayoutSidebar {
                 services.focused_leaf,
                 Some(LeafRef::Sidebar(s)) if s == self.slot,
             );
-            let content = (services.plugin_sidebar)(self.slot);
+            let chrome = SidebarChrome { title: title.to_string(), focused };
+            // SidebarSlotPane wants ownership of `content`; clone-erase
+            // through a small adapter so we can keep `self.content` and
+            // still reuse the existing chrome.
             let slot_pane = SidebarSlotPane {
-                chrome: SidebarChrome { title: title.to_string(), focused },
-                content,
+                chrome,
+                content: self.content.as_deref().map(borrowed_pane),
             };
             slot_pane.render(area, ctx);
         });
     }
 
-    fn handle(&mut self, _: &Event, _: Rect, _: &mut HandleCtx<'_>) -> Outcome {
+    fn handle(&mut self, ev: &Event, area: Rect, ctx: &mut HandleCtx<'_>) -> Outcome {
+        // Sidebar chrome takes one cell of border on each side; route
+        // input to the content using the inner rect when present.
+        if let Some(content) = self.content.as_mut() {
+            let inner = inner_rect_for_chrome(area);
+            return content.handle(ev, inner, ctx);
+        }
         Outcome::Ignored
     }
 
@@ -263,6 +282,37 @@ impl Pane for LayoutSidebar {
     }
 }
 
+fn inner_rect_for_chrome(area: Rect) -> Rect {
+    // Sidebar chrome reserves one cell of border on every side. Mirror
+    // the `SidebarSlotPane` rendering convention.
+    let x = area.x.saturating_add(1);
+    let y = area.y.saturating_add(1);
+    let w = area.width.saturating_sub(2);
+    let h = area.height.saturating_sub(2);
+    Rect { x, y, width: w, height: h }
+}
+
+/// Adapter: re-box a `&dyn Pane` as a `Box<dyn Pane>` that just forwards
+/// `render` to the original. Used so `LayoutSidebar::render` can hand
+/// `SidebarSlotPane` an owned-shaped content while keeping `self.content`
+/// in place. The borrow is bounded by `'p` because the adapter holds a
+/// raw reference; `SidebarSlotPane::render` only calls `render`, so this
+/// is safe within the call.
+fn borrowed_pane<'p>(p: &'p dyn Pane) -> Box<dyn Pane + 'p> {
+    struct Forwarder<'p>(&'p dyn Pane);
+    impl<'p> Pane for Forwarder<'p> {
+        fn render(&self, area: Rect, ctx: &mut RenderCtx<'_, '_>) {
+            self.0.render(area, ctx);
+        }
+        fn handle(&mut self, _: &Event, _: Rect, _: &mut HandleCtx<'_>) -> Outcome {
+            // The adapter is render-only; input never reaches it because
+            // `LayoutSidebar::handle` routes directly to `self.content`.
+            Outcome::Ignored
+        }
+    }
+    Box::new(Forwarder(p))
+}
+
 /// Walk the structural tree by `children()` *index* — no area needed,
 /// because we navigate through `LayoutSplit.children` directly. Use
 /// this for path-only navigation (e.g. resolving `Editor.focus` to
@@ -274,6 +324,24 @@ pub fn pane_at_indices<'a>(root: &'a dyn Pane, path: &[usize]) -> Option<&'a dyn
         let split = cur.as_any()?.downcast_ref::<LayoutSplit>()?;
         let (child, _) = split.children.get(idx)?;
         cur = child.as_ref();
+    }
+    Some(cur)
+}
+
+/// Mutable counterpart of [`pane_at_indices`]. Walks `LayoutSplit`
+/// children by index and returns `&mut Box<dyn Pane>` at the path. Used
+/// by the input dispatcher to call `Pane::handle` on the focused leaf.
+pub fn pane_at_indices_mut<'a>(
+    root: &'a mut Box<dyn Pane>,
+    path: &[usize],
+) -> Option<&'a mut Box<dyn Pane>> {
+    let mut cur: &mut Box<dyn Pane> = root;
+    for &idx in path {
+        let split = cur.as_any_mut().and_then(|a| a.downcast_mut::<LayoutSplit>())?;
+        if idx >= split.children.len() {
+            return None;
+        }
+        cur = &mut split.children[idx].0;
     }
     Some(cur)
 }
@@ -311,6 +379,49 @@ pub fn find_frame(root: &dyn Pane, frame: FrameId) -> Option<&LayoutFrame> {
             if let Some(found) = find_frame(child.as_ref(), frame) {
                 return Some(found);
             }
+        }
+    }
+    None
+}
+
+/// Whether a sidebar leaf for `slot` is present in the tree.
+pub fn sidebar_present(root: &dyn Pane, slot: SidebarSlot) -> bool {
+    if root
+        .as_any()
+        .and_then(|a| a.downcast_ref::<LayoutSidebar>())
+        .map(|s| s.slot == slot)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if let Some(split) = root.as_any().and_then(|a| a.downcast_ref::<LayoutSplit>()) {
+        for (child, _) in &split.children {
+            if sidebar_present(child.as_ref(), slot) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Mutable lookup: walk the tree and return `&mut LayoutSidebar` for the
+/// leaf matching `slot`. Returns `None` if no sidebar with that slot
+/// exists.
+pub fn find_sidebar_mut(root: &mut Box<dyn Pane>, slot: SidebarSlot) -> Option<&mut LayoutSidebar> {
+    let is_target = root
+        .as_any()
+        .and_then(|a| a.downcast_ref::<LayoutSidebar>())
+        .map(|s| s.slot == slot)
+        .unwrap_or(false);
+    if is_target {
+        return root
+            .as_any_mut()
+            .and_then(|a| a.downcast_mut::<LayoutSidebar>());
+    }
+    let split = root.as_any_mut().and_then(|a| a.downcast_mut::<LayoutSplit>())?;
+    for (child, _) in &mut split.children {
+        if let Some(found) = find_sidebar_mut(child, slot) {
+            return Some(found);
         }
     }
     None
@@ -512,7 +623,7 @@ mod tests {
     }
 
     fn sidebar(slot: SidebarSlot) -> Box<dyn Pane> {
-        Box::new(LayoutSidebar { slot })
+        Box::new(LayoutSidebar::empty(slot))
     }
 
     fn split(axis: Axis, children: Vec<(Box<dyn Pane>, u16)>) -> Box<dyn Pane> {

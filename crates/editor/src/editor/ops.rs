@@ -15,8 +15,8 @@ use crate::document::{DocId, Document};
 use crate::frame::mint_id;
 use devix_panes::{Axis, SidebarSlot};
 use crate::tree::{
-    LayoutFrame, LayoutSidebar, LayoutSplit, LeafId, find_frame, find_frame_mut, frame_ids,
-    mutate, pane_leaf_id,
+    LayoutFrame, LayoutSidebar, LayoutSplit, LeafId, find_frame, find_frame_mut, find_sidebar_mut,
+    frame_ids, mutate, pane_leaf_id, sidebar_present,
 };
 use crate::cursor::{Cursor, CursorId, ScrollMode};
 
@@ -99,6 +99,10 @@ impl Editor {
             let doc = Document::from_path(path)?;
             let id = self.documents.insert(doc);
             self.doc_index.insert(key, id);
+            if let Some(sink) = self.disk_sink.as_ref() {
+                let sink = sink.clone();
+                super::install_watcher_for_doc(&mut self.documents, id, &sink);
+            }
             id
         };
         // Resolve the active frame and old cursor BEFORE allocating the new cursor,
@@ -201,6 +205,18 @@ impl Editor {
         self.focus = new_focus;
     }
 
+    /// Install `pane` as the content of the sidebar slot `slot`. If the
+    /// slot leaf doesn't exist yet, this also creates it (toggling the
+    /// slot open). If a previous content was installed, it's replaced.
+    pub fn install_sidebar_pane(&mut self, slot: SidebarSlot, pane: Box<dyn Pane>) {
+        if !sidebar_present(self.root.as_ref(), slot) {
+            self.toggle_sidebar(slot);
+        }
+        if let Some(leaf) = find_sidebar_mut(&mut self.root, slot) {
+            leaf.content = Some(pane);
+        }
+    }
+
     pub fn toggle_sidebar(&mut self, slot: SidebarSlot) {
         // Lift the root into a horizontal Split if it isn't one.
         let needs_lift = !root_is_horizontal_split(self.root.as_ref());
@@ -236,7 +252,7 @@ impl Editor {
             };
             split.children.insert(
                 insert_at,
-                (Box::new(LayoutSidebar { slot }), 20),
+                (Box::new(LayoutSidebar::empty(slot)), 20),
             );
             if let Some(top) = self.focus.first_mut() {
                 if *top >= insert_at { *top += 1; }

@@ -7,8 +7,8 @@
 //! tree synchronized with the rope; bypassing them leaves stale highlight
 //! spans pointing into the wrong byte ranges.
 
-use std::path::{Path, PathBuf};
-use std::sync::mpsc as std_mpsc;
+use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::Result;
 use devix_text::{Buffer, Selection, Transaction};
@@ -20,11 +20,11 @@ new_key_type! { pub struct DocId; }
 
 pub struct Document {
     pub buffer: Buffer,
+    /// Active filesystem watcher. Installed by [`Document::install_disk_watcher`]
+    /// after the document has a stable identity in its owning SlotMap, since
+    /// the notify callback closes over a caller-supplied closure that
+    /// typically wants the doc's id.
     pub watcher: Option<notify::RecommendedWatcher>,
-    /// Receives a `()` whenever the watcher detects a change to this doc's path.
-    /// Drained on every event-loop tick by `App::drain_disk_events`, which sets
-    /// `disk_changed_pending` on the affected Document.
-    pub disk_rx: Option<std_mpsc::Receiver<()>>,
     pub disk_changed_pending: bool,
     /// Per-document syntax tree. `None` for plain-text or unknown extensions;
     /// then `highlights` returns an empty vec and the editor renders without
@@ -41,7 +41,6 @@ impl Document {
         let mut d = Self {
             buffer,
             watcher: None,
-            disk_rx: None,
             disk_changed_pending: false,
             highlighter,
         };
@@ -49,21 +48,16 @@ impl Document {
         d
     }
 
-    /// Open `path`. Best-effort spawns a filesystem watcher for that path; if
-    /// spawning fails (e.g. read-only filesystem, permission error), the
-    /// document is still returned without a watcher rather than failing the
-    /// open.
+    /// Open `path`. Does *not* attach a filesystem watcher; the editor
+    /// installs one via [`Document::install_disk_watcher`] after the doc
+    /// is in its SlotMap (so the watcher's callback can close over the
+    /// stable `DocId`).
     pub fn from_path(path: PathBuf) -> Result<Self> {
         let buffer = Buffer::from_path(&path)?;
-        let (watcher, disk_rx) = match spawn_watcher_for(&path) {
-            Ok((w, rx)) => (Some(w), Some(rx)),
-            Err(_) => (None, None),
-        };
         let highlighter = Language::from_path(&path).and_then(|lang| Highlighter::new(lang).ok());
         let mut d = Self {
             buffer,
-            watcher,
-            disk_rx,
+            watcher: None,
             disk_changed_pending: false,
             highlighter,
         };
@@ -73,6 +67,28 @@ impl Document {
 
     pub fn empty() -> Self {
         Self::from_buffer(Buffer::empty())
+    }
+
+    /// Install a filesystem watcher whose `notify` callback invokes
+    /// `on_change` on every detected change to this doc's path.
+    /// Replaces any previously-installed watcher. Best-effort: if the
+    /// watcher fails to spawn (read-only filesystem, permission error,
+    /// path has no parent directory), the document is left without a
+    /// watcher and `false` is returned.
+    pub fn install_disk_watcher(
+        &mut self,
+        on_change: Box<dyn Fn() + Send + Sync + 'static>,
+    ) -> bool {
+        let Some(path) = self.buffer.path().map(Path::to_path_buf) else {
+            return false;
+        };
+        match spawn_watcher_for(&path, on_change) {
+            Ok(w) => {
+                self.watcher = Some(w);
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     /// Apply a buffer transaction and keep the highlighter in sync.
@@ -141,28 +157,30 @@ impl Document {
     }
 }
 
-/// Watch `target_path`'s parent directory non-recursively, filtering events to
-/// only fire when `target_path` is one of the changed paths. The watcher must
-/// be retained (returned to the caller) — dropping it stops the watch.
+/// Watch `target_path`'s parent directory non-recursively, filtering
+/// events to only fire when `target_path` is one of the changed paths,
+/// and invoking `on_change` directly from the notify callback. The
+/// returned watcher must be retained — dropping it stops the watch.
 fn spawn_watcher_for(
     target_path: &Path,
-) -> Result<(notify::RecommendedWatcher, std_mpsc::Receiver<()>)> {
-    let (tx, rx) = std_mpsc::channel::<()>();
+    on_change: Box<dyn Fn() + Send + Sync + 'static>,
+) -> Result<notify::RecommendedWatcher> {
     let target = target_path.to_path_buf();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         let Ok(ev) = res else { return };
         use notify::EventKind::*;
         if !matches!(ev.kind, Modify(_) | Create(_) | Remove(_)) { return; }
-        // Only signal if our target path is among the changed paths. Without
-        // this filter, a watcher on a shared directory would fire for every
-        // sibling file's change, producing spurious "disk changed" prompts.
+        // Only signal if our target path is among the changed paths.
+        // Without this filter, a watcher on a shared directory would
+        // fire for every sibling file's change, producing spurious
+        // "disk changed" prompts.
         if ev.paths.iter().any(|p| same_file(p, &target)) {
-            let _ = tx.send(());
+            on_change();
         }
     })?;
     let watch_target = target_path.parent().unwrap_or_else(|| Path::new("."));
     watcher.watch(watch_target, RecursiveMode::NonRecursive)?;
-    Ok((watcher, rx))
+    Ok(watcher)
 }
 
 /// Best-effort path-equality check. Both sides may or may not be canonical;
@@ -186,7 +204,6 @@ mod tests {
         let d = Document::empty();
         assert!(d.buffer.path().is_none());
         assert!(d.watcher.is_none());
-        assert!(d.disk_rx.is_none());
         assert!(!d.disk_changed_pending);
         assert!(!d.buffer.dirty());
         assert!(d.language().is_none());

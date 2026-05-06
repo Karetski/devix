@@ -19,12 +19,14 @@ pub use commands::{
 };
 pub use cursor::{Cursor, CursorId, ScrollMode};
 pub use document::{DocId, Document};
-pub use editor::{Editor, LeafRef, RenderCache, TabHit, TabStripCache, TabStripHit};
+pub use editor::{
+    DiskSink, Editor, LeafRef, RenderCache, TabHit, TabStripCache, TabStripHit, path_to_leaf,
+};
 pub use frame::FrameId;
 pub use services::RenderServices;
 pub use tree::{
-    LayoutFrame, find_frame, find_frame_mut, frame_ids, leaves_with_rects, pane_at_indices,
-    pane_leaf_id,
+    LayoutFrame, LayoutSidebar, find_frame, find_frame_mut, find_sidebar_mut, frame_ids,
+    leaves_with_rects, pane_at_indices, pane_at_indices_mut, pane_leaf_id, sidebar_present,
 };
 
 // Layout primitives + composites live in `devix-panes`; re-export the

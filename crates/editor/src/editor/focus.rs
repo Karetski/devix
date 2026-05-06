@@ -257,7 +257,7 @@ fn find_sidebar(root: &dyn Pane, area: Rect, slot: SidebarSlot) -> Option<Vec<us
 
 /// Find the path to a `LeafRef` by walking the structural Pane tree.
 /// Returns the sequence of `children()` indices that lead to the target.
-pub(super) fn path_to_leaf(root: &dyn Pane, area: Rect, target: LeafRef) -> Option<Vec<usize>> {
+pub fn path_to_leaf(root: &dyn Pane, area: Rect, target: LeafRef) -> Option<Vec<usize>> {
     fn go(pane: &dyn Pane, area: Rect, target: LeafRef, out: &mut Vec<usize>) -> bool {
         if let Some(leaf) = pane_to_leaf_ref(pane) {
             if leaf == target {

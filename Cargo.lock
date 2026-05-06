@@ -214,6 +214,7 @@ dependencies = [
  "devix-plugin",
  "devix-text",
  "ratatui",
+ "tokio",
 ]
 
 [[package]]

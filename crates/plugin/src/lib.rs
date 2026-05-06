@@ -47,7 +47,9 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result, anyhow};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton};
-use devix_editor::{Chord, Context, EditorCommand};
+use devix_editor::{
+    Chord, Command, CommandId, CommandRegistry, Context, EditorCommand, Editor, Keymap,
+};
 use devix_panes::{Action, Event, HandleCtx, Outcome, Pane, Rect, RenderCtx, SidebarSlot};
 use mlua::{Function, Lua, LuaOptions, RegistryKey, StdLib, Table, UserData,
     UserDataMethods, Value};
@@ -671,6 +673,12 @@ fn strip_dangerous_globals(lua: &Lua) -> Result<()> {
 /// host's event enum.
 pub type Wakeup = Arc<dyn Fn() + Send + Sync + 'static>;
 
+/// Push-callback for plugin messages. Production callers pass one of
+/// these to [`PluginRuntime::load_with_sink`]; the worker thread invokes
+/// it directly for every emitted [`PluginMsg`], so the editor's run loop
+/// never has to drain a queue.
+pub type MsgSink = Arc<dyn Fn(PluginMsg) + Send + Sync + 'static>;
+
 /// Plugin runtime: owns the host on a dedicated thread and exposes
 /// channel handles the editor uses to dispatch invokes / forward input
 /// / drain status.
@@ -679,6 +687,11 @@ pub struct PluginRuntime {
     input_tx: UnboundedSender<PluginInput>,
     msg_rx: UnboundedReceiver<PluginMsg>,
     contributions: Contributions,
+    /// Strings leaked to satisfy the `'static` lifetime on
+    /// `CommandId(&'static str)` / `Command::label`. Lives as long as the
+    /// runtime so registered commands stay valid.
+    #[allow(dead_code)]
+    leaked_strings: Vec<&'static str>,
     /// Held only to keep the worker thread alive for the lifetime of
     /// the runtime; dropped on shutdown so the receiver gets `None` and
     /// the loop exits.
@@ -688,13 +701,33 @@ pub struct PluginRuntime {
 
 impl PluginRuntime {
     /// Load without a wakeup hook. Suitable for tests; production
-    /// callers should use [`load_with_wakeup`] so the editor's main
-    /// loop unblocks the moment a plugin pushes a message.
+    /// callers should use [`load_with_sink`] so the editor's run loop
+    /// gets a typed pulse the moment the plugin emits a message — no
+    /// polling layer in between.
     pub fn load(path: &Path) -> Result<Self> {
-        Self::load_with_wakeup(path, None)
+        Self::load_full(path, None, None)
     }
 
+    /// Load with a doorbell-style wakeup hook. The worker buffers
+    /// emitted messages on an internal queue and calls `wakeup()` after
+    /// each batch; consumers drain via [`PluginRuntime::drain_messages`].
+    /// Kept for tests and any caller that genuinely wants a queue.
     pub fn load_with_wakeup(path: &Path, wakeup: Option<Wakeup>) -> Result<Self> {
+        Self::load_full(path, wakeup, None)
+    }
+
+    /// Load with a push-callback. Every emitted [`PluginMsg`] is handed
+    /// directly to `sink` from the plugin worker thread; nothing is
+    /// buffered on this side. Production path.
+    pub fn load_with_sink(path: &Path, sink: MsgSink) -> Result<Self> {
+        Self::load_full(path, None, Some(sink))
+    }
+
+    fn load_full(
+        path: &Path,
+        wakeup: Option<Wakeup>,
+        msg_sink: Option<MsgSink>,
+    ) -> Result<Self> {
         let (invoke_tx, mut invoke_rx) = unbounded_channel::<u64>();
         let (input_tx, mut input_rx) = unbounded_channel::<PluginInput>();
         let (msg_tx, msg_rx) = unbounded_channel::<PluginMsg>();
@@ -729,7 +762,7 @@ impl PluginRuntime {
                             return;
                         }
                     };
-                    forward_messages(&host, &msg_tx, wakeup.as_ref());
+                    forward_messages(&host, &msg_tx, msg_sink.as_ref(), wakeup.as_ref());
                     if init_tx.send(Ok(contributions)).is_err() {
                         return;
                     }
@@ -748,7 +781,7 @@ impl PluginRuntime {
                                 }
                             }
                         }
-                        forward_messages(&host, &msg_tx, wakeup.as_ref());
+                        forward_messages(&host, &msg_tx, msg_sink.as_ref(), wakeup.as_ref());
                     }
                 });
             })
@@ -762,6 +795,7 @@ impl PluginRuntime {
             input_tx,
             msg_rx,
             contributions,
+            leaked_strings: Vec::new(),
             join: Some(join),
         })
     }
@@ -790,6 +824,63 @@ impl PluginRuntime {
         }
     }
 
+    /// Wire this runtime's contributions into the editor:
+    /// - register every contributed command in `commands`,
+    /// - bind every contributed chord in `keymap`,
+    /// - install every contributed pane onto its sidebar slot in
+    ///   `editor` (toggling the slot open if needed).
+    ///
+    /// Run once at startup before the run loop. After this returns, the
+    /// editor's command registry, keymap, and structural Pane tree all
+    /// know about the plugin; the host doesn't need any plugin-specific
+    /// indirection beyond owning the runtime so messages keep draining.
+    pub fn install(
+        &mut self,
+        commands: &mut CommandRegistry,
+        keymap: &mut Keymap,
+        editor: &mut Editor,
+    ) {
+        let sender = self.invoke_tx.clone();
+        for spec in &self.contributions.commands {
+            let id_static: &'static str = leak_str(&spec.id);
+            let label_static: &'static str = leak_str(&spec.label);
+            self.leaked_strings.push(id_static);
+            self.leaked_strings.push(label_static);
+
+            let id = CommandId(id_static);
+            let action = make_command_action(spec, sender.clone());
+            commands.register(Command {
+                id,
+                label: label_static,
+                category: Some("Plugin"),
+                action,
+            });
+            if let Some(chord) = spec.chord {
+                keymap.bind_command(chord, id);
+            }
+        }
+        // Snapshot the slots so we don't borrow `self.contributions` and
+        // `self.input_tx` simultaneously.
+        let pane_specs: Vec<(SidebarSlot, PaneSpec)> = self
+            .contributions
+            .panes
+            .iter()
+            .map(|p| (p.slot, p.clone()))
+            .collect();
+        for (slot, spec) in pane_specs {
+            let pane = LuaPane {
+                pane_id: spec.pane_id,
+                lines: spec.lines.clone(),
+                scroll: spec.scroll.clone(),
+                visible_rows: spec.visible_rows.clone(),
+                has_on_key: spec.has_on_key.clone(),
+                has_on_click: spec.has_on_click.clone(),
+                input_tx: self.input_tx.clone(),
+            };
+            editor.install_sidebar_pane(slot, Box::new(pane));
+        }
+    }
+
     /// Pane handle for `slot`, if the plugin contributed one. The
     /// returned [`PluginPane`] holds clones of the shared state — the
     /// renderer reads `lines` and `scroll` each frame, the input
@@ -812,19 +903,34 @@ impl PluginRuntime {
     }
 }
 
+fn leak_str(s: &str) -> &'static str {
+    Box::leak(s.to_string().into_boxed_str())
+}
+
 fn forward_messages(
     host: &PluginHost,
-    sink: &UnboundedSender<PluginMsg>,
+    msg_tx: &UnboundedSender<PluginMsg>,
+    msg_sink: Option<&MsgSink>,
     wakeup: Option<&Wakeup>,
 ) {
     let mut sent_any = false;
     for msg in host.drain_messages() {
-        if sink.send(msg).is_err() {
-            break;
+        match msg_sink {
+            // Direct push: hand the message straight to the host's run
+            // loop. No buffer, no doorbell, nothing to drain on the
+            // editor side.
+            Some(sink) => sink(msg),
+            // Buffered fallback: queue for `drain_messages` and ring
+            // the doorbell after the batch.
+            None => {
+                if msg_tx.send(msg).is_err() {
+                    break;
+                }
+            }
         }
         sent_any = true;
     }
-    if sent_any {
+    if msg_sink.is_none() && sent_any {
         if let Some(w) = wakeup {
             (w)();
         }
@@ -985,6 +1091,7 @@ impl Pane for LuaPane {
     }
 
     fn handle(&mut self, ev: &Event, _: Rect, _: &mut HandleCtx<'_>) -> Outcome {
+        use crossterm::event::MouseEventKind;
         match ev {
             Event::Key(k) if self.has_on_key() => {
                 let _ = self.input_tx.send(PluginInput::Key {
@@ -993,18 +1100,35 @@ impl Pane for LuaPane {
                 });
                 Outcome::Consumed
             }
-            Event::Mouse(m) if self.has_on_click() => {
-                use crossterm::event::MouseEventKind;
-                if let MouseEventKind::Down(button) = m.kind {
-                    let _ = self.input_tx.send(PluginInput::Click {
-                        pane_id: self.pane_id,
-                        x: m.column,
-                        y: m.row,
-                        button,
-                    });
-                    return Outcome::Consumed;
+            Event::Mouse(m) => {
+                match m.kind {
+                    MouseEventKind::Down(button) if self.has_on_click() => {
+                        let _ = self.input_tx.send(PluginInput::Click {
+                            pane_id: self.pane_id,
+                            x: m.column,
+                            y: m.row,
+                            button,
+                        });
+                        Outcome::Consumed
+                    }
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                        let line_count = self
+                            .lines
+                            .lock()
+                            .map(|l| l.len())
+                            .unwrap_or(0)
+                            .min(u16::MAX as usize) as u16;
+                        let height = self.visible_rows.load(Ordering::Acquire);
+                        let delta: i32 = if matches!(m.kind, MouseEventKind::ScrollUp) {
+                            -2
+                        } else {
+                            2
+                        };
+                        self.scroll_by(delta, line_count, height);
+                        Outcome::Consumed
+                    }
+                    _ => Outcome::Ignored,
                 }
-                Outcome::Ignored
             }
             _ => Outcome::Ignored,
         }

@@ -15,19 +15,20 @@
 //! threading borrowed context through a callback boundary you
 //! don't control (here, `Pane::render`'s signature in `core`).
 //!
-//! Plugin-supplied sidebar content is resolved through a closure so
-//! `editor` doesn't need to depend on the binary's plugin world.
+//! Plugin-supplied sidebar content is owned by the structural tree
+//! (`LayoutSidebar::content`) — the editor crate no longer needs a
+//! plugin-resolution callback, and `RenderServices` carries no
+//! plugin-specific field.
 
 use std::cell::Cell;
 use std::ptr::NonNull;
 
-use devix_panes::{Pane, Theme};
+use devix_panes::Theme;
 use slotmap::SlotMap;
 
 use crate::cursor::{Cursor, CursorId};
 use crate::document::{DocId, Document};
 
-use devix_panes::SidebarSlot;
 use crate::editor::{LeafRef, RenderCache};
 
 pub struct RenderServices<'a> {
@@ -39,7 +40,6 @@ pub struct RenderServices<'a> {
     /// structural Panes consult this to decide whether to draw their
     /// "active" chrome variant (cursor placement, focused border).
     pub focused_leaf: Option<LeafRef>,
-    pub plugin_sidebar: &'a dyn Fn(SidebarSlot) -> Option<Box<dyn Pane>>,
 }
 
 thread_local! {

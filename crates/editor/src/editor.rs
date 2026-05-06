@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Result;
 use devix_panes::Pane;
@@ -32,6 +33,8 @@ use crate::tree::{find_frame_mut, frame_ids};
 mod focus;
 mod hittest;
 mod ops;
+
+pub use focus::path_to_leaf;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum LeafRef {
@@ -92,7 +95,17 @@ pub struct Editor {
     pub focus: Vec<usize>,
     pub doc_index: HashMap<PathBuf, DocId>,
     pub render_cache: RenderCache,
+    /// Push-callback for disk-change events. When `Some`, every newly
+    /// opened document gets a `notify` watcher whose callback invokes
+    /// `disk_sink(doc_id)` directly. Set once at startup via
+    /// [`Editor::attach_disk_sink`]; never polled.
+    pub disk_sink: Option<DiskSink>,
 }
+
+/// Push-callback type for disk-change events. Held as `Arc` so notify
+/// callback closures (one per watched document) can each capture a clone
+/// without forcing the runtime to thread its sink everywhere.
+pub type DiskSink = Arc<dyn Fn(DocId) + Send + Sync + 'static>;
 
 impl Editor {
     /// Create a editor with a single frame, single tab, single cursor.
@@ -124,7 +137,27 @@ impl Editor {
             focus,
             doc_index,
             render_cache: RenderCache::default(),
+            disk_sink: None,
         })
+    }
+
+    /// Install a push-callback for disk-change events and (re)attach
+    /// `notify` watchers on every currently-open document so they wire
+    /// directly into the new sink. Future `open_path_replace_current`
+    /// calls also use this sink.
+    ///
+    /// Replaces any previously-attached sink (including its watchers).
+    pub fn attach_disk_sink(&mut self, sink: DiskSink) {
+        // Re-install watchers on every open doc with a path.
+        let ids: Vec<DocId> = self
+            .documents
+            .iter()
+            .map(|(id, _)| id)
+            .collect();
+        for id in ids {
+            install_watcher_for_doc(&mut self.documents, id, &sink);
+        }
+        self.disk_sink = Some(sink);
     }
 
     pub fn active_cursor(&self) -> Option<&Cursor> {
@@ -303,6 +336,20 @@ impl Editor {
 
 pub(super) fn canonicalize_or_keep(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// Spawn a `notify` watcher on `documents[id]` whose callback invokes
+/// `sink(id)` directly. Pulled out so `attach_disk_sink` (initial wiring)
+/// and `open_path_replace_current` (per-open wiring) share one
+/// implementation.
+pub(crate) fn install_watcher_for_doc(
+    documents: &mut SlotMap<DocId, Document>,
+    id: DocId,
+    sink: &DiskSink,
+) {
+    let Some(doc) = documents.get_mut(id) else { return };
+    let sink = sink.clone();
+    doc.install_disk_watcher(Box::new(move || sink(id)));
 }
 
 #[cfg(test)]

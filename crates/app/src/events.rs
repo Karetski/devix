@@ -1,104 +1,115 @@
-//! Input events: KeyEvent → Chord → command via keymap; MouseEvent →
-//! command directly. The disk-pending input gate is enforced here.
+//! Translate terminal input into editor mutations on `AppContext`.
+//!
+//! KeyEvent → `Pane::handle` on the focused leaf → keymap → InsertChar
+//! fallback. Mouse events route to the leaf at the click position via
+//! the same `Pane::handle` chain, falling back to `ClickAt`/`DragAt` for
+//! the editor body.
+//!
+//! Plugin-specific routing lives nowhere in this file; the responder
+//! chain is the sole routing. Plugin sidebars participate by virtue of
+//! being installed as `Box<dyn Pane>` content on `LayoutSidebar`.
 
 use std::sync::Arc;
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-    MouseButton, MouseEvent, MouseEventKind};
-use devix_editor::{
-    Context, EditorCommand, ModalOutcome, PalettePane, Viewport, chord_from_key, cmd,
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use devix_panes::HandleCtx;
-use devix_editor::TabStripHit;
+use devix_editor::{
+    EditorCommand, ModalOutcome, PalettePane, TabStripHit, chord_from_key, cmd, leaves_with_rects,
+    pane_at_indices_mut,
+};
+use devix_panes::{HandleCtx, Outcome, Rect, pane_at_path};
 
-use crate::app::App;
+use crate::context::AppContext;
+use crate::pulse::ScrollAccumulated;
 
-pub fn handle_event(ev: Event, app: &mut App) {
+pub fn handle(ev: Event, ctx: &mut AppContext<'_>) {
     match ev {
         Event::Key(KeyEvent { code, modifiers, kind, .. })
             if kind == KeyEventKind::Press || kind == KeyEventKind::Repeat =>
         {
-            handle_key(ev, code, modifiers, app);
+            handle_key(ev, code, modifiers, ctx);
         }
-        Event::Mouse(me) => handle_mouse(me, app),
-        Event::Resize(_, _) => app.request_redraw(),
+        Event::Mouse(me) => handle_mouse(ev, me, ctx),
+        Event::Resize(_, _) => ctx.request_redraw(),
         _ => {}
     }
 }
 
-pub fn handle_key(ev: Event, code: KeyCode, mods: KeyModifiers, app: &mut App) {
-    if app.editor.modal.is_some() {
-        dispatch_modal_event(app, &ev);
+fn handle_key(ev: Event, code: KeyCode, mods: KeyModifiers, ctx: &mut AppContext<'_>) {
+    if ctx.editor.modal.is_some() {
+        dispatch_modal_event(ctx, &ev);
         return;
     }
 
-    let pending = app.editor.active_doc().map(|d| d.disk_changed_pending).unwrap_or(false);
+    let pending = ctx
+        .editor
+        .active_doc()
+        .map(|d| d.disk_changed_pending)
+        .unwrap_or(false);
     if pending && mods.contains(KeyModifiers::CONTROL) {
         let lower = match code {
             KeyCode::Char(c) => Some(c.to_ascii_lowercase()),
             _ => None,
         };
         match lower {
-            Some('r') => { run_command(app, Arc::new(cmd::ReloadFromDisk)); return; }
-            Some('k') => { run_command(app, Arc::new(cmd::KeepBufferIgnoreDisk)); return; }
+            Some('r') => {
+                ctx.run(&cmd::ReloadFromDisk);
+                return;
+            }
+            Some('k') => {
+                ctx.run(&cmd::KeepBufferIgnoreDisk);
+                return;
+            }
             _ => {}
         }
     }
 
-    // When focus sits on a plugin-contributed sidebar pane, give the
-    // plugin first crack at every key.
-    if let Some(slot) = crate::plugin::focused_plugin_slot(app) {
-        if let Event::Key(key_ev) = ev {
-            if crate::plugin::forward_key_to_plugin(app, slot, key_ev) {
-                app.request_redraw();
-                return;
-            }
-        }
+    if dispatch_to_focused_leaf(ctx, &ev) == Outcome::Consumed {
+        ctx.request_redraw();
+        return;
     }
 
     let chord = chord_from_key(code, mods);
-    if let Some(action) = app.keymap.lookup(chord, &app.commands) {
-        run_command(app, action);
+    if let Some(action) = ctx.keymap.lookup(chord, ctx.commands) {
+        run_arc(ctx, action);
         return;
     }
 
     if let KeyCode::Char(c) = code {
         if !mods.contains(KeyModifiers::CONTROL) && !mods.contains(KeyModifiers::ALT) {
-            run_command(app, Arc::new(cmd::InsertChar(c)));
+            ctx.run(&cmd::InsertChar(c));
         }
     }
 }
 
-fn dispatch_modal_event(app: &mut App, ev: &Event) {
+fn dispatch_modal_event(ctx: &mut AppContext<'_>, ev: &Event) {
     {
-        let modal = app
+        let modal = ctx
             .editor
             .modal
             .as_mut()
             .expect("dispatch_modal_event requires a modal");
         let mut hctx = HandleCtx::default();
-        let _ = modal.handle(ev, devix_panes::Rect::default(), &mut hctx);
+        let _ = modal.handle(ev, Rect::default(), &mut hctx);
     }
 
-    let outcome = drain_modal_outcome(app);
+    let outcome = drain_modal_outcome(ctx);
     match outcome {
-        ModalOutcome::Dismiss => run_command(app, Arc::new(cmd::CloseModal)),
+        ModalOutcome::Dismiss => ctx.run(&cmd::CloseModal),
         ModalOutcome::Accept => {
-            let action: Arc<dyn EditorCommand> = if modal_is::<PalettePane>(app) {
-                Arc::new(cmd::PaletteAccept)
+            if modal_is::<PalettePane>(ctx) {
+                ctx.run(&cmd::PaletteAccept);
             } else {
-                Arc::new(cmd::CloseModal)
-            };
-            run_command(app, action);
+                ctx.run(&cmd::CloseModal);
+            }
         }
-        ModalOutcome::None => {
-            app.request_redraw();
-        }
+        ModalOutcome::None => ctx.request_redraw(),
     }
 }
 
-fn modal_is<T: 'static>(app: &App) -> bool {
-    app.editor
+fn modal_is<T: 'static>(ctx: &AppContext<'_>) -> bool {
+    ctx.editor
         .modal
         .as_ref()
         .and_then(|m| m.as_any())
@@ -106,13 +117,8 @@ fn modal_is<T: 'static>(app: &App) -> bool {
         .unwrap_or(false)
 }
 
-fn drain_modal_outcome(app: &mut App) -> ModalOutcome {
-    let Some(any) = app
-        .editor
-        .modal
-        .as_mut()
-        .and_then(|m| m.as_any_mut())
-    else {
+fn drain_modal_outcome(ctx: &mut AppContext<'_>) -> ModalOutcome {
+    let Some(any) = ctx.editor.modal.as_mut().and_then(|m| m.as_any_mut()) else {
         return ModalOutcome::None;
     };
     if let Some(p) = any.downcast_mut::<PalettePane>() {
@@ -121,10 +127,10 @@ fn drain_modal_outcome(app: &mut App) -> ModalOutcome {
     ModalOutcome::None
 }
 
-pub fn handle_mouse(me: MouseEvent, app: &mut App) {
-    if app.editor.modal.is_some() {
+fn handle_mouse(ev: Event, me: MouseEvent, ctx: &mut AppContext<'_>) {
+    if ctx.editor.modal.is_some() {
         if matches!(me.kind, MouseEventKind::Down(MouseButton::Left)) {
-            run_command(app, Arc::new(cmd::CloseModal));
+            ctx.run(&cmd::CloseModal);
         }
         return;
     }
@@ -132,58 +138,68 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
     match me.kind {
         MouseEventKind::Down(button @ (MouseButton::Left | MouseButton::Right | MouseButton::Middle)) => {
             if button == MouseButton::Left {
-                if let Some(hit) = app.editor.tab_strip_hit(me.column, me.row) {
-                    handle_tab_strip_click(app, hit);
+                if let Some(hit) = ctx.editor.tab_strip_hit(me.column, me.row) {
+                    handle_tab_strip_click(ctx, hit);
                     return;
                 }
             }
-            app.editor.focus_at_screen(me.column, me.row);
-            if let Some(slot) = crate::plugin::focused_plugin_slot(app) {
-                if let Some((rx, ry)) = sidebar_inner_relative(app, slot, me.column, me.row) {
-                    if crate::plugin::forward_click_to_plugin(app, slot, rx, ry, button) {
-                        app.request_redraw();
-                        return;
-                    }
-                }
+            ctx.editor.focus_at_screen(me.column, me.row);
+            if dispatch_to_focused_leaf(ctx, &ev) == Outcome::Consumed {
+                ctx.request_redraw();
+                return;
             }
             if button != MouseButton::Left {
                 return;
             }
             let extend = me.modifiers.contains(KeyModifiers::SHIFT);
-            run_command(app, Arc::new(cmd::ClickAt {
-                col: me.column, row: me.row, extend,
-            }));
+            ctx.run(&cmd::ClickAt {
+                col: me.column,
+                row: me.row,
+                extend,
+            });
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            run_command(app, Arc::new(cmd::DragAt {
-                col: me.column, row: me.row,
-            }));
+            ctx.run(&cmd::DragAt {
+                col: me.column,
+                row: me.row,
+            });
         }
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-            if let Some(fid) = app.editor.frame_at_strip(me.column, me.row) {
-                if app.editor.tab_strip_can_scroll(fid) {
-                    let delta: isize = if matches!(me.kind, MouseEventKind::ScrollUp) { -2 } else { 2 };
-                    app.editor.scroll_tab_strip(fid, delta);
-                    app.request_redraw();
+            if let Some(fid) = ctx.editor.frame_at_strip(me.column, me.row) {
+                if ctx.editor.tab_strip_can_scroll(fid) {
+                    let delta: isize = if matches!(me.kind, MouseEventKind::ScrollUp) {
+                        -2
+                    } else {
+                        2
+                    };
+                    ctx.editor.scroll_tab_strip(fid, delta);
+                    ctx.request_redraw();
                     return;
                 }
             }
-            if let Some(slot) = crate::plugin::plugin_slot_at(app, me.column, me.row) {
-                let delta: i32 = if matches!(me.kind, MouseEventKind::ScrollUp) { -2 } else { 2 };
-                if crate::plugin::scroll_plugin_pane(app, slot, delta) {
-                    app.request_redraw();
-                    return;
-                }
+            if dispatch_to_leaf_at(ctx, me.column, me.row, &ev) == Outcome::Consumed {
+                ctx.request_redraw();
+                return;
             }
             let delta: isize = if matches!(me.kind, MouseEventKind::ScrollUp) { -1 } else { 1 };
-            app.pending_scroll = app.pending_scroll.saturating_add(delta);
+            // Defer the scroll so consecutive wheel events coalesce into
+            // one `ScrollBy` per loop iteration; the buffered delta is
+            // delivered as a `ScrollAccumulated` pulse at flush time.
+            let sink = ctx.sink.clone();
+            ctx.defer(move |_| {
+                let _ = sink.pulse(ScrollAccumulated { delta });
+            });
         }
         MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
-            if let Some(fid) = app.editor.frame_at_strip(me.column, me.row) {
-                if app.editor.tab_strip_can_scroll(fid) {
-                    let delta: isize = if matches!(me.kind, MouseEventKind::ScrollLeft) { -2 } else { 2 };
-                    app.editor.scroll_tab_strip(fid, delta);
-                    app.request_redraw();
+            if let Some(fid) = ctx.editor.frame_at_strip(me.column, me.row) {
+                if ctx.editor.tab_strip_can_scroll(fid) {
+                    let delta: isize = if matches!(me.kind, MouseEventKind::ScrollLeft) {
+                        -2
+                    } else {
+                        2
+                    };
+                    ctx.editor.scroll_tab_strip(fid, delta);
+                    ctx.request_redraw();
                 }
             }
         }
@@ -191,57 +207,87 @@ pub fn handle_mouse(me: MouseEvent, app: &mut App) {
     }
 }
 
-fn sidebar_inner_relative(
-    app: &App,
-    slot: devix_panes::SidebarSlot,
+fn handle_tab_strip_click(ctx: &mut AppContext<'_>, hit: TabStripHit) {
+    let TabStripHit::Tab { frame, idx } = hit;
+    ctx.editor.focus_frame(frame);
+    ctx.editor.activate_tab(frame, idx);
+    ctx.request_redraw();
+}
+
+fn run_arc(ctx: &mut AppContext<'_>, action: Arc<dyn EditorCommand>) {
+    ctx.run(action.as_ref());
+}
+
+/// Walk the focused-leaf path and invoke `Pane::handle` on it. Returns
+/// `Ignored` if the focus path resolves to nothing.
+fn dispatch_to_focused_leaf(ctx: &mut AppContext<'_>, ev: &Event) -> Outcome {
+    let focus = ctx.editor.focus.clone();
+    let area = pane_at_path(ctx.editor.root.as_ref(), root_area(ctx), &focus)
+        .map(|(rect, _)| rect)
+        .unwrap_or_default();
+    let Some(leaf) = pane_at_indices_mut(&mut ctx.editor.root, &focus) else {
+        return Outcome::Ignored;
+    };
+    let mut hctx = HandleCtx::default();
+    leaf.handle(ev, area, &mut hctx)
+}
+
+/// Walk the leaf at screen position (`col`, `row`) and invoke
+/// `Pane::handle` on it. Used for events whose target isn't necessarily
+/// the focused leaf — mouse-wheel scroll over an unfocused sidebar.
+fn dispatch_to_leaf_at(
+    ctx: &mut AppContext<'_>,
     col: u16,
     row: u16,
-) -> Option<(u16, u16)> {
-    let rect = app.editor.render_cache.sidebar_rects.get(&slot).copied()?;
-    let inner_x = rect.x.saturating_add(1);
-    let inner_y = rect.y.saturating_add(1);
-    let inner_w = rect.width.saturating_sub(2);
-    let inner_h = rect.height.saturating_sub(2);
-    if col < inner_x || row < inner_y || col >= inner_x + inner_w || row >= inner_y + inner_h {
-        return None;
+    ev: &Event,
+) -> Outcome {
+    let area = root_area(ctx);
+    let Some((leaf_ref, leaf_area)) = leaves_with_rects(ctx.editor.root.as_ref(), area)
+        .into_iter()
+        .find(|(_, r)| col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height)
+    else {
+        return Outcome::Ignored;
+    };
+    let Some(path) = devix_editor::path_to_leaf(ctx.editor.root.as_ref(), area, leaf_ref) else {
+        return Outcome::Ignored;
+    };
+    let Some(leaf) = pane_at_indices_mut(&mut ctx.editor.root, &path) else {
+        return Outcome::Ignored;
+    };
+    let mut hctx = HandleCtx::default();
+    leaf.handle(ev, leaf_area, &mut hctx)
+}
+
+/// Reconstruct the editor's root rect from cached leaf rects: the root
+/// spans the bounding box of every populated entry. Mirrors
+/// `Editor::layout`'s input area without re-plumbing it here.
+fn root_area(ctx: &AppContext<'_>) -> Rect {
+    let mut min_x = u16::MAX;
+    let mut min_y = u16::MAX;
+    let mut max_x: u16 = 0;
+    let mut max_y: u16 = 0;
+    let mut any = false;
+    for r in ctx
+        .editor
+        .render_cache
+        .frame_rects
+        .values()
+        .copied()
+        .chain(ctx.editor.render_cache.sidebar_rects.values().copied())
+    {
+        any = true;
+        min_x = min_x.min(r.x);
+        min_y = min_y.min(r.y);
+        max_x = max_x.max(r.x.saturating_add(r.width));
+        max_y = max_y.max(r.y.saturating_add(r.height));
     }
-    Some((col - inner_x, row - inner_y))
-}
-
-fn handle_tab_strip_click(app: &mut App, hit: TabStripHit) {
-    let TabStripHit::Tab { frame, idx } = hit;
-    app.editor.focus_frame(frame);
-    app.editor.activate_tab(frame, idx);
-    app.request_redraw();
-}
-
-pub fn run_command(app: &mut App, action: Arc<dyn EditorCommand>) {
-    let rect = app
-        .editor
-        .active_frame()
-        .and_then(|fid| app.editor.render_cache.frame_rects.get(&fid).copied())
-        .unwrap_or_default();
-    let gutter_width = app
-        .editor
-        .active_doc()
-        .map(|d| (d.buffer.line_count().to_string().len() as u16) + 2)
-        .unwrap_or(0);
-    let viewport = Viewport {
-        x: rect.x,
-        y: rect.y,
-        width: rect.width,
-        height: rect.height,
-        gutter_width,
-    };
-
-    let mut cx = Context {
-        editor: &mut app.editor,
-        clipboard: app.clipboard.as_mut(),
-        quit: &mut app.quit,
-        viewport,
-        commands: &app.commands,
-    };
-    action.invoke(&mut cx);
-
-    app.request_redraw();
+    if !any {
+        return Rect::default();
+    }
+    Rect {
+        x: min_x,
+        y: min_y,
+        width: max_x.saturating_sub(min_x),
+        height: max_y.saturating_sub(min_y),
+    }
 }

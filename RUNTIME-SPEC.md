@@ -473,6 +473,19 @@ Six phases. Each compiles green. P0 is the only additive phase (it lays down the
 
 After P5: `crates/app/src/` shrinks to a small named composable runtime — summing the per-phase deltas (~+50 then ~-780 across P1–P5) suggests roughly a third of current size, give or take how much new Service plumbing each phase adds back. Adding LSP, settings hot reload, debug adapter after that — each is one new Service file plus its Pulse types.
 
+### Status — landed
+
+P0–P5 are landed. The five primitives (`Application`, `Service`, `Pulse`, `Effect`, `AppContext`) plus `EventSink` live in `crates/app/src/`; pulses replace the manual `dirty` / `pending_scroll` accumulators; input flows through the responder chain; and producers push pulses directly into `EventSink` rather than running their own polling threads.
+
+Only `InputService` owns a thread, because `crossterm::event::read()` has no push API and no interrupt; that thread polls with a 100 ms timeout for bounded shutdown. Disk events arrive directly from `notify`'s own thread (via `Editor::attach_disk_sink`'s callback that does `sink.pulse(DiskChanged{doc})`). Plugin messages arrive directly from the plugin worker thread (via `PluginRuntime::load_with_sink`'s `MsgSink` that does `sink.pulse(PluginEmitted{msg})`). The previous `WatcherService` and the `PluginService` poll-loop are gone; `PluginService` is now a pure runtime-ownership Service whose `start()` is a no-op and whose `stop()` drops the runtime so its worker exits.
+
+The P5 work that completes the alignment:
+
+1. **`LayoutSidebar` owns its content.** `crates/editor/src/tree.rs::LayoutSidebar` carries a `content: Option<Box<dyn Pane>>` field instead of resolving content per-render. Plugin contributions install themselves into the editor's structural tree via `Editor::install_sidebar_pane(slot, pane)`, so a focused sidebar's `handle()` delegates straight to the plugin's `LuaPane`.
+2. **The editor's structural Pane tree propagates `handle()`.** `LayoutSidebar::handle` routes to its content; the keyboard dispatcher walks `editor.focus` to the focused leaf and calls `Pane::handle` on it; mouse-wheel scroll over an unfocused sidebar walks to the leaf at the click position via `path_to_leaf`. There is no plugin-specific code path in `events.rs`.
+3. **Plugin install lives in `devix-plugin`.** `PluginRuntime::install(commands, keymap, editor)` registers commands, binds chords, and installs sidebar panes onto the editor in one call. The binary holds the runtime through a `PluginService` that drains messages into `PluginEmitted` pulses; nothing else.
+4. **`Application` exposes no plugin-specific surface.** No `plugin_view` field, no `plugin_sidebar` resolver, no `set_plugin_*` methods. `AppContext` exposes no plugin field. Plugins extend the runtime through the same shape every other Service will: `Service` + `Pulse`. Adding LSP next is one file under `services/` plus one pulse in `pulse.rs`.
+
 ## What this kills
 
 | Today | Replaced by |
