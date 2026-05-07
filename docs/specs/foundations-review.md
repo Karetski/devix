@@ -426,6 +426,15 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-06 — `crates.md` Q5 resolved (workspace member naming).**
+  Q5 closed in the affirmative: directory names match `[package]
+  name` everywhere. `crates/text` and `crates/syntax` renamed to
+  `crates/devix-text` and `crates/devix-syntax` under T-25 (Stage 2,
+  prepended). The other three crates (`devix-protocol`, `devix-core`,
+  `devix-tui`) already matched. Reason: keeps `cargo` output and
+  filesystem navigation consistent with imports; user confirmed
+  during post-Stage-1 review.
+
 - **2026-05-06 — `crates.md` § *Stage-1 sequencing* (widget move
   deferred).** T-11 absorbed widgets into `devix-core` to break a
   transient cycle, and T-12 leaves them there rather than forwarding

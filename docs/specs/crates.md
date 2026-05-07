@@ -405,10 +405,10 @@ namespace migration, etc.) executes on the new crate layout.
    manifest tools or type-safe RPC clients without depending on the
    editor proper. Not in v0; flag as future.
 
-5. **Workspace member naming.** The directory is `crates/<name>` today
-   but the crate name in `[package]` doesn't have to match. Match them
-   for clarity (`crates/devix-core/Cargo.toml` declares
-   `name = "devix-core"`). Confirm.
+5. ~~**Workspace member naming.**~~ *Resolved during T-25
+   (2026-05-06): match them. `crates/text` → `crates/devix-text`,
+   `crates/syntax` → `crates/devix-syntax`; new crates already match
+   (`devix-protocol`, `devix-core`, `devix-tui`). See amendment log.*
 
 ## Resolved during initial review
 

@@ -38,7 +38,7 @@ new ids only.
 | Stage | Theme | Tasks |
 |---|---|---|
 | 1 | Crate split | [T-10](10-create-devix-protocol.md), [T-11](11-create-devix-core.md), [T-12](12-rename-app-to-tui.md), [T-13](13-stage-1-regression-gate.md) |
-| 2 | Mechanical wins | [T-20](20-workspace-deps-hygiene.md), [T-21](21-add-skeleton-deps.md), [T-22](22-drop-dead-modules.md), [T-23](23-test-reorganization.md), [T-24](24-clippy-baseline.md) |
+| 2 | Mechanical wins | [T-20](20-workspace-deps-hygiene.md), [T-21](21-add-skeleton-deps.md), [T-22](22-drop-dead-modules.md), [T-23](23-test-reorganization.md), [T-24](24-clippy-baseline.md), [T-25](25-rename-substrate-dirs.md) |
 | 3 | Foundation skeletons | [T-30](30-namespace-skeleton.md), [T-31](31-pulse-bus-skeleton.md), [T-32](32-protocol-skeleton.md), [T-33](33-manifest-skeleton.md) |
 | 4 | View-tree IR adoption | [T-40](40-view-enum.md), [T-41](41-style-color-serde.md), [T-42](42-input-event-serde.md), [T-43](43-core-view-producer.md), [T-44](44-tui-view-interpreter.md) |
 | 5 | Namespace migration | [T-50](50-buffers-onto-namespace.md), [T-51](51-cursors-onto-namespace.md), [T-52](52-panes-onto-namespace.md), [T-53](53-commands-onto-namespace.md), [T-54](54-keymap-onto-namespace.md), [T-55](55-themes-onto-namespace.md), [T-56](56-plugin-callbacks-onto-namespace.md), [T-57](57-pulses-carry-paths.md) |
