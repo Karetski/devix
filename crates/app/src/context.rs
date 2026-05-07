@@ -6,10 +6,10 @@
 
 use std::collections::VecDeque;
 
-use devix_editor::{
+use devix_core::{
     CommandRegistry, Context as EditorContext, Editor, EditorCommand, Keymap, Viewport,
 };
-use devix_panes::{Clipboard, Theme};
+use devix_core::{Clipboard, Theme};
 
 use crate::effect::Effect;
 use crate::event_sink::EventSink;
@@ -40,7 +40,7 @@ impl AppContext<'_> {
         self.effects.push_back(Effect::Run(Box::new(f)));
     }
 
-    /// Invoke an editor command. Bridges to `devix_editor::Context`
+    /// Invoke an editor command. Bridges to `devix_core::Context`
     /// (which expects an immediate `quit: &mut bool` flag); if the command
     /// sets it, translates to `Effect::Quit` so quit stays deferred at the
     /// runtime layer.

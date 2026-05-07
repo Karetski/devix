@@ -24,12 +24,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # internal
-devix-panes = { path = "crates/panes" }
 devix-text = { path = "crates/text" }
-devix-editor = { path = "crates/editor" }
 devix-syntax = { path = "crates/syntax" }
-devix-plugin = { path = "crates/plugin" }
 devix-protocol = { path = "crates/devix-protocol" }
+devix-core = { path = "crates/devix-core" }
 
 [profile.release]
 lto = "thin"

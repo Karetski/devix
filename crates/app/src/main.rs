@@ -12,9 +12,9 @@ use std::sync::Arc;
 use anyhow::Result;
 use devix_app::clipboard;
 use devix_app::{AppContext, Application, EventSink};
-use devix_editor::{DocId, Editor, build_registry, cmd, default_keymap};
-use devix_panes::Theme;
-use devix_plugin::{MsgSink, PluginMsg, PluginRuntime, default_plugin_path};
+use devix_core::{DocId, Editor, build_registry, cmd, default_keymap};
+use devix_core::Theme;
+use devix_core::{MsgSink, PluginMsg, PluginRuntime, default_plugin_path};
 
 fn main() -> Result<()> {
     let path = std::env::args().nth(1).map(PathBuf::from);

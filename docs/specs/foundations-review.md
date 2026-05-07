@@ -426,5 +426,14 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
-(Empty at Stage-0 completion. Each future amendment adds a dated entry
-describing the affected spec, the change, and a one-line rationale.)
+- **2026-05-06 — `crates.md` § *File-level migration* (widgets path).**
+  T-11 routed `crates/panes/src/widgets/**` through `devix-core`
+  before T-12 forwards them to `devix-tui`, instead of the
+  one-step `panes → tui` move the migration table implies. Reason:
+  inside T-11, `composites.rs` and `editor/tree.rs` (now in
+  `devix-core`) reference widget types (`SidebarPane`, `TabbedPane`)
+  while widgets reference core types (`Pane`, `Theme`); a one-step
+  move would leave the workspace with a `devix-core ↔ devix-panes`
+  cycle for one task. The Stage-1 end state still matches the
+  table — widgets land in `devix-tui` at T-13. No code in the
+  intermediate state is shipped to users.

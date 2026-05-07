@@ -1,0 +1,73 @@
+//! `devix-core` — the engine.
+//!
+//! Owns every model state, every command handler, the plugin host, the
+//! pulse bus implementation (lands in T-31), the manifest loader (T-33),
+//! the theme registry. No `ratatui`, no `crossterm` (this is a soft target;
+//! the chrome widgets and ratatui-bound rendering live here transitionally
+//! during T-11 and migrate to `devix-tui` in T-12).
+//!
+//! Stage 1 task T-11 absorbs the dissolved `devix-editor`, `devix-plugin`,
+//! and `devix-panes` crates into this crate. The pre-Stage-1 public surface
+//! is preserved at the crate root so the binary keeps importing the same
+//! names; later stages will rename / split as the spec implementations land.
+
+pub mod action;
+pub mod clipboard;
+pub mod composites;
+pub mod editor;
+pub mod event;
+pub mod geom;
+pub mod layout_geom;
+pub mod pane;
+pub mod plugin;
+pub mod theme;
+pub mod walk;
+pub mod widgets;
+
+// Trait surface (pre-Stage-1: was `devix-panes`'s public surface).
+pub use action::Action;
+pub use clipboard::{Clipboard, NoClipboard};
+pub use composites::{SidebarSlotPane, TabbedPane};
+pub use event::Event;
+pub use geom::{Anchor, AnchorEdge, Rect};
+pub use layout_geom::{Axis, Direction, SidebarSlot, split_rects};
+pub use pane::{HandleCtx, Outcome, Pane, RenderCtx};
+pub use theme::Theme;
+pub use walk::{focusable_at, focusable_leaves, pane_at, pane_at_path};
+pub use widgets::{
+    CompletionLine, MIN_TAB_WIDTH, PaletteRow, Popup, PopupAnchor, PopupContent, SidebarInfo,
+    SidebarPane, TabInfo, TabStripPane, TabStripRender, layout_tabstrip, palette_area,
+    render_palette, render_popup, render_sidebar, render_tabstrip, tab_strip_layout,
+};
+// `format_chord` (editor::commands::modal) is the canonical export; the
+// chrome-side `widgets::palette::format_chord` is module-qualified to
+// avoid the name collision until widgets move to `devix-tui` (T-12).
+pub use editor::commands::modal::format_chord;
+// `TabHit` from `widgets::tabstrip` (the chrome hit-test type) is the
+// canonical crate-root export; the editor's structurally-identical
+// `editor::editor::TabHit` is exposed as `EditorTabHit`.
+pub use widgets::TabHit;
+
+// Editor surface (pre-Stage-1: was `devix-editor`'s public surface).
+pub use editor::buffer::{BufferRender, EditorPane, EditorRenderResult, render_buffer};
+pub use editor::commands::{
+    Chord, Command, CommandId, CommandRegistry, Context, EditorCommand, Keymap, ModalOutcome,
+    PalettePane, PaletteState, Viewport, build_registry, chord_from_key, cmd, default_keymap,
+    register_builtins,
+};
+pub use editor::cursor::{Cursor, CursorId, ScrollMode};
+pub use editor::document::{DocId, Document};
+pub use editor::editor::{
+    DiskSink, Editor, LeafRef, RenderCache, TabHit as EditorTabHit, TabStripCache, TabStripHit,
+    path_to_leaf,
+};
+pub use editor::frame::FrameId;
+pub use editor::tree::{LayoutCtx, LayoutFrame, LayoutNode, LayoutSidebar, LayoutSplit};
+
+// Plugin surface (pre-Stage-1: was `devix-plugin`'s public surface).
+pub use plugin::{
+    CommandSpec as PluginCommandSpec, Contributions as PluginContributions,
+    LuaAction, LuaPane, LuaPaneHandle, MsgSink, PaneSpec as PluginPaneSpec, PluginCommandAction,
+    PluginHost, PluginInput, PluginMsg, PluginPane, PluginRuntime, Wakeup, default_plugin_path,
+    make_command_action, parse_chord,
+};

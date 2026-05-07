@@ -1,9 +1,0 @@
-[package]
-name = "devix-panes"
-edition.workspace = true
-version.workspace = true
-rust-version.workspace = true
-
-[dependencies]
-ratatui.workspace = true
-crossterm.workspace = true

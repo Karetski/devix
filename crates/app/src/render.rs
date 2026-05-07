@@ -3,8 +3,8 @@
 //! module covers the modal layer that needs `commands` + `keymap` access
 //! to project the palette state into rendering-friendly rows.
 
-use devix_editor::{CommandRegistry, Keymap, PalettePane, format_chord};
-use devix_panes::{Pane, PaletteRow, RenderCtx, Theme, palette_area, render_palette};
+use devix_core::{CommandRegistry, Keymap, PalettePane, format_chord};
+use devix_core::{Pane, PaletteRow, RenderCtx, Theme, palette_area, render_palette};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 

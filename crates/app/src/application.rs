@@ -17,9 +17,9 @@ use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use devix_editor::{CommandRegistry, Editor, Keymap, LayoutCtx};
-use devix_panes::{Clipboard, Theme};
-use devix_plugin::PluginRuntime;
+use devix_core::{CommandRegistry, Editor, Keymap, LayoutCtx};
+use devix_core::{Clipboard, Theme};
+use devix_core::PluginRuntime;
 use ratatui::Terminal;
 use ratatui::backend::{Backend, CrosstermBackend};
 

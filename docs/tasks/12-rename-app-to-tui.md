@@ -15,20 +15,20 @@ this, `devix-panes` is gone entirely.
 ## In scope
 - Rename directory `crates/app/` → `crates/devix-tui/`.
 - `[package] name = "devix-tui"`, retain binary name `devix`.
-- Move sources per `crates.md` § *File-level migration*:
-  - `crates/panes/src/widgets/{popup,palette,sidebar,tabstrip}.rs`
+- Move sources per `crates.md` § *File-level migration* (note: T-11
+  collapsed `devix-panes` into `devix-core` to break a cycle, so the
+  widget files now move from their interim home in `devix-core`):
+  - `crates/devix-core/src/widgets/{popup,palette,sidebar,tabstrip}.rs`
     → `crates/devix-tui/src/widgets/`.
-  - `crates/panes/src/widgets/layout.rs` → `crates/devix-tui/src/layout.rs`.
-  - `split_rects` from `crates/panes/src/layout_geom.rs` →
+  - `crates/devix-core/src/widgets/layout.rs` → `crates/devix-tui/src/layout.rs`.
+  - `split_rects` from `crates/devix-core/src/layout_geom.rs` →
     `crates/devix-tui/src/layout.rs`.
   - `crates/app/src/{render,events,input,clipboard}.rs` → renamed
     per spec (`render.rs` → `interpreter.rs`, `events.rs` →
     `input.rs`, `input.rs` → `input_thread.rs`).
 - `devix-tui` deps: `devix-protocol`, `devix-core`, `ratatui`,
   `crossterm`, `arboard`, `anyhow`. **Not** tokio.
-- Delete `crates/panes/` entirely after content moves.
-- Update workspace `Cargo.toml`: drop `devix-panes`; rename
-  `devix-app` member → `devix-tui`.
+- Update workspace `Cargo.toml`: rename `devix-app` member → `devix-tui`.
 
 ## Out of scope
 - Implementing the View IR interpreter (Stage 4).

@@ -1,0 +1,22 @@
+[package]
+name = "devix-core"
+edition.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+ratatui = { workspace = true }
+ropey = { workspace = true }
+crossterm = { workspace = true }
+nucleo-matcher = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+slotmap = "1"
+notify = "6"
+mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }
+
+devix-text = { workspace = true }
+devix-syntax = { workspace = true }
+devix-protocol = { workspace = true }

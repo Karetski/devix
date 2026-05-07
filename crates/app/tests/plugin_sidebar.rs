@@ -10,9 +10,9 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use devix_app::Application;
-use devix_editor::{Editor, build_registry, default_keymap};
-use devix_panes::{NoClipboard, Theme};
-use devix_plugin::PluginRuntime;
+use devix_core::{Editor, build_registry, default_keymap};
+use devix_core::{NoClipboard, Theme};
+use devix_core::PluginRuntime;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -50,7 +50,7 @@ fn sidebar_renders_plugin_supplied_lines() {
     let example = manifest
         .parent()
         .unwrap()
-        .join("plugin/examples/file_tree.lua");
+        .join("devix-core/examples/file_tree.lua");
     let _g = EnvGuard::set("DEVIX_PLUGIN", &example.to_string_lossy());
 
     let mut editor = Editor::open(None).expect("editor opens");

@@ -14,10 +14,10 @@ use std::sync::Arc;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use devix_editor::{
+use devix_core::{
     EditorCommand, ModalOutcome, PalettePane, TabStripHit, chord_from_key, cmd,
 };
-use devix_panes::{HandleCtx, Outcome, Rect};
+use devix_core::{HandleCtx, Outcome, Rect};
 
 use crate::context::AppContext;
 
