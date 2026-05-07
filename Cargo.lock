@@ -255,6 +255,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "devix-protocol"
+version = "0.1.0"
+dependencies = [
+ "devix-syntax",
+]
+
+[[package]]
 name = "devix-syntax"
 version = "0.1.0"
 dependencies = [
