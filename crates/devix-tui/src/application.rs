@@ -26,9 +26,9 @@ use ratatui::backend::{Backend, CrosstermBackend};
 use crate::context::AppContext;
 use crate::effect::Effect;
 use crate::event_sink::{EventSink, LoopMessage, PulseFn};
-use crate::events;
-use crate::input::InputThread;
-use crate::render;
+use crate::input as events;
+use crate::input_thread::InputThread;
+use crate::interpreter as render;
 
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(3);
 

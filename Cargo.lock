@@ -203,20 +203,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "devix"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arboard",
- "crossterm",
- "devix-core",
- "devix-protocol",
- "devix-text",
- "ratatui",
- "tokio",
-]
-
-[[package]]
 name = "devix-core"
 version = "0.1.0"
 dependencies = [
@@ -261,6 +247,18 @@ dependencies = [
  "anyhow",
  "ropey",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "devix-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "crossterm",
+ "devix-core",
+ "devix-protocol",
+ "ratatui",
 ]
 
 [[package]]

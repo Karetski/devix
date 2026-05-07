@@ -18,9 +18,9 @@ pub mod clipboard;
 pub mod context;
 pub mod effect;
 pub mod event_sink;
-pub mod events;
-mod input;
-mod render;
+pub mod input;
+mod input_thread;
+mod interpreter;
 
 pub use application::Application;
 pub use context::AppContext;

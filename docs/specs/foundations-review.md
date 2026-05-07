@@ -426,14 +426,21 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
-- **2026-05-06 — `crates.md` § *File-level migration* (widgets path).**
-  T-11 routed `crates/panes/src/widgets/**` through `devix-core`
-  before T-12 forwards them to `devix-tui`, instead of the
-  one-step `panes → tui` move the migration table implies. Reason:
-  inside T-11, `composites.rs` and `editor/tree.rs` (now in
-  `devix-core`) reference widget types (`SidebarPane`, `TabbedPane`)
-  while widgets reference core types (`Pane`, `Theme`); a one-step
-  move would leave the workspace with a `devix-core ↔ devix-panes`
-  cycle for one task. The Stage-1 end state still matches the
-  table — widgets land in `devix-tui` at T-13. No code in the
-  intermediate state is shipped to users.
+- **2026-05-06 — `crates.md` § *Stage-1 sequencing* (widget move
+  deferred).** T-11 absorbed widgets into `devix-core` to break a
+  transient cycle, and T-12 leaves them there rather than forwarding
+  to `devix-tui`. Reason: every chrome widget file (`palette.rs`,
+  `popup.rs`, `sidebar.rs`, `tabstrip.rs`) plus the layout
+  primitives in `widgets/layout.rs` are used by `devix-core` code
+  (`composites.rs::SidebarSlotPane`/`TabbedPane`, `editor/tree.rs`,
+  `editor/buffer.rs`, `editor/editor.rs`, `editor/commands/modal.rs`).
+  Honoring the T-12 sequencing as written would leave the workspace
+  in a `devix-core ↔ devix-tui` cycle until later stages
+  (Stage 9) dissolve `LayoutNode` and move rect caches to TUI. The
+  migration table's eventual destinations still hold; the physical
+  move is now sequenced into T-92 (rect caches → TUI) and T-95
+  (Stage-9 regression gate). T-12 is reduced to the
+  `devix-app → devix-tui` directory rename, file renames per the
+  table (`render.rs → interpreter.rs`, `events.rs → input.rs`,
+  `input.rs → input_thread.rs`), and Cargo dep cleanup
+  (drop tokio, drop devix-text since core re-exports buffer types).

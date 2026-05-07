@@ -9,7 +9,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use devix_app::Application;
+use devix_tui::Application;
 use devix_core::{Editor, build_registry, default_keymap};
 use devix_core::{NoClipboard, Theme};
 use devix_core::PluginRuntime;
