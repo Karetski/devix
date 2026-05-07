@@ -1,6 +1,6 @@
 # Task T-13 — Stage-1 regression gate
 Stage: 1
-Status: pending
+Status: complete
 Depends on: T-10, T-11, T-12
 Blocks:     all of Stage 2+
 

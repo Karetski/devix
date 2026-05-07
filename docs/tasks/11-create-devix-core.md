@@ -1,6 +1,6 @@
 # Task T-11 — Create devix-core; absorb editor + plugin + most of panes
 Stage: 1
-Status: pending
+Status: complete
 Depends on: T-10
 Blocks:     T-12, T-13
 

@@ -1,6 +1,6 @@
 # Task T-10 — Create devix-protocol crate
 Stage: 1
-Status: pending
+Status: complete
 Depends on: —
 Blocks:     T-11, T-12, T-13, T-30, T-31, T-32, T-33
 

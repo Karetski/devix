@@ -1,6 +1,6 @@
 # Task T-12 — Rename devix-app → devix-tui; absorb widgets + layout + clipboard
 Stage: 1
-Status: pending
+Status: complete
 Depends on: T-11
 Blocks:     T-13
 
