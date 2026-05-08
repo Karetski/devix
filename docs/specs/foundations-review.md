@@ -426,28 +426,53 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
-- **2026-05-08 — Stage 11 lands two partials: T-110 (plugin commands)
-  + T-112 (plugin themes).** `CommandId` widens from tuple-struct
-  `&'static str` to `{ plugin: Option<&'static str>, id: &'static str
-  }` with `CommandId::builtin(id)` / `CommandId::plugin(plugin, id)`
-  constructors; `to_path()` produces `/cmd/<id>` or
-  `/plugin/<name>/cmd/<id>` per kind, and `CommandRegistry`'s
-  `Lookup` impl resolves both shapes. New
-  `PluginRuntime::install_with_manifest(commands, keymap, editor,
-  manifest, bus)` registers manifest's `contributes.commands` at
-  `/plugin/<manifest.name>/cmd/<id>`, matched to Lua-registered
-  handles by id (orphan declarations publish `PluginError`). New
-  `theme_store` module with `register_from_manifest` and
-  `activate(store, id, bus) -> Option<Theme>` that emits
-  `Pulse::ThemeChanged` with the wire-shape `ThemePalette`. main.rs
-  walks `plugin_dir()` for every `manifest.json` subdirectory, loads
-  each under the supervisor (T-81 partial), and wires its commands.
-  Legacy `DEVIX_PLUGIN` single-file path stays alive at `/cmd/<id>`.
-  *Deferred* across T-110/T-112: capability negotiation
-  (`ContributeCommands` / `ContributeThemes` warn-and-degrade —
-  needs T-81 full); keymap-from-manifest plugin-path resolution;
-  first-loaded-wins chord conflicts; runtime user-driven theme
-  switching (no UI surface yet).
+- **2026-05-08 — Stage 11 partial: T-110 / T-111 / T-112 / T-113 all
+  ship as partials.**
+  - **T-110** widens `CommandId` from tuple-struct `&'static str` to
+    `{ plugin: Option<&'static str>, id: &'static str }` with
+    `CommandId::builtin(id)` / `CommandId::plugin(plugin, id)`
+    constructors; `to_path()` produces `/cmd/<id>` or
+    `/plugin/<name>/cmd/<id>` per kind, and `CommandRegistry`'s
+    `Lookup` resolves both. `PluginRuntime::install_with_manifest`
+    registers manifest's `contributes.commands` at
+    `/plugin/<manifest.name>/cmd/<id>`, matched to Lua-registered
+    handles by id (orphans publish `PluginError`). Follow-up landed
+    same day: `register_keymap_contributions` /
+    `apply_keymap_overrides` resolve `/plugin/<name>/cmd/<id>` as a
+    keymap-binding command in addition to bare ids and
+    `/cmd/<id>`.
+  - **T-111** cross-checks each `manifest.contributes.panes` entry
+    against the runtime's Lua-side `register_pane` registrations by
+    slot; orphan declarations publish `PluginError`. The declared
+    `id` is documented but not yet used as a registry key — panes
+    still install onto the editor's structural tree by slot.
+  - **T-112** new `theme_store` module: `register_from_manifest`
+    seeds defaults, `activate(store, id, bus) -> Option<Theme>`
+    builds the in-memory `Theme` and emits `Pulse::ThemeChanged`
+    with wire-shape `ThemePalette`. First-loaded-wins on theme-id
+    collisions.
+  - **T-113** new `settings_store` module:
+    `register_from_manifest` seeds typed defaults
+    (`Boolean | String | Number | EnumString` per `manifest.md` v0
+    lock), `apply_overrides_from_file` reads
+    `$XDG_CONFIG_HOME/devix/settings.json` with type-mismatch and
+    enum-out-of-range error surfaces, `settings_overrides_path()`
+    resolver. Lua bridge (`devix.setting(key)`) deferred — threads
+    `Arc<Mutex<SettingsStore>>` through `PluginHost::new` along
+    with the T-81-full module reorg.
+  - **main.rs** walks `plugin_dir()` for every `manifest.json`
+    subdirectory, loads each under the supervisor (T-81 partial),
+    and wires its commands via `install_with_manifest`. Legacy
+    `DEVIX_PLUGIN` single-file path stays alive at `/cmd/<id>`.
+  - *Deferred across Stage 11*: capability negotiation
+    (`ContributeCommands` / `ContributeThemes` /
+    `ContributeSidebarPane` / `StableViewIds` /
+    `ContributeSettings` warn-and-degrade — all need T-81 full);
+    chord-conflict first-wins enforcement; runtime theme-switch UI;
+    the `devix.setting` Lua bridge; Lua → Rust `View` IR marshaling
+    for plugin panes; plugin-pane `/plugin/<name>/pane/<id>`
+    path-based addressing (waits on Stage-9 / T-91 Pane-tree
+    unification).
 
 - **2026-05-08 — T-81 partial close (supervised plugin thread; restart
   deferred).** `PluginRuntime::load_supervised(path, sink, bus)` wraps
