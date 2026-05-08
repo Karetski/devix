@@ -1,6 +1,6 @@
 # Task T-43 — Core View producer (`Editor::view(root: Path) -> View`)
 Stage: 4
-Status: pending
+Status: complete
 Depends on: T-40, T-41, T-42, T-32
 Blocks:     T-44, T-91
 

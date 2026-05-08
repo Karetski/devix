@@ -16,6 +16,7 @@ pub mod document;
 pub mod editor;
 pub mod frame;
 pub mod tree;
+pub mod view;
 
 pub use buffer::{BufferRender, EditorPane, EditorRenderResult, render_buffer};
 pub use commands::{
