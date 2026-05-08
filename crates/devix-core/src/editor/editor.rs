@@ -29,6 +29,8 @@ use crate::editor::registry::PaneRegistry;
 use crate::editor::tree::frame_pane;
 #[cfg(test)]
 use crate::editor::tree::{LayoutFrame, LayoutSplit};
+use crate::theme::Theme;
+use crate::theme_store::{self, ThemeStore};
 
 mod focus;
 mod hittest;
@@ -101,6 +103,19 @@ pub struct Editor {
     /// (via `Editor::set_focus`) exactly once.
     pub focus: FocusChain,
     pub doc_index: HashMap<PathBuf, DocId>,
+    /// Active theme. Resolved from `theme_store` at startup; swapped
+    /// by `Editor::set_theme` (T-112). Read by every render (legacy
+    /// `panes.render` + future `paint_view` consumers).
+    pub theme: Theme,
+    /// Id of the active theme — `Some(id)` after `set_theme`,
+    /// otherwise `None` (built-in `Theme::default` baseline). Used by
+    /// `cmd::CycleTheme` to advance to the next id.
+    pub active_theme_id: Option<String>,
+    /// Theme registry — collects every `contributes.themes` entry
+    /// across the built-in manifest and plugin manifests, keyed by
+    /// theme id. T-112 introduces it on `Editor` so runtime theme
+    /// switching has a stable home.
+    pub theme_store: ThemeStore,
 }
 
 impl Editor {
@@ -138,6 +153,9 @@ impl Editor {
             modal: ModalSlot::new(),
             focus,
             doc_index,
+            theme: Theme::default(),
+            active_theme_id: None,
+            theme_store: ThemeStore::new(),
             bus,
         })
     }
@@ -195,6 +213,21 @@ impl Editor {
         if let Some(kind) = self.modal.dismiss() {
             self.bus
                 .publish(devix_protocol::pulse::Pulse::ModalDismissed { modal: kind });
+        }
+    }
+
+    /// Activate the theme identified by `id` against the editor's
+    /// `theme_store`. Replaces `self.theme` with the resolved palette
+    /// and publishes `Pulse::ThemeChanged`. Returns `false` when the
+    /// id is not registered. T-112.
+    pub fn set_theme(&mut self, id: &str) -> bool {
+        match theme_store::activate(&self.theme_store, id, &self.bus) {
+            Some(theme) => {
+                self.theme = theme;
+                self.active_theme_id = Some(id.to_string());
+                true
+            }
+            None => false,
         }
     }
 
@@ -907,6 +940,61 @@ mod tests {
             .filter(|p| p.kind() == PulseKind::FocusChanged)
             .count();
         assert_eq!(count, 1, "FocusChanged fires once for the real transition");
+    }
+
+    #[test]
+    fn set_theme_swaps_active_theme_and_publishes_pulse() {
+        use devix_protocol::manifest::{Contributes, Engines, Manifest, ThemeSpec};
+        use devix_protocol::protocol::ProtocolVersion;
+        use devix_protocol::pulse::{Pulse, PulseFilter, PulseKind};
+        use devix_protocol::view::{Color, Style as ViewStyle};
+        use std::collections::HashMap;
+        let mut ws = Editor::open(None).unwrap();
+        let mut scopes = HashMap::new();
+        let mut keyword_style = ViewStyle::default();
+        keyword_style.fg = Some(Color::Rgb(1, 2, 3));
+        scopes.insert("keyword".to_string(), keyword_style);
+        let manifest = Manifest {
+            name: "themepack".into(),
+            version: "0.1.0".into(),
+            engines: Engines {
+                protocol_version: ProtocolVersion::new(0, 1),
+                pulse_bus: ProtocolVersion::new(0, 1),
+                manifest: ProtocolVersion::new(0, 1),
+            },
+            entry: None,
+            contributes: Contributes {
+                themes: vec![ThemeSpec {
+                    id: "midnight".into(),
+                    label: "Midnight".into(),
+                    scopes,
+                }],
+                ..Default::default()
+            },
+            subscribe: Vec::new(),
+        };
+        ws.theme_store.register_from_manifest(&manifest);
+
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Pulse>::new()));
+        let cap = captured.clone();
+        ws.bus.subscribe(PulseFilter::kind(PulseKind::ThemeChanged), move |p| {
+            cap.lock().unwrap().push(p.clone());
+        });
+
+        assert!(ws.set_theme("midnight"));
+        assert_eq!(ws.active_theme_id.as_deref(), Some("midnight"));
+        let pulses = captured.lock().unwrap();
+        assert_eq!(pulses.len(), 1);
+        if let Pulse::ThemeChanged { theme, .. } = &pulses[0] {
+            assert_eq!(theme.as_str(), "/theme/midnight");
+        }
+    }
+
+    #[test]
+    fn set_theme_unknown_id_is_a_noop() {
+        let mut ws = Editor::open(None).unwrap();
+        assert!(!ws.set_theme("does-not-exist"));
+        assert_eq!(ws.active_theme_id, None);
     }
 
     /// Synthesize a `RenderCache` with a 100x40 area distributed across

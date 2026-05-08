@@ -41,6 +41,8 @@
       { "id": "sidebar.toggle_left",  "label": "Toggle Left Sidebar",       "category": "View" },
       { "id": "sidebar.toggle_right", "label": "Toggle Right Sidebar",      "category": "View" },
 
+      { "id": "theme.cycle",        "label": "Cycle Theme",                 "category": "View" },
+
       { "id": "app.quit",           "label": "Quit",                        "category": "App" }
     ],
     "keymaps": [

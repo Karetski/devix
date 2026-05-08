@@ -17,7 +17,7 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use devix_core::{CommandRegistry, Editor, Keymap, LayoutCtx, RenderCache};
-use devix_core::{Clipboard, Theme};
+use devix_core::Clipboard;
 use devix_core::PluginRuntime;
 use ratatui::Terminal;
 use ratatui::backend::{Backend, CrosstermBackend};
@@ -34,7 +34,6 @@ pub struct Application<B: Backend = CrosstermBackend<Stdout>> {
     pub editor: Editor,
     pub commands: CommandRegistry,
     pub keymap: Keymap,
-    pub theme: Theme,
     pub clipboard: Box<dyn Clipboard>,
     /// Layout/render cache. Carved out of `Editor` per T-92; the cache
     /// is tui-internal (`namespace.md` migration table). The render
@@ -69,7 +68,6 @@ impl Application<CrosstermBackend<Stdout>> {
         editor: Editor,
         commands: CommandRegistry,
         keymap: Keymap,
-        theme: Theme,
         clipboard: Box<dyn Clipboard>,
         sink: EventSink,
         rx: Receiver<LoopMessage>,
@@ -79,7 +77,6 @@ impl Application<CrosstermBackend<Stdout>> {
             editor,
             commands,
             keymap,
-            theme,
             clipboard,
             layout_cache: RenderCache::default(),
             plugin: None,
@@ -153,7 +150,6 @@ impl<B: Backend> Application<B> {
                 editor: &mut self.editor,
                 commands: &self.commands,
                 keymap: &self.keymap,
-                theme: &self.theme,
                 clipboard: self.clipboard.as_mut(),
                 sink: &self.sink,
                 layout_cache: &self.layout_cache,
@@ -221,7 +217,6 @@ impl<B: Backend> Application<B> {
             ref mut editor,
             ref mut layout_cache,
             ref keymap,
-            ref theme,
             ref commands,
             ..
         } = *self;
@@ -233,14 +228,14 @@ impl<B: Backend> Application<B> {
             let layout_ctx = LayoutCtx {
                 documents: &editor.documents,
                 cursors: &editor.cursors,
-                theme,
+                theme: &editor.theme,
                 render_cache: layout_cache,
                 focused_leaf,
             };
             editor.panes.render(area, frame, &layout_ctx);
 
             if let Some(modal) = editor.modal.as_ref() {
-                render::paint_modal(modal, area, frame, theme, commands, keymap);
+                render::paint_modal(modal, area, frame, &editor.theme, commands, keymap);
             }
         })?;
         Ok(())
@@ -286,7 +281,6 @@ mod test_support {
             editor: Editor,
             commands: CommandRegistry,
             keymap: Keymap,
-            theme: Theme,
             clipboard: Box<dyn Clipboard>,
             size: (u16, u16),
         ) -> Self {
@@ -297,7 +291,6 @@ mod test_support {
                 editor,
                 commands,
                 keymap,
-                theme,
                 clipboard,
                 layout_cache: RenderCache::default(),
                 plugin: None,

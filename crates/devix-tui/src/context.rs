@@ -14,7 +14,7 @@ use devix_core::{
     CommandRegistry, Context as EditorContext, Editor, EditorCommand, Keymap, RenderCache,
     Viewport,
 };
-use devix_core::{Clipboard, Theme};
+use devix_core::Clipboard;
 
 use crate::event_sink::EventSink;
 
@@ -22,7 +22,6 @@ pub struct AppContext<'a> {
     pub editor: &'a mut Editor,
     pub commands: &'a CommandRegistry,
     pub keymap: &'a Keymap,
-    pub theme: &'a Theme,
     pub clipboard: &'a mut dyn Clipboard,
     pub sink: &'a EventSink,
     /// Layout/render cache. Lives on `Application` (T-92 carved it

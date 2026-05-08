@@ -15,6 +15,7 @@ pub mod mouse;
 pub mod palette;
 pub mod split;
 pub mod tab;
+pub mod theme;
 
 pub use clipboard::{Copy, Cut, Paste};
 pub use edit::{
@@ -30,6 +31,7 @@ pub use mouse::{ClickAt, DragAt, ScrollBy};
 pub use palette::{ClosePalette, CloseModal, OpenPalette, PaletteAccept, PaletteMove, PaletteSetQuery};
 pub use split::{CloseFrame, FocusDir, SplitHorizontal, SplitVertical, ToggleSidebar};
 pub use tab::{CloseTab, ForceCloseTab, NewTab, NextTab, PrevTab};
+pub use theme::{CycleTheme, SetTheme};
 
 /// HRTB trait alias for actions that take the editor's `Context<'_>`.
 /// Storage shape: `Box<dyn EditorCommand>` / `Arc<dyn EditorCommand>`.
@@ -77,6 +79,8 @@ pub fn handler_for_builtin_id(id: &str) -> Option<std::sync::Arc<dyn EditorComma
 
         "sidebar.toggle_left" => Arc::new(split::ToggleSidebar(SidebarSlot::Left)),
         "sidebar.toggle_right" => Arc::new(split::ToggleSidebar(SidebarSlot::Right)),
+
+        "theme.cycle" => Arc::new(theme::CycleTheme),
 
         "app.quit" => Arc::new(file::Quit),
 

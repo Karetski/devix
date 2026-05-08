@@ -15,9 +15,8 @@ use devix_tui::{Application, EventSink};
 use devix_core::{Editor, build_registry, default_keymap};
 use devix_core::manifest_loader::{
     apply_keymap_overrides, discover_plugin_manifests, keymap_overrides_path, load_manifest,
-    parse_manifest_bytes, plugin_dir, theme_from_manifest,
+    parse_manifest_bytes, plugin_dir,
 };
-use devix_core::Theme;
 use devix_core::{MsgSink, PluginMsg, PluginRuntime, default_plugin_path};
 
 fn main() -> Result<()> {
@@ -27,6 +26,17 @@ fn main() -> Result<()> {
     let (sink, rx) = EventSink::channel();
 
     let mut editor = Editor::open(path)?;
+    // Seed the editor's theme store from the embedded built-in
+    // manifest, then activate the "default" theme. T-112 made theme
+    // state live on `Editor`; runtime theme switches go through
+    // `editor.set_theme(id)` from then on.
+    if let Ok(builtin) = parse_manifest_bytes(
+        devix_core::BUILTIN_MANIFEST.as_bytes(),
+        std::path::Path::new("<builtin>"),
+    ) {
+        editor.theme_store.register_from_manifest(&builtin);
+    }
+    let _ = editor.set_theme("default");
     // Disk-watch events flow as Pulse::DiskChanged on the editor's
     // bus; Application::run drains and dispatches them to
     // handle_disk_changed on the main thread (T-61).
@@ -158,22 +168,20 @@ fn main() -> Result<()> {
         }
     }
 
-    // Load the "default" theme from the embedded built-in manifest.
-    // Falls back to the in-source `Theme::default()` if the manifest
-    // doesn't carry the id (defence-in-depth — the embedded manifest
-    // does, and `builtin_manifest::*` tests gate on it).
-    let theme = parse_manifest_bytes(
-        devix_core::BUILTIN_MANIFEST.as_bytes(),
-        std::path::Path::new("<builtin>"),
-    )
-    .ok()
-    .and_then(|m| theme_from_manifest(&m, "default"))
-    .unwrap_or_else(Theme::default);
+    // Plugin manifests can also contribute themes; register them so
+    // `editor.set_theme(id)` can later activate any of them.
+    if let Some(dir) = plugin_dir() {
+        if let Ok(manifests) = discover_plugin_manifests(&dir) {
+            for manifest_path in manifests {
+                if let Ok(m) = load_manifest(&manifest_path) {
+                    editor.theme_store.register_from_manifest(&m);
+                }
+            }
+        }
+    }
     let clipboard = clipboard::init();
 
-    let mut app = Application::new(
-        editor, commands, keymap, theme, clipboard, sink, rx,
-    )?;
+    let mut app = Application::new(editor, commands, keymap, clipboard, sink, rx)?;
 
     // The Application currently holds at most one plugin runtime
     // handle (legacy shape). Multi-plugin handles stay alive for the

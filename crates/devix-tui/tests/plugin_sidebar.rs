@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 use devix_tui::Application;
 use devix_core::{Editor, build_registry, default_keymap};
-use devix_core::{NoClipboard, Theme};
+use devix_core::NoClipboard;
 use devix_core::PluginRuntime;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -64,7 +64,6 @@ fn sidebar_renders_plugin_supplied_lines() {
         editor,
         commands,
         keymap,
-        Theme::default(),
         Box::new(NoClipboard),
         (40, 10),
     );
