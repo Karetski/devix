@@ -116,6 +116,11 @@ impl<B: Backend> Application<B> {
                 Ok(LoopMessage::Quit) => self.quit = true,
                 Err(_) => break,
             }
+            // Drain cross-thread `publish_async` pulses on the main
+            // thread per pulse-bus.md. Subscribers run synchronously
+            // before flush_effects so any RenderDirty / Effect::Redraw
+            // queued by a subscriber lands in the same tick.
+            self.editor.bus.drain();
             self.flush_effects();
         }
         input.shutdown(SHUTDOWN_DEADLINE);

@@ -73,6 +73,12 @@ pub enum TabStripHit {
 pub struct Editor {
     pub documents: crate::editor::document::DocStore,
     pub cursors: crate::editor::cursor::CursorStore,
+    /// In-process pulse bus per `docs/specs/pulse-bus.md`. Producers
+    /// publish typed `Pulse` events (sync via `publish`, cross-thread
+    /// via `publish_async`); subscribers register typed handlers.
+    /// Stage 6 / T-60 introduces the bus; T-61 / T-62 / T-63 migrate
+    /// remaining closure-as-message producers off `EventSink`.
+    pub bus: crate::PulseBus,
     /// Structural Pane tree — the layout source of truth, and **also**
     /// the only place per-frame state lives now. `LayoutFrame` owns its
     /// `tabs`/`active_tab`/`tab_strip_scroll`/`recenter_active`
@@ -139,6 +145,7 @@ impl Editor {
             doc_index,
             render_cache: RenderCache::default(),
             disk_sink: None,
+            bus: crate::PulseBus::new(),
         })
     }
 
@@ -417,6 +424,31 @@ pub(crate) fn install_watcher_for_doc(
     let path = id.to_path();
     let sink = sink.clone();
     doc.install_disk_watcher(Box::new(move || sink(path.clone(), fs_path.clone())));
+}
+
+/// Install a notify watcher on `documents[id]` whose callback
+/// publishes `Pulse::DiskChanged { path, fs_path }` into `bus` via
+/// `publish_async`. T-60 introduces this bus-shaped path; T-63
+/// retires the closure-based `DiskSink` once every consumer has
+/// subscribed off the typed pulse instead.
+#[allow(dead_code)] // wired up by T-61 once the disk-changed subscriber lands
+pub(crate) fn install_bus_watcher_for_doc(
+    documents: &mut crate::editor::document::DocStore,
+    id: DocId,
+    bus: &crate::PulseBus,
+) {
+    let Some(doc) = documents.get_mut(id) else { return };
+    let Some(fs_path) = doc.buffer.path().map(std::path::Path::to_path_buf) else {
+        return;
+    };
+    let path = id.to_path();
+    let bus = bus.clone();
+    doc.install_disk_watcher(Box::new(move || {
+        bus.publish_async(devix_protocol::pulse::Pulse::DiskChanged {
+            path: path.clone(),
+            fs_path: fs_path.clone(),
+        });
+    }));
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 # Task T-60 — Replace EventSink + DiskSink + MsgSink + Wakeup with PulseBus
 Stage: 6
-Status: pending
+Status: complete (scope reduced — see Stage-6 re-allocation in foundations-review log)
 Depends on: T-31, T-57
 Blocks:     T-61, T-63
 
