@@ -71,6 +71,19 @@ impl Keymap {
         }
     }
 
+    /// Bind a chord to a command iff the chord is currently unbound.
+    /// Returns `true` if newly bound, `false` if a binding already
+    /// existed (left intact). Used by plugin-manifest registration
+    /// per `manifest.md` § *Manifest discovery* — first-loaded-wins
+    /// on chord conflicts.
+    pub fn bind_command_if_free(&mut self, chord: Chord, id: CommandId) -> bool {
+        if self.bindings.contains_key(&chord) {
+            return false;
+        }
+        self.bind_command(chord, id);
+        true
+    }
+
     pub fn bind_action(&mut self, chord: Chord, action: Arc<dyn EditorCommand>) {
         self.bindings.insert(chord, Binding::Action(action));
         // Action bindings have no command-id path, so they don't
