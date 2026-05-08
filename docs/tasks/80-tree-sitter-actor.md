@@ -1,6 +1,6 @@
 # Task T-80 — Tree-sitter highlighter as supervised actor
 Stage: 8
-Status: pending
+Status: deferred — supervisor primitive ready (T-82); highlighter restructure is its own sprint
 Depends on: T-63, T-82
 Blocks:     T-95
 

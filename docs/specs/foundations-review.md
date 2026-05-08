@@ -426,6 +426,40 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-07 — Stage 8 partial close (T-82 ships;
+  T-80 / T-81 deferred).** T-82 lands the supervisor primitive
+  (`devix_core::supervise`): one-for-one restart strategy, default
+  3 restarts in 30s, escalates via `Pulse::PluginError` on budget
+  exhaustion. Tests cover clean exit, panic-then-restart, budget
+  exhaustion, and drop-stops-supervisor.
+
+  T-80 (tree-sitter highlighter as supervised actor) and T-81
+  (plugin runtime as supervised actor) deferred to a Stage-8
+  follow-up sprint. Both require structural ownership shifts:
+
+  - T-80: today the `Highlighter` lives inside `Document` and
+    `Document::apply_tx` calls `h.parse` synchronously. Migrating
+    to a supervised actor means Document gives up the highlighter,
+    a worker thread owns it, and View producers consume
+    `Pulse::HighlightsReady` (a new variant — would require a
+    pulse-bus.md minor bump). Stage 9's LayoutNode collapse +
+    Stage 4's view-producer refinements are the natural moment
+    to restructure together.
+  - T-81: today the plugin runtime spawns its own thread inside
+    `load_with_sink`; channels (`invoke_tx`, `input_tx`,
+    `msg_rx`) flow back to the editor. The supervisor primitive
+    expects to own the spawn. Wrapping requires either (a)
+    refactoring `PluginRuntime` so the supervisor owns the spawn
+    and exposes channel handles via shared state, or (b) inlining
+    a panic-recovery loop inside the existing tokio::select. Real
+    supervised behavior (Lua VM reset, re-registration of
+    contributions on restart) is its own design problem — better
+    landed alongside T-110 / T-111 when manifest-driven plugin
+    loading reshapes the boundaries anyway.
+
+  End state: supervisor primitive is shipping infrastructure;
+  consumers wire it up when the surrounding code is ready.
+
 - **2026-05-07 — Stage 6 fully closed (after partial-close
   reversal).** The earlier "Stage 6 partial close" entry below was
   reversed in the same session: subsequent work pushed through

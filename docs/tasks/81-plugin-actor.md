@@ -1,6 +1,6 @@
 # Task T-81 — Plugin runtime as supervised actor
 Stage: 8
-Status: pending
+Status: deferred — supervisor primitive ready (T-82); plugin-runtime restructure is its own sprint
 Depends on: T-82
 Blocks:     T-95
 
