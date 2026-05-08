@@ -426,6 +426,28 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-08 — T-81 partial close (supervised plugin thread; restart
+  deferred).** `PluginRuntime::load_supervised(path, sink, bus)` wraps
+  the plugin worker thread in `supervise()` with `max_restarts: 0`. A
+  Lua-side panic escalates as `Pulse::PluginError` on the editor's
+  bus; the editor stays responsive. Successful load publishes
+  `Pulse::PluginLoaded`. Custom `Drop` on `PluginRuntime` fires a
+  oneshot shutdown so the loop's `tokio::select!` exits even when an
+  installed plugin pane keeps an `input_tx` clone alive. *Deferred*
+  from T-81 spec: channel-re-acquisition restart (needs
+  `Arc<Mutex<Option<Sender>>>` topology so editor-held senders refresh
+  across respawn) and the module reorg into
+  `host`/`runtime`/`bridge`/`pane_handle` (per `crates.md`). Both go
+  together in a future T-81 follow-up sprint.
+
+- **2026-05-08 — Loose-end wire-ups in `main.rs`.** Two helpers
+  landed earlier (T-72 / T-73) but were never called: theme now
+  loads from the embedded `BUILTIN_MANIFEST` via
+  `theme_from_manifest("default")` (with a fallback to
+  `Theme::default()`); user keymap overrides apply from
+  `$XDG_CONFIG_HOME/devix/keymap-overrides.json` after manifest
+  bindings. Errors surface to stderr; missing override file is silent.
+
 - **2026-05-07 — Stage 10 close (T-100 / T-101 / T-102 / T-103 / T-104
   ship).** Editor god-struct decomposed into 8 typed owners:
   `documents: DocStore`, `cursors: CursorStore`, `bus: PulseBus`,
