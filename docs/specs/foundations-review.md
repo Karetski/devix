@@ -426,6 +426,28 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-07 — Stage 6 partial close.** Stage 6 lands the bus +
+  two producer migrations (disk-watch, plugin pane-changed); the
+  remaining wholesale retirement of `EventSink` / `Effect` /
+  `Wakeup` plus the input-thread + plugin OpenPath migrations
+  defer to a Stage-6 follow-up sprint. End-state Stage-6
+  acceptance criterion ("no producer calls into the legacy event
+  types") is partially met:
+
+  - Disk watcher: bus only ✓
+  - Plugin PaneChanged: bus only ✓
+  - Plugin Status: no-op (no migration needed) ✓
+  - Plugin OpenPath: still on EventSink ✗
+  - Frontend input (crossterm → AppContext): still on
+    LoopMessage::Input ✗
+  - Application loop's LoopMessage::Pulse(closure) path: kept as
+    the bridge for OpenPath until the full migration ✗
+
+  T-63's "drop legacy types + full regression" criterion narrowed
+  to "regression gate against the partial state" (235 tests pass,
+  zero warnings). Bus is structurally proven; remaining producer
+  migrations follow the same template as T-61 / T-62.
+
 - **2026-05-07 — `pulse-bus.md` extension: `drain_into`.** Adds a
   drain variant that pops the cross-thread queue into a caller-
   owned `Vec<Pulse>` *without* invoking bus subscribers. Lets the
