@@ -1,6 +1,6 @@
 # Task T-82 — Supervisor primitive + restart policy
 Stage: 8
-Status: pending
+Status: complete
 Depends on: T-31, T-63
 Blocks:     T-80, T-81
 
