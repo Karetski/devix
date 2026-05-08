@@ -1,0 +1,203 @@
+//! Manifest reader / validator / discovery — `docs/specs/manifest.md`.
+//!
+//! T-33 ships the read+validate path and the discovery helper.
+//! Concrete contribution wiring (registering loaded commands /
+//! keymaps / themes / panes / settings into the live registries)
+//! lands in T-70..T-74 (built-ins) and T-110..T-113 (plugins).
+
+use std::path::{Path as FsPath, PathBuf};
+
+use devix_protocol::manifest::{Manifest, ManifestValidationError};
+use thiserror::Error;
+
+/// Errors a manifest load can surface. Wraps both I/O / parse and
+/// the post-deserialize content validation.
+#[derive(Debug, Error)]
+pub enum ManifestLoadError {
+    #[error("reading manifest from `{path}`: {source}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("parsing manifest at `{path}`: {source}")]
+    Parse {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("validating manifest at `{path}`: {source}")]
+    Validate {
+        path: PathBuf,
+        #[source]
+        source: ManifestValidationError,
+    },
+}
+
+/// Load a manifest from a JSON file. Reads, parses, validates.
+/// Returns the validated `Manifest` on success.
+pub fn load_manifest(path: &FsPath) -> Result<Manifest, ManifestLoadError> {
+    let bytes = std::fs::read(path).map_err(|source| ManifestLoadError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    parse_manifest_bytes(&bytes, path)
+}
+
+/// Parse + validate a manifest from already-loaded bytes. Used both
+/// for filesystem-loaded plugin manifests and the embedded built-in
+/// manifest (`include_str!` at T-70).
+pub fn parse_manifest_bytes(
+    bytes: &[u8],
+    path: &FsPath,
+) -> Result<Manifest, ManifestLoadError> {
+    let manifest: Manifest =
+        serde_json::from_slice(bytes).map_err(|source| ManifestLoadError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    manifest.validate().map_err(|source| ManifestLoadError::Validate {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    Ok(manifest)
+}
+
+/// Resolve the plugin directory per `manifest.md` § *Manifest
+/// discovery*:
+///
+/// 1. `DEVIX_PLUGIN_DIR` env var (overrides default; primarily for
+///    tests).
+/// 2. `$XDG_CONFIG_HOME/devix/plugins/`.
+/// 3. `~/.config/devix/plugins/`.
+///
+/// Returns `None` if no candidate resolves (no env var, no XDG, no
+/// home dir).
+pub fn plugin_dir() -> Option<PathBuf> {
+    if let Ok(p) = std::env::var("DEVIX_PLUGIN_DIR") {
+        return Some(PathBuf::from(p));
+    }
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        return Some(PathBuf::from(xdg).join("devix").join("plugins"));
+    }
+    let home = std::env::var("HOME").ok()?;
+    Some(PathBuf::from(home).join(".config").join("devix").join("plugins"))
+}
+
+/// Discover every plugin under `dir`. Each subdirectory containing
+/// a `manifest.json` is a plugin candidate. Returns the list of
+/// candidate manifest paths in alphabetical (loader-deterministic)
+/// order. The caller is responsible for invoking `load_manifest` on
+/// each entry — discovery is a separate step from validation.
+pub fn discover_plugin_manifests(dir: &FsPath) -> std::io::Result<Vec<PathBuf>> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let p = e.path();
+            if !p.is_dir() {
+                return None;
+            }
+            let manifest = p.join("manifest.json");
+            manifest.is_file().then_some(manifest)
+        })
+        .collect();
+    entries.sort();
+    Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    fn good_manifest_json() -> &'static str {
+        r#"{
+            "name": "file-tree",
+            "version": "0.1.0",
+            "engines": { "devix": "0.1", "pulse_bus": "0.1", "manifest": "0.1" },
+            "entry": "main.lua"
+        }"#
+    }
+
+    #[test]
+    fn parse_manifest_bytes_round_trips_good_manifest() {
+        let m = parse_manifest_bytes(
+            good_manifest_json().as_bytes(),
+            FsPath::new("/test/manifest.json"),
+        )
+        .unwrap();
+        assert_eq!(m.name, "file-tree");
+        assert_eq!(m.version, "0.1.0");
+    }
+
+    #[test]
+    fn parse_rejects_unknown_field() {
+        let json = r#"{
+            "name": "ok",
+            "version": "0.1.0",
+            "engines": { "devix": "0.1", "pulse_bus": "0.1", "manifest": "0.1" },
+            "typo": "oops"
+        }"#;
+        let bad = parse_manifest_bytes(json.as_bytes(), FsPath::new("/test/manifest.json"));
+        assert!(matches!(bad, Err(ManifestLoadError::Parse { .. })));
+    }
+
+    #[test]
+    fn parse_rejects_invalid_name() {
+        let json = r#"{
+            "name": "Bad_Name",
+            "version": "0.1.0",
+            "engines": { "devix": "0.1", "pulse_bus": "0.1", "manifest": "0.1" }
+        }"#;
+        let bad = parse_manifest_bytes(json.as_bytes(), FsPath::new("/test/manifest.json"));
+        assert!(matches!(bad, Err(ManifestLoadError::Validate { .. })));
+    }
+
+    #[test]
+    fn discover_finds_subdirs_with_manifest_json() {
+        let tmp = tempdir();
+        let plugin_a = tmp.join("alpha");
+        let plugin_b = tmp.join("bravo");
+        let no_manifest = tmp.join("charlie");
+        std::fs::create_dir_all(&plugin_a).unwrap();
+        std::fs::create_dir_all(&plugin_b).unwrap();
+        std::fs::create_dir_all(&no_manifest).unwrap();
+        write_file(&plugin_a.join("manifest.json"), b"{}");
+        write_file(&plugin_b.join("manifest.json"), b"{}");
+        // charlie has no manifest.json — should be skipped.
+
+        let found = discover_plugin_manifests(&tmp).unwrap();
+        assert_eq!(found.len(), 2);
+        // Alphabetical order.
+        assert!(found[0].ends_with("alpha/manifest.json"));
+        assert!(found[1].ends_with("bravo/manifest.json"));
+
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn discover_returns_empty_for_missing_dir() {
+        let nonexistent = std::env::temp_dir().join("devix-discover-test-no-such-dir");
+        let _ = std::fs::remove_dir_all(&nonexistent);
+        let found = discover_plugin_manifests(&nonexistent).unwrap();
+        assert!(found.is_empty());
+    }
+
+    fn tempdir() -> PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "devix-manifest-loader-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn write_file(path: &FsPath, bytes: &[u8]) {
+        let mut f = std::fs::File::create(path).unwrap();
+        f.write_all(bytes).unwrap();
+    }
+}

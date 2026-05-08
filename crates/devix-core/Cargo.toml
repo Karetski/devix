@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 ratatui = { workspace = true }
 ropey = { workspace = true }
 crossterm = { workspace = true }

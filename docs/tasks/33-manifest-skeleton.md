@@ -1,6 +1,6 @@
 # Task T-33 — Manifest skeleton + reader + JSON Schema
 Stage: 3
-Status: pending
+Status: complete (schema gen deferred — see In scope note)
 Depends on: T-30, T-31, T-32
 Blocks:     T-70, T-110
 
@@ -20,10 +20,14 @@ sites are stubs; concrete wiring lands in Stages 7 / 11.
 - `engines.devix` ↔ `protocol_version` alias via serde rename per
   spec.
 - Validator that runs the full table in `manifest.md` § *Validation*.
-- JSON Schema generation via `schemars` (closing `manifest.md` Q5)
-  emitted at build time or via `cargo run -p devix-core
-  --bin gen-schema`. Schema written to
-  `crates/devix-core/manifests/manifest.schema.json`.
+- JSON Schema generation via `schemars` (closing `manifest.md` Q5):
+  **deferred to a follow-up task.** Producing a usable schema
+  requires custom `JsonSchema` impls for `Path`, `Chord`, `Color`,
+  `ProtocolVersion` — the canonical-string types whose derive serde
+  is also placeholder until T-41 / T-42. Shipping schema generation
+  before those land would emit a misleading schema. `schemars` is
+  in `workspace.dependencies` (T-21) and ready when the canonical
+  serde lands.
 - Manifest discovery: `DEVIX_PLUGIN_DIR` env var → fall back to
   `$XDG_CONFIG_HOME/devix/plugins/` → `~/.config/devix/plugins/`.
 - Tests: schema validation rejects every error column in the table;

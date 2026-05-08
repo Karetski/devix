@@ -23,6 +23,7 @@ pub mod editor;
 pub mod event;
 pub mod geom;
 pub mod layout_geom;
+pub mod manifest_loader;
 pub mod pane;
 pub mod plugin;
 pub mod theme;

@@ -34,6 +34,10 @@ pub mod pulse;
 pub mod view;
 
 pub use input::{Chord, InputEvent, KeyCode, Modifiers, MouseButton, MouseKind};
+pub use manifest::{
+    CommandSpec, Contributes, Engines, KeymapSpec, Manifest, ManifestValidationError, PaneSpec,
+    SettingSpec, SubscriptionSpec, ThemeSpec,
+};
 pub use path::{Lookup, Path, PathError};
 pub use protocol::{
     Capability, ClientHello, ClientToCore, CoreHandle, CoreToClient, CoreToPlugin, Envelope,
