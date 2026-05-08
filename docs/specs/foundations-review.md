@@ -426,6 +426,29 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-08 — Stage 11 lands two partials: T-110 (plugin commands)
+  + T-112 (plugin themes).** `CommandId` widens from tuple-struct
+  `&'static str` to `{ plugin: Option<&'static str>, id: &'static str
+  }` with `CommandId::builtin(id)` / `CommandId::plugin(plugin, id)`
+  constructors; `to_path()` produces `/cmd/<id>` or
+  `/plugin/<name>/cmd/<id>` per kind, and `CommandRegistry`'s
+  `Lookup` impl resolves both shapes. New
+  `PluginRuntime::install_with_manifest(commands, keymap, editor,
+  manifest, bus)` registers manifest's `contributes.commands` at
+  `/plugin/<manifest.name>/cmd/<id>`, matched to Lua-registered
+  handles by id (orphan declarations publish `PluginError`). New
+  `theme_store` module with `register_from_manifest` and
+  `activate(store, id, bus) -> Option<Theme>` that emits
+  `Pulse::ThemeChanged` with the wire-shape `ThemePalette`. main.rs
+  walks `plugin_dir()` for every `manifest.json` subdirectory, loads
+  each under the supervisor (T-81 partial), and wires its commands.
+  Legacy `DEVIX_PLUGIN` single-file path stays alive at `/cmd/<id>`.
+  *Deferred* across T-110/T-112: capability negotiation
+  (`ContributeCommands` / `ContributeThemes` warn-and-degrade —
+  needs T-81 full); keymap-from-manifest plugin-path resolution;
+  first-loaded-wins chord conflicts; runtime user-driven theme
+  switching (no UI surface yet).
+
 - **2026-05-08 — T-81 partial close (supervised plugin thread; restart
   deferred).** `PluginRuntime::load_supervised(path, sink, bus)` wraps
   the plugin worker thread in `supervise()` with `max_restarts: 0`. A
