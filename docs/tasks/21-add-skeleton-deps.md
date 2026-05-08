@@ -1,6 +1,6 @@
 # Task T-21 — Add foundation-skeleton dependencies
 Stage: 2
-Status: pending
+Status: complete
 Depends on: T-20
 Blocks:     T-30, T-31, T-32, T-33
 
