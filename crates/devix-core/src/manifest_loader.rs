@@ -148,6 +148,31 @@ pub fn register_keymap_contributions(
     manifest: &Manifest,
     commands: &crate::editor::commands::registry::CommandRegistry,
 ) -> Result<usize, ManifestRegisterError> {
+    register_keymap_contributions_with_policy(keymap, manifest, commands, BindPolicy::Force)
+}
+
+/// Bind policy for `register_keymap_contributions_with_policy`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum BindPolicy {
+    /// Built-ins and user overrides: always bind. Existing chord
+    /// bindings are overwritten.
+    Force,
+    /// Plugin manifests: first-loaded wins. A binding for a chord
+    /// that's already bound is skipped silently (the count returned
+    /// reflects only the bindings that took effect).
+    IfFree,
+}
+
+/// Like `register_keymap_contributions`, but the caller picks the
+/// `BindPolicy`. Used by plugin manifest installation
+/// (`install_with_manifest`) which passes `BindPolicy::IfFree` per
+/// `manifest.md` § *Manifest discovery*.
+pub fn register_keymap_contributions_with_policy(
+    keymap: &mut crate::editor::commands::keymap::Keymap,
+    manifest: &Manifest,
+    commands: &crate::editor::commands::registry::CommandRegistry,
+    policy: BindPolicy,
+) -> Result<usize, ManifestRegisterError> {
     let mut count = 0usize;
     for binding in &manifest.contributes.keymaps {
         let cmd_id = resolve_keymap_command(commands, &binding.command)?;
@@ -157,8 +182,16 @@ pub fn register_keymap_contributions(
                 reason,
             }
         })?;
-        keymap.bind_command(chord, cmd_id);
-        count += 1;
+        let bound = match policy {
+            BindPolicy::Force => {
+                keymap.bind_command(chord, cmd_id);
+                true
+            }
+            BindPolicy::IfFree => keymap.bind_command_if_free(chord, cmd_id),
+        };
+        if bound {
+            count += 1;
+        }
     }
     Ok(count)
 }

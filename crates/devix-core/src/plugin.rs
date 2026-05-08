@@ -1076,6 +1076,30 @@ impl PluginRuntime {
             count += 1;
         }
 
+        // Manifest-declared keymaps (T-110 follow-up). Plugin
+        // manifests' `contributes.keymaps` resolve their `command`
+        // string (bare id / `/cmd/<id>` / `/plugin/<name>/cmd/<id>`)
+        // against the now-extended registry and bind via
+        // `BindPolicy::IfFree` — first-loaded wins on chord
+        // conflicts. Errors (unknown commands, unsupported chords)
+        // surface as `PluginError`.
+        match crate::manifest_loader::register_keymap_contributions_with_policy(
+            keymap,
+            manifest,
+            commands,
+            crate::manifest_loader::BindPolicy::IfFree,
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                if let Some(ref pp) = plugin_path {
+                    bus.publish(devix_protocol::pulse::Pulse::PluginError {
+                        plugin: pp.clone(),
+                        message: format!("manifest keymap registration failed: {e}"),
+                    });
+                }
+            }
+        }
+
         // Panes (T-111): cross-check manifest declarations against
         // Lua-side `register_pane` registrations. Orphan declarations
         // (manifest declares a pane on slot X but no Lua pane was
@@ -1599,6 +1623,73 @@ mod tests {
             commands.lookup(&plugin_cmd).is_some(),
             "command lookups against /plugin/<name>/cmd/<id> resolve",
         );
+    }
+
+    #[test]
+    fn manifest_keymaps_bind_plugin_chord_via_install_with_manifest() {
+        use devix_protocol::input::Chord as ProtoChord;
+        use devix_protocol::manifest::{
+            CommandSpec as ManifestCommandSpec, Contributes, Engines, KeymapSpec,
+            Manifest,
+        };
+        use devix_protocol::protocol::ProtocolVersion;
+
+        let p = write_temp(
+            "kbm",
+            r#"
+                devix.register_action({
+                    id = "ping",
+                    label = "Ping",
+                    run = function() devix.status("ping-fired") end,
+                })
+            "#,
+        );
+
+        let manifest = Manifest {
+            name: "kbm".to_string(),
+            version: "0.1.0".to_string(),
+            engines: Engines {
+                protocol_version: ProtocolVersion::new(0, 1),
+                pulse_bus: ProtocolVersion::new(0, 1),
+                manifest: ProtocolVersion::new(0, 1),
+            },
+            entry: None,
+            contributes: Contributes {
+                commands: vec![ManifestCommandSpec {
+                    id: "ping".to_string(),
+                    label: "Ping".to_string(),
+                    category: None,
+                    lua_handle: None,
+                }],
+                keymaps: vec![KeymapSpec {
+                    key: ProtoChord::parse("ctrl-y").unwrap(),
+                    command: "/plugin/kbm/cmd/ping".to_string(),
+                    when: None,
+                }],
+                ..Default::default()
+            },
+            subscribe: Vec::new(),
+        };
+
+        let bus = crate::PulseBus::new();
+        let mut runtime = PluginRuntime::load(&p).unwrap();
+        let mut commands = CommandRegistry::new();
+        let mut keymap = Keymap::new();
+        let mut editor = Editor::open(None).unwrap();
+        runtime.install_with_manifest(
+            &mut commands,
+            &mut keymap,
+            &mut editor,
+            &manifest,
+            &bus,
+        );
+
+        // Manifest's keymap entry binds ctrl-y → plugin command.
+        use crate::editor::commands::keymap::Chord;
+        use crossterm::event::{KeyCode, KeyModifiers};
+        let chord = Chord::new(KeyCode::Char('y'), KeyModifiers::CONTROL);
+        let action = keymap.resolve_chord(chord, &commands);
+        assert!(action.is_some(), "manifest keymap binding resolves through registry");
     }
 
     #[test]
