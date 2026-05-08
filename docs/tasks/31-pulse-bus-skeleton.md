@@ -1,6 +1,6 @@
 # Task T-31 — Pulse bus skeleton (types in protocol; impl in core)
 Stage: 3
-Status: pending
+Status: complete
 Depends on: T-30, T-22
 Blocks:     T-32, T-57, T-60, T-61
 

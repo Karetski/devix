@@ -16,6 +16,7 @@
 //! split as the spec implementations land.
 
 pub mod action;
+pub mod bus;
 pub mod clipboard;
 pub mod composites;
 pub mod editor;
@@ -27,6 +28,8 @@ pub mod plugin;
 pub mod theme;
 pub mod walk;
 pub mod widgets;
+
+pub use bus::PulseBus;
 
 // Trait surface (pre-Stage-1: was `devix-panes`'s public surface).
 pub use action::Action;
