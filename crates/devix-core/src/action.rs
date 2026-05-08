@@ -7,6 +7,16 @@
 //! the palette stores them too, and plugins contribute new commands by
 //! adding new types — not by growing a central enum.
 //!
+//! ## Trait location (T-93, locked 2026-05-07)
+//!
+//! `Action` lives in `devix-core` (this crate), not in
+//! `devix-protocol`. Reason: the trait is generic over a `Ctx`
+//! parameter that's invariably the host's mutable surface
+//! (`devix_core::editor::commands::context::Context<'_>` today).
+//! Plugin authors implementing custom commands need both the
+//! trait and the context type — same crate boundary. See `pane.rs`
+//! for the same Q2 resolution applied to `Pane`.
+//!
 //! Generic over `Ctx` so different hosts can supply different mutable
 //! contexts (the editor's `Context<'_>`, a future plugin host, a test
 //! harness). The host picks one `Ctx` and stores actions as

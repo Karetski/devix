@@ -4,9 +4,13 @@
 //! per `docs/specs/frontend.md`. Every resource-bound node carries
 //! its canonical `Path` (`/buf/<id>`, `/pane/<i>(/<j>)*`,
 //! `/pane/.../tabstrip`, `/pane/.../sidebar/<slot>`); synthetic
-//! wrapper nodes use a deterministic-derivation form
-//! (`/synthetic/<kind>/<segment-encoded-parent>/<child-index>`) per
-//! the placeholder strategy until T-90 picks the formal one.
+//! wrapper nodes use the **deterministic-derivation** form locked
+//! during T-90 (see foundations-review log 2026-05-07):
+//! `/synthetic/<kind>/<encoded-parent-path>[/<suffix>]`. Same
+//! logical node across two renders ⇒ same id, by construction —
+//! no state, no per-parent cache. The alternative mint-and-cache
+//! shape was considered and rejected at T-90: same answer for
+//! "child at structural position i" without the cache state.
 //!
 //! Scope:
 //! * `transition` is `None` everywhere — `Capability::Animations`

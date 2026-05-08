@@ -7,6 +7,23 @@
 //! walks (focus, hit-test, dispatch) are *generic* over `&dyn Pane`; the
 //! framework never matches on a kind enum.
 //!
+//! ## Trait location (T-93, locked 2026-05-07)
+//!
+//! Per `docs/specs/crates.md` Q2, the `Pane` trait lives in
+//! `devix-core` (this crate) — not in `devix-protocol`. Reason:
+//! `Pane` has non-trivial method bodies (`render`, `handle`,
+//! `children`) that take crate-local types (`Rect`, `Event`,
+//! `RenderCtx`, `HandleCtx`) and ratatui's `Frame`. `devix-protocol`
+//! is pure data + serde; widening it to carry render-trait surfaces
+//! would force a `ratatui` dep on every plugin author wanting to
+//! type-check against the protocol crate.
+//!
+//! Re-evaluation trigger: when third-party plugins ship as their
+//! own `cargo` crates, we may want a `PaneSpec` (data-only) in
+//! `devix-protocol` and a `PaneRenderer` trait in `devix-core` so
+//! plugin authors can type the spec without pulling in `devix-core`.
+//! Until that landscape exists, keep the trait here.
+//!
 //! Lattner's MLIR principle: a few open primitives compose, and new
 //! features extend by implementing the primitive — not by adding new
 //! top-level concepts. The trait surface is deliberately tiny:

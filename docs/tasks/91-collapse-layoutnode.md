@@ -1,6 +1,6 @@
 # Task T-91 — Collapse LayoutNode into a single Pane tree
 Stage: 9
-Status: pending
+Status: deferred — session-scale refactor; standalone Stage-9 sprint
 Depends on: T-52, T-90
 Blocks:     T-92, T-94, T-95
 

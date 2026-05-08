@@ -426,6 +426,46 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-07 — Stage 9 partial close (T-90, T-93 ship;
+  T-91 / T-92 / T-94 / T-95 deferred).** T-90 locks the
+  synthetic-id strategy (see entry below). T-93 confirms
+  `Pane` and `Action` trait location in `devix-core` with
+  doc-comments on `pane.rs` / `action.rs`.
+
+  T-91 (collapse `LayoutNode` into a unified `Pane` tree),
+  T-92 (move rect cache to `devix-tui`), T-94 (fold composites),
+  and T-95 (regression gate retiring legacy paint) defer to a
+  focused Stage-9 sprint. Reasons:
+
+  - T-91 is the largest single refactor in the foundations plan.
+    `LayoutNode` is referenced from `editor::tree`, `editor::ops`,
+    `editor::focus`, `editor::hittest`, `editor::editor`, plus
+    several command implementations (`split.rs`, `tab.rs`). Each
+    walker-style call site needs to switch from match-on-variant
+    to either `Pane::children()` walks or `as_any` downcasts.
+    Estimated 500-1000 lines touched + new tests covering the
+    Pane-tree shape.
+  - T-92 / T-94 / T-95 transitively depend on T-91.
+
+  T-90's deterministic-derivation lock and T-93's trait-location
+  doc are independent and ship now; the structural collapse is
+  its own focused sprint.
+
+- **2026-05-07 — `frontend.md` Q1 (synthetic-id strategy)
+  resolved — deterministic derivation.** T-90 locks the
+  placeholder strategy T-43 shipped: synthetic ids are
+  `/synthetic/<kind>/<encoded-parent-path>[/<suffix>]`, where
+  the parent's path slashes are encoded as `_` to fit one segment.
+  No per-Editor state, no mint-and-cache. The alternative
+  (mint-and-cache keyed by structural position) was considered
+  and rejected: it gives the same answer for "child at structural
+  position i" — same id across renders if i is stable; different
+  id if i changes. Without a stable logical-node identity beyond
+  structural position (which is what a resource-bound `Path`
+  already provides), the cache buys no extra fidelity. Spec text
+  in `frontend.md` § *ViewNodeId* describes both options as
+  acceptable; locking the simpler one.
+
 - **2026-05-07 — Stage 8 partial close (T-82 ships;
   T-80 / T-81 deferred).** T-82 lands the supervisor primitive
   (`devix_core::supervise`): one-for-one restart strategy, default

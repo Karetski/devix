@@ -1,6 +1,6 @@
 # Task T-90 — Pick synthetic-id strategy
 Stage: 9
-Status: pending
+Status: complete (deterministic-derivation locked; placeholder from T-43 promoted to formal)
 Depends on: T-40, T-43
 Blocks:     T-91, T-94
 

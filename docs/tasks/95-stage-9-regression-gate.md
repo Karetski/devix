@@ -1,6 +1,6 @@
 # Task T-95 — Stage-9 regression gate
 Stage: 9
-Status: pending
+Status: deferred — depends on full Stage-9 sprint
 Depends on: T-90, T-91, T-92, T-93, T-94
 Blocks:     all of Stage 10+
 

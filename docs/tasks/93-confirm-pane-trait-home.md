@@ -1,6 +1,6 @@
 # Task T-93 — Confirm Pane / Action trait location (in core)
 Stage: 9
-Status: pending
+Status: complete
 Depends on: T-91
 Blocks:     T-94
 

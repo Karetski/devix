@@ -1,6 +1,6 @@
 # Task T-94 — Fold composites (TabbedPane / SidebarSlotPane) into unified vocabulary
 Stage: 9
-Status: pending
+Status: deferred — depends on T-91 / T-93
 Depends on: T-91, T-93
 Blocks:     T-95
 

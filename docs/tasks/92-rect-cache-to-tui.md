@@ -1,6 +1,6 @@
 # Task T-92 — Move rect caches (frame/sidebar/tabstrip) to devix-tui
 Stage: 9
-Status: pending
+Status: deferred — depends on T-91 LayoutNode collapse
 Depends on: T-91, T-44
 Blocks:     T-95
 
