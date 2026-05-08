@@ -1,6 +1,6 @@
 # Task T-72 — Load built-in keymap from manifest + override list
 Stage: 7
-Status: pending
+Status: complete
 Depends on: T-54, T-70, T-71
 Blocks:     T-74
 

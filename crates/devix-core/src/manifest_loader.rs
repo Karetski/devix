@@ -129,6 +129,116 @@ where
 pub enum ManifestRegisterError {
     #[error("no Rust handler registered for built-in command `{0}`")]
     NoHandlerForCommand(String),
+    #[error("keymap binding references unknown command id `{0}`")]
+    UnknownKeymapCommand(String),
+    #[error("keymap chord `{chord}` cannot be converted to crossterm shape: {reason}")]
+    UnsupportedChord {
+        chord: String,
+        reason: String,
+    },
+}
+
+/// Register the built-in `contributes.keymaps` from `manifest` into
+/// `keymap`, resolving each binding's `command` (bare id) against
+/// `commands` (so bind sites point at registered command ids).
+/// Returns the count registered. Unknown command ids and chord
+/// conversion failures are returned as `ManifestRegisterError`.
+pub fn register_keymap_contributions(
+    keymap: &mut crate::editor::commands::keymap::Keymap,
+    manifest: &Manifest,
+    commands: &crate::editor::commands::registry::CommandRegistry,
+) -> Result<usize, ManifestRegisterError> {
+    let mut count = 0usize;
+    for binding in &manifest.contributes.keymaps {
+        // The binding's command is a bare id (e.g., "edit.copy") or
+        // an absolute Path. T-72 only handles bare ids; absolute
+        // /cmd/<id> paths land when plugin contributions arrive
+        // (T-110+).
+        let bare_id: &str = if binding.command.starts_with('/') {
+            // Absolute /cmd/<dotted-id> — strip the prefix.
+            binding.command.strip_prefix("/cmd/").ok_or_else(|| {
+                ManifestRegisterError::UnknownKeymapCommand(binding.command.clone())
+            })?
+        } else {
+            &binding.command
+        };
+
+        // Look the id up in the live registry to get its CommandId
+        // (the leaked `&'static str`); fall back to interning if
+        // not found, which surfaces as a load-time error since the
+        // command must exist before its keymap is registered.
+        let cmd_id = command_id_in_registry(commands, bare_id).ok_or_else(|| {
+            ManifestRegisterError::UnknownKeymapCommand(bare_id.to_string())
+        })?;
+
+        let chord = chord_from_protocol(&binding.key).map_err(|reason| {
+            ManifestRegisterError::UnsupportedChord {
+                chord: format!("{}", binding.key),
+                reason,
+            }
+        })?;
+        keymap.bind_command(chord, cmd_id);
+        count += 1;
+    }
+    Ok(count)
+}
+
+fn command_id_in_registry(
+    commands: &crate::editor::commands::registry::CommandRegistry,
+    id: &str,
+) -> Option<crate::editor::commands::registry::CommandId> {
+    use devix_protocol::Lookup;
+    let path = devix_protocol::path::Path::parse(&format!("/cmd/{}", id)).ok()?;
+    if commands.lookup(&path).is_some() {
+        Some(crate::editor::commands::registry::CommandId(intern_id(id)))
+    } else {
+        None
+    }
+}
+
+/// Convert a `devix_protocol::input::Chord` (wire shape) to the
+/// keymap's crossterm-flavored `Chord` (KeyCode + KeyModifiers).
+/// Returns the raw error string on failure.
+fn chord_from_protocol(
+    p: &devix_protocol::input::Chord,
+) -> Result<crate::editor::commands::keymap::Chord, String> {
+    use crossterm::event::{KeyCode as CtCode, KeyModifiers};
+    use devix_protocol::input::KeyCode as PKey;
+
+    let code = match p.key {
+        PKey::Char(c) => CtCode::Char(c),
+        PKey::Enter => CtCode::Enter,
+        PKey::Tab => CtCode::Tab,
+        PKey::BackTab => CtCode::BackTab,
+        PKey::Esc => CtCode::Esc,
+        PKey::Backspace => CtCode::Backspace,
+        PKey::Delete => CtCode::Delete,
+        PKey::Insert => CtCode::Insert,
+        PKey::Left => CtCode::Left,
+        PKey::Right => CtCode::Right,
+        PKey::Up => CtCode::Up,
+        PKey::Down => CtCode::Down,
+        PKey::Home => CtCode::Home,
+        PKey::End => CtCode::End,
+        PKey::PageUp => CtCode::PageUp,
+        PKey::PageDown => CtCode::PageDown,
+        PKey::F(n) if (1..=12).contains(&n) => CtCode::F(n),
+        PKey::F(n) => return Err(format!("F-key {} out of range", n)),
+    };
+    let mut mods = KeyModifiers::NONE;
+    if p.modifiers.ctrl {
+        mods |= KeyModifiers::CONTROL;
+    }
+    if p.modifiers.alt {
+        mods |= KeyModifiers::ALT;
+    }
+    if p.modifiers.shift {
+        mods |= KeyModifiers::SHIFT;
+    }
+    if p.modifiers.super_key {
+        mods |= KeyModifiers::SUPER;
+    }
+    Ok(crate::editor::commands::keymap::Chord::new(code, mods))
 }
 
 /// Intern a `String` as `&'static str`. Used to satisfy `CommandId`'s
@@ -136,6 +246,79 @@ pub enum ManifestRegisterError {
 /// alive for the process lifetime; built-ins are loaded once.
 fn intern_id(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())
+}
+
+/// User keymap override file. Resolved from
+/// `$XDG_CONFIG_HOME/devix/keymap-overrides.json` (or the
+/// `~/.config/devix/...` fallback), parsed as
+/// `{"<chord>": "<command-id-or-path>", ...}`. Applied *after*
+/// every manifest's keymap has loaded so user picks displace any
+/// builtin / plugin binding for the named chord.
+///
+/// Returns the number of overrides applied. Missing file is a
+/// silent no-op (no overrides = no error).
+pub fn apply_keymap_overrides(
+    keymap: &mut crate::editor::commands::keymap::Keymap,
+    commands: &crate::editor::commands::registry::CommandRegistry,
+    overrides_path: &FsPath,
+) -> Result<usize, ManifestRegisterError> {
+    if !overrides_path.exists() {
+        return Ok(0);
+    }
+    let bytes = match std::fs::read(overrides_path) {
+        Ok(b) => b,
+        Err(_) => return Ok(0),
+    };
+    let map: std::collections::HashMap<String, String> =
+        serde_json::from_slice(&bytes).map_err(|e| {
+            ManifestRegisterError::UnsupportedChord {
+                chord: overrides_path.to_string_lossy().to_string(),
+                reason: format!("parse error: {}", e),
+            }
+        })?;
+    let mut count = 0usize;
+    for (chord_str, cmd_str) in map {
+        let proto: devix_protocol::input::Chord =
+            devix_protocol::input::Chord::parse(&chord_str)
+                .map_err(|reason| ManifestRegisterError::UnsupportedChord {
+                    chord: chord_str.clone(),
+                    reason,
+                })?;
+        let chord = chord_from_protocol(&proto).map_err(|reason| {
+            ManifestRegisterError::UnsupportedChord {
+                chord: chord_str.clone(),
+                reason,
+            }
+        })?;
+        let bare_id: &str = if let Some(s) = cmd_str.strip_prefix("/cmd/") {
+            s
+        } else {
+            cmd_str.as_str()
+        };
+        let cmd_id = command_id_in_registry(commands, bare_id).ok_or_else(|| {
+            ManifestRegisterError::UnknownKeymapCommand(bare_id.to_string())
+        })?;
+        keymap.bind_command(chord, cmd_id);
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Resolve the user keymap-overrides path:
+/// `$XDG_CONFIG_HOME/devix/keymap-overrides.json` →
+/// `~/.config/devix/keymap-overrides.json`. Returns `None` if no
+/// candidate resolves.
+pub fn keymap_overrides_path() -> Option<PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        return Some(PathBuf::from(xdg).join("devix").join("keymap-overrides.json"));
+    }
+    let home = std::env::var("HOME").ok()?;
+    Some(
+        PathBuf::from(home)
+            .join(".config")
+            .join("devix")
+            .join("keymap-overrides.json"),
+    )
 }
 
 /// Discover every plugin under `dir`. Each subdirectory containing
