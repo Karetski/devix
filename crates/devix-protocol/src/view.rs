@@ -68,11 +68,15 @@ pub enum View {
         transition: Option<TransitionHint>,
     },
 
-    /// Document body. Frontend handles virtualization, horizontal
-    /// scroll, gutter rendering. Highlights ship as scope names
-    /// (per *Resolved during initial review*); the frontend resolves
-    /// them against the active palette delivered via
-    /// `Pulse::ThemeChanged`.
+    /// Document body. Producer materializes the visible window into
+    /// `lines` (gutter + style-run spans per visible line) so the
+    /// renderer can paint without reaching back to the document
+    /// store. T-95 producer-materialization design choice. The
+    /// producer also keeps `path` + `scroll_top_line` etc. populated
+    /// so frontends that prefer to virtualize themselves can route
+    /// through their own buffer provider — `lines` is empty when no
+    /// materialization happened (e.g., minimum-viable producer paths
+    /// from T-43 / pre-T-95).
     Buffer {
         id: ViewNodeId,
         path: Path,
@@ -85,6 +89,14 @@ pub enum View {
         highlights: Vec<HighlightSpan>,
         gutter: GutterMode,
         active: bool,
+        /// Materialized visible-window content. Empty when the
+        /// producer hasn't pre-rendered (back-compat default).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        lines: Vec<BufferLine>,
+        /// Gutter width in cells. `0` when `lines` is empty or when
+        /// the gutter mode is `None`.
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        gutter_width: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         transition: Option<TransitionHint>,
     },
@@ -144,6 +156,27 @@ pub enum View {
 pub struct TextSpan {
     pub text: String,
     pub style: Style,
+}
+
+/// One materialized visible line of a `View::Buffer`. The gutter +
+/// content come pre-rendered so the consumer is a thin walker.
+/// T-95.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct BufferLine {
+    /// 0-based logical line number within the buffer (post-scroll).
+    pub line: u32,
+    /// Pre-formatted gutter text (e.g. `" 42 "`). Empty when
+    /// `GutterMode::None`.
+    pub gutter: String,
+    /// Style runs covering the visible portion of the line.
+    /// Producers split a single line into one span per
+    /// theme-resolved scope group; the renderer concatenates spans
+    /// in order.
+    pub spans: Vec<TextSpan>,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -475,6 +508,8 @@ mod tests {
             highlights: Vec::new(),
             gutter: GutterMode::LineNumbers,
             active: true,
+            lines: Vec::new(),
+            gutter_width: 0,
             transition: None,
         };
         let json = serde_json::to_string(&v).unwrap();
@@ -507,6 +542,8 @@ mod tests {
                     highlights: Vec::new(),
                     gutter: GutterMode::None,
                     active: false,
+                    lines: Vec::new(),
+                    gutter_width: 0,
                     transition: None,
                 },
                 View::Empty,

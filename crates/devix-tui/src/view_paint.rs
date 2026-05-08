@@ -10,7 +10,11 @@
 //! minimum-viable representation. Byte parity with the legacy
 //! renderer comes when T-95 makes this the sole renderer.
 
-use devix_protocol::view::{Anchor, AnchorEdge, Axis, PopupChrome, View};
+use devix_protocol::path::Path;
+use devix_protocol::view::{
+    Anchor, AnchorEdge, Axis, BufferLine, Color as VColor, CursorMark, NamedColor as VNamed,
+    PopupChrome, Style as VStyle, View,
+};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style as TuiStyle};
@@ -57,11 +61,16 @@ fn paint_inner(view: &View, area: Rect, frame: &mut Frame<'_>) {
         View::List { items, selected, .. } => {
             paint_list(items, *selected, area, frame);
         }
-        View::Buffer { path, .. } => {
-            // Minimum-viable: render the buffer's path as a label.
-            // Full buffer rendering parity lands at T-95.
-            let label = format!("[buffer {}]", path.as_str());
-            frame.render_widget(Paragraph::new(label), area);
+        View::Buffer { lines, gutter_width, path, cursor, active, .. } => {
+            paint_buffer(
+                lines,
+                *gutter_width,
+                path,
+                cursor.as_ref(),
+                *active,
+                area,
+                frame,
+            );
         }
         View::TabStrip { tabs, active, .. } => {
             paint_tab_strip(tabs, *active, area, frame);
@@ -223,6 +232,133 @@ fn paint_popup(
     }
 }
 
+fn paint_buffer(
+    lines: &[BufferLine],
+    gutter_width: u32,
+    path: &Path,
+    cursor: Option<&CursorMark>,
+    active: bool,
+    area: Rect,
+    frame: &mut Frame<'_>,
+) {
+    if lines.is_empty() {
+        // Producer didn't materialize. Fall back to the path label
+        // so the renderer is non-fatal during back-compat paths.
+        let label = format!("[buffer {}]", path.as_str());
+        frame.render_widget(Paragraph::new(label), area);
+        return;
+    }
+    let buf = frame.buffer_mut();
+    let gutter_w = gutter_width.min(u16::MAX as u32) as u16;
+    let dim = TuiStyle::default().add_modifier(Modifier::DIM);
+    let visible = area.height as usize;
+    for (row_idx, line) in lines.iter().take(visible).enumerate() {
+        let y = area.y + row_idx as u16;
+        if y >= area.y + area.height {
+            break;
+        }
+        // Gutter — dim style. Truncated to gutter_w.
+        if !line.gutter.is_empty() {
+            let _ = buf.set_stringn(
+                area.x,
+                y,
+                &line.gutter,
+                gutter_w as usize,
+                dim,
+            );
+        }
+        // Spans — concatenated after the gutter, each with its own
+        // style.
+        let mut x = area.x.saturating_add(gutter_w);
+        let max_x = area.x.saturating_add(area.width);
+        for span in &line.spans {
+            if x >= max_x {
+                break;
+            }
+            let style = view_style_to_ratatui(&span.style);
+            let remaining = (max_x - x) as usize;
+            let next = buf.set_stringn(x, y, &span.text, remaining, style);
+            x = next.0;
+        }
+    }
+    // Place the terminal cursor when the pane is active.
+    if active {
+        if let Some(cm) = cursor {
+            // Producer's CursorMark is buffer-relative (line, col);
+            // first materialized line is the scroll top, so the
+            // visible row offset is `cm.line - lines[0].line`.
+            let top = lines.first().map(|l| l.line).unwrap_or(0);
+            if cm.line >= top {
+                let row = cm.line - top;
+                if (row as usize) < lines.len() && row < area.height as u32 {
+                    let x = area
+                        .x
+                        .saturating_add(gutter_w)
+                        .saturating_add(cm.col.min(u16::MAX as u32) as u16);
+                    let y = area.y.saturating_add(row.min(u16::MAX as u32) as u16);
+                    if x < area.x.saturating_add(area.width)
+                        && y < area.y.saturating_add(area.height)
+                    {
+                        frame.set_cursor_position((x, y));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn view_style_to_ratatui(style: &VStyle) -> TuiStyle {
+    use ratatui::style::Color as RColor;
+    fn to_ratatui(c: VColor) -> RColor {
+        match c {
+            VColor::Default => RColor::Reset,
+            VColor::Rgb(r, g, b) => RColor::Rgb(r, g, b),
+            VColor::Indexed(n) => RColor::Indexed(n),
+            VColor::Named(n) => match n {
+                VNamed::Black => RColor::Black,
+                VNamed::Red => RColor::Red,
+                VNamed::Green => RColor::Green,
+                VNamed::Yellow => RColor::Yellow,
+                VNamed::Blue => RColor::Blue,
+                VNamed::Magenta => RColor::Magenta,
+                VNamed::Cyan => RColor::Cyan,
+                VNamed::White => RColor::White,
+                VNamed::DarkGray => RColor::DarkGray,
+                VNamed::LightRed => RColor::LightRed,
+                VNamed::LightGreen => RColor::LightGreen,
+                VNamed::LightYellow => RColor::LightYellow,
+                VNamed::LightBlue => RColor::LightBlue,
+                VNamed::LightMagenta => RColor::LightMagenta,
+                VNamed::LightCyan => RColor::LightCyan,
+            },
+        }
+    }
+    let mut s = TuiStyle::default();
+    if let Some(c) = style.fg {
+        s = s.fg(to_ratatui(c));
+    }
+    if let Some(c) = style.bg {
+        s = s.bg(to_ratatui(c));
+    }
+    let mut mods = Modifier::empty();
+    if style.bold {
+        mods |= Modifier::BOLD;
+    }
+    if style.italic {
+        mods |= Modifier::ITALIC;
+    }
+    if style.underline {
+        mods |= Modifier::UNDERLINED;
+    }
+    if style.dim {
+        mods |= Modifier::DIM;
+    }
+    if style.reverse {
+        mods |= Modifier::REVERSED;
+    }
+    s.add_modifier(mods)
+}
+
 fn paint_modal_view(title: &str, content: &View, area: Rect, frame: &mut Frame<'_>) {
     // Center a 60% × 60% box in `area` (placeholder geometry; T-95
     // refines).
@@ -327,6 +463,8 @@ mod tests {
             highlights: Vec::new(),
             gutter: devix_protocol::view::GutterMode::None,
             active: true,
+            lines: Vec::new(),
+            gutter_width: 0,
             transition: None,
         };
         let buf = run(20, 1, |frame| {

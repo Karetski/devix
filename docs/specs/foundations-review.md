@@ -426,6 +426,54 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-08 — T-95 partial: producer materialization shipped.**
+
+  Design choice **(a) producer materializes full buffer state**
+  locked. `View::Buffer` gains `lines: Vec<BufferLine>` +
+  `gutter_width: u32`. `BufferLine { line, gutter, spans }` carries
+  pre-formatted gutter + theme-resolved style runs.
+  `editor::view::build_active_buffer` materializes a 200-line
+  window from cursor's `scroll_top`, coalescing adjacent same-
+  style runs. `paint_view`'s `View::Buffer` arm renders the
+  materialized lines + places the terminal cursor when active.
+  Both new fields are `#[serde(default)]` for back-compat —
+  pre-T-95 producers (e.g. T-43 minimum-viable) keep round-
+  tripping with empty `lines`.
+
+  *Deferred for T-95 full close*: retiring the legacy direct-paint
+  path (`Editor::panes.render` is still the active renderer);
+  selection + extra-cursor paint passes in `paint_buffer`;
+  manual TTY sanity. Programmatic `TestBackend` byte-parity
+  against the legacy renderer needs the integration test suite to
+  be expanded — covered when the legacy retirement happens
+  alongside the T-80 `HighlightCache` consumer hookup.
+
+- **2026-05-08 — T-110 / T-111 / T-113 / T-56 / T-80 / T-33 closes.**
+
+  Quick batch index of the rest of today's full / partial closes
+  (full per-task notes live in `docs/tasks/<id>-*.md`):
+
+  - **T-110 full** — capability gate at manifest install
+    (`PluginRuntime::capabilities`, warn-and-degrade per
+    `protocol.md` Q2; `load_supervised_with_caps` for tests).
+  - **T-111 full** — `pane:set_view(view_table)` with Lua → View
+    IR deserializer (Empty/Text/Stack supported in v0) + minimal
+    in-`devix-core` painter to avoid a tui dep cycle.
+  - **T-113 full** — `devix.setting(key)` read + `devix.on_setting_changed(cb)`
+    observer; `PluginInput::SettingChanged` variant; runtime
+    bus subscription fans out per registered handle through the
+    channel-refresh-aware `input_tx`.
+  - **T-56 full** — `PluginCallbacks: Lookup<Resource = LuaCallback>`.
+    Resource is a ZST presence-marker; the storage redesign was
+    the resource type.
+  - **T-80 partial** — supervised `HighlightActor` + `Pulse::HighlightsReady`
+    catalog addition. `Document::apply_tx` integration deferred
+    to the T-95 producer-cache hookup.
+  - **T-33 full** — `manifest_json_schema()` via schemars; custom
+    `JsonSchema` impls for `Path`, `Chord`, `Color`,
+    `ProtocolVersion`. Schema doc emitted at
+    `crates/devix-core/manifests/manifest.schema.json`.
+
 - **2026-05-08 — T-81 full close: plugin host module reorg + channel-refresh restart.**
 
   Two phases land together. Phase 1: the 2,300-line `plugin.rs`

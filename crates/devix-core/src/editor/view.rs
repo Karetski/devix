@@ -25,8 +25,8 @@
 use devix_protocol::path::{Path, PathError};
 use devix_protocol::protocol::RequestError;
 use devix_protocol::view::{
-    Axis as ViewAxis, CursorMark, GutterMode, SidebarSlot as ViewSidebarSlot, TabItem, View,
-    ViewNodeId,
+    Axis as ViewAxis, BufferLine, CursorMark, GutterMode, SidebarSlot as ViewSidebarSlot, Style,
+    TabItem, TextSpan, View, ViewNodeId,
 };
 
 use crate::Pane;
@@ -35,6 +35,7 @@ use crate::editor::document::Document;
 use crate::editor::editor::Editor;
 use crate::editor::tree::{LayoutFrame, LayoutSidebar, LayoutSplit};
 use crate::layout_geom::{Axis as CoreAxis, SidebarSlot as CoreSidebarSlot};
+use crate::theme::Theme;
 
 impl Editor {
     /// Produce the View IR rooted at `root`. Today the only
@@ -149,6 +150,8 @@ fn build_active_buffer(frame: &LayoutFrame, editor: &Editor) -> View {
         return View::Empty;
     };
     let cursor_mark = char_to_line_col(doc, head.head);
+    let (lines, gutter_width) =
+        materialize_visible_lines(doc, cursor.scroll.0 as usize, &editor.theme);
     View::Buffer {
         id: ViewNodeId(doc_path.clone()),
         path: doc_path,
@@ -157,6 +160,8 @@ fn build_active_buffer(frame: &LayoutFrame, editor: &Editor) -> View {
         selection: Vec::new(),
         highlights: Vec::new(),
         gutter: GutterMode::LineNumbers,
+        lines,
+        gutter_width,
         active: true,
         transition: None,
     }
@@ -279,6 +284,172 @@ fn doc_dirty(cursor_id: CursorId, editor: &Editor) -> bool {
         .unwrap_or(false)
 }
 
+/// Materialize the visible window of `doc` into a `Vec<BufferLine>`
+/// with pre-formatted gutter and theme-resolved style runs. T-95
+/// producer-materialization. Returns the lines plus the gutter
+/// width in cells.
+///
+/// `scroll_top` is the 0-based first visible line. The producer
+/// materializes a fixed window of `MATERIALIZE_WINDOW` lines —
+/// frontends with a deeper viewport can request again with a larger
+/// `scroll_top` until the spec gains an explicit
+/// `request_visible_rows` field.
+fn materialize_visible_lines(
+    doc: &Document,
+    scroll_top: usize,
+    theme: &Theme,
+) -> (Vec<BufferLine>, u32) {
+    /// Default rendered window. ratatui frontends typically have
+    /// 30-100 visible rows; over-materializing by a few lines is
+    /// cheap. Future versions accept a viewport hint via the
+    /// request payload.
+    const MATERIALIZE_WINDOW: usize = 200;
+
+    let line_count = doc.buffer.line_count();
+    if line_count == 0 {
+        return (Vec::new(), 0);
+    }
+    let gutter_digits = (line_count.max(1)).to_string().len();
+    let gutter_width = (gutter_digits + 2) as u32; // " 42 " — leading + trailing space
+    let scope_default = theme.text_style();
+
+    let top = scroll_top.min(line_count);
+    let bottom = (top + MATERIALIZE_WINDOW).min(line_count);
+
+    // Highlights for the entire visible byte range.
+    let rope = doc.buffer.rope();
+    let start_byte = rope.line_to_byte(top);
+    let end_byte = if bottom >= line_count {
+        rope.len_bytes()
+    } else {
+        rope.line_to_byte(bottom)
+    };
+    let highlights = doc.highlights(start_byte, end_byte);
+
+    let mut out = Vec::with_capacity(bottom.saturating_sub(top));
+    for line_idx in top..bottom {
+        let gutter = format!(
+            " {:>width$} ",
+            line_idx + 1,
+            width = gutter_digits,
+        );
+        let line_text = doc.buffer.line_string_truncated(line_idx, MATERIALIZE_WINDOW * 4);
+        let spans = build_line_spans(
+            &line_text,
+            line_idx,
+            rope,
+            &highlights,
+            theme,
+            scope_default,
+        );
+        out.push(BufferLine {
+            line: line_idx as u32,
+            gutter,
+            spans,
+        });
+    }
+    (out, gutter_width)
+}
+
+/// Build per-line `TextSpan`s by walking highlights against the
+/// theme. Mirrors the legacy `editor::buffer::styled_line_spans`
+/// path; emits spans in source order with style runs that paint
+/// last-write wins (more-specific scopes override their parents).
+fn build_line_spans(
+    line_text: &str,
+    line_idx: usize,
+    rope: &ropey::Rope,
+    highlights: &[devix_syntax::HighlightSpan],
+    theme: &Theme,
+    default_style: ratatui::style::Style,
+) -> Vec<TextSpan> {
+    let chars: Vec<char> = line_text.chars().collect();
+    let n = chars.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let line_char_start = rope.line_to_char(line_idx);
+    let line_byte_start = rope.char_to_byte(line_char_start);
+    let line_byte_end = rope.char_to_byte(line_char_start + n);
+
+    // Per-char effective style (rendered as ratatui::Style so we can
+    // reuse the theme's resolved `style_for` shape).
+    let mut styles: Vec<ratatui::style::Style> = vec![default_style; n];
+    for span in highlights {
+        if span.end_byte <= line_byte_start || span.start_byte >= line_byte_end {
+            continue;
+        }
+        let Some(scope_style) = theme.style_for(&span.scope) else { continue };
+        let s_byte = span.start_byte.max(line_byte_start);
+        let e_byte = span.end_byte.min(line_byte_end);
+        let s_char = rope.byte_to_char(s_byte).saturating_sub(line_char_start);
+        let e_char = rope.byte_to_char(e_byte).saturating_sub(line_char_start);
+        let s = s_char.min(n);
+        let e = e_char.min(n);
+        for slot in &mut styles[s..e] {
+            *slot = scope_style;
+        }
+    }
+
+    // Coalesce adjacent same-style cells into one span. The wire
+    // form (`Style`) matches `devix_protocol::view::Style`.
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let style = styles[i];
+        let mut j = i + 1;
+        while j < n && styles[j] == style {
+            j += 1;
+        }
+        let chunk: String = chars[i..j].iter().collect();
+        out.push(TextSpan {
+            text: chunk,
+            style: ratatui_to_view_style(style),
+        });
+        i = j;
+    }
+    out
+}
+
+fn ratatui_to_view_style(s: ratatui::style::Style) -> Style {
+    use devix_protocol::view::{Color as VColor, NamedColor as VNamed};
+    use ratatui::style::{Color as RColor, Modifier};
+    fn color_to_view(c: RColor) -> VColor {
+        match c {
+            RColor::Reset => VColor::Default,
+            RColor::Rgb(r, g, b) => VColor::Rgb(r, g, b),
+            RColor::Indexed(n) => VColor::Indexed(n),
+            RColor::Black => VColor::Named(VNamed::Black),
+            RColor::Red => VColor::Named(VNamed::Red),
+            RColor::Green => VColor::Named(VNamed::Green),
+            RColor::Yellow => VColor::Named(VNamed::Yellow),
+            RColor::Blue => VColor::Named(VNamed::Blue),
+            RColor::Magenta => VColor::Named(VNamed::Magenta),
+            RColor::Cyan => VColor::Named(VNamed::Cyan),
+            RColor::White => VColor::Named(VNamed::White),
+            RColor::DarkGray => VColor::Named(VNamed::DarkGray),
+            RColor::LightRed => VColor::Named(VNamed::LightRed),
+            RColor::LightGreen => VColor::Named(VNamed::LightGreen),
+            RColor::LightYellow => VColor::Named(VNamed::LightYellow),
+            RColor::LightBlue => VColor::Named(VNamed::LightBlue),
+            RColor::LightMagenta => VColor::Named(VNamed::LightMagenta),
+            RColor::LightCyan => VColor::Named(VNamed::LightCyan),
+            // ratatui's truecolor extras don't all fit; fall back to
+            // default for the residual.
+            _ => VColor::Default,
+        }
+    }
+    Style {
+        fg: s.fg.map(color_to_view),
+        bg: s.bg.map(color_to_view),
+        bold: s.add_modifier.contains(Modifier::BOLD),
+        italic: s.add_modifier.contains(Modifier::ITALIC),
+        underline: s.add_modifier.contains(Modifier::UNDERLINED),
+        dim: s.add_modifier.contains(Modifier::DIM),
+        reverse: s.add_modifier.contains(Modifier::REVERSED),
+    }
+}
+
 /// Translate a char index in the document to a (line, column) pair
 /// for the view IR's `CursorMark`.
 fn char_to_line_col(doc: &Document, char_idx: usize) -> CursorMark {
@@ -327,5 +498,50 @@ mod tests {
         let b = synthetic_id("stack", &p, None);
         assert_eq!(a, b);
         assert!(a.0.as_str().starts_with("/synthetic/stack/"));
+    }
+
+    #[test]
+    fn buffer_view_materializes_visible_lines() {
+        use devix_text::{Selection, replace_selection_tx};
+
+        let mut editor = Editor::open(None).unwrap();
+        let did = editor.active_cursor().unwrap().doc;
+        let tx = replace_selection_tx(
+            &editor.documents[did].buffer,
+            &Selection::point(0),
+            "alpha\nbeta\ngamma\n",
+        );
+        editor.documents[did].buffer.apply(tx);
+
+        let root = Path::parse("/pane").unwrap();
+        let v = editor.view(&root).unwrap();
+        // Walk down to the Buffer node — the editor's fresh layout
+        // is Stack(TabStrip + Buffer). We accept any nesting depth
+        // so the test stays robust if the structural shape changes.
+        let buffer = find_buffer(&v).expect("view tree has a Buffer node");
+        match buffer {
+            View::Buffer { lines, gutter_width, .. } => {
+                assert!(*gutter_width > 0, "gutter width populated");
+                assert!(lines.len() >= 3, "at least three visible lines");
+                let row0_text: String =
+                    lines[0].spans.iter().map(|s| s.text.as_str()).collect();
+                assert_eq!(row0_text, "alpha");
+                assert!(
+                    lines[0].gutter.contains('1'),
+                    "line 1 gutter contains `1`",
+                );
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn find_buffer(view: &View) -> Option<&View> {
+        match view {
+            View::Buffer { .. } => Some(view),
+            View::Stack { children, .. } | View::Split { children, .. } => {
+                children.iter().find_map(find_buffer)
+            }
+            _ => None,
+        }
     }
 }
