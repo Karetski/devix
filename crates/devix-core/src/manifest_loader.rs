@@ -150,27 +150,7 @@ pub fn register_keymap_contributions(
 ) -> Result<usize, ManifestRegisterError> {
     let mut count = 0usize;
     for binding in &manifest.contributes.keymaps {
-        // The binding's command is a bare id (e.g., "edit.copy") or
-        // an absolute Path. T-72 only handles bare ids; absolute
-        // /cmd/<id> paths land when plugin contributions arrive
-        // (T-110+).
-        let bare_id: &str = if binding.command.starts_with('/') {
-            // Absolute /cmd/<dotted-id> — strip the prefix.
-            binding.command.strip_prefix("/cmd/").ok_or_else(|| {
-                ManifestRegisterError::UnknownKeymapCommand(binding.command.clone())
-            })?
-        } else {
-            &binding.command
-        };
-
-        // Look the id up in the live registry to get its CommandId
-        // (the leaked `&'static str`); fall back to interning if
-        // not found, which surfaces as a load-time error since the
-        // command must exist before its keymap is registered.
-        let cmd_id = command_id_in_registry(commands, bare_id).ok_or_else(|| {
-            ManifestRegisterError::UnknownKeymapCommand(bare_id.to_string())
-        })?;
-
+        let cmd_id = resolve_keymap_command(commands, &binding.command)?;
         let chord = chord_from_protocol(&binding.key).map_err(|reason| {
             ManifestRegisterError::UnsupportedChord {
                 chord: format!("{}", binding.key),
@@ -181,6 +161,46 @@ pub fn register_keymap_contributions(
         count += 1;
     }
     Ok(count)
+}
+
+/// Resolve a manifest keymap binding's `command` field to a registered
+/// `CommandId`. Accepts:
+/// * Bare segment id (`"edit.copy"`) — resolves to a built-in.
+/// * Absolute built-in path (`"/cmd/edit.copy"`) — same.
+/// * Plugin path (`"/plugin/<name>/cmd/<id>"`) — resolves to a
+///   plugin-contributed command (landed in T-110).
+fn resolve_keymap_command(
+    commands: &crate::editor::commands::registry::CommandRegistry,
+    raw: &str,
+) -> Result<crate::editor::commands::registry::CommandId, ManifestRegisterError> {
+    use crate::editor::commands::registry::CommandId;
+    use devix_protocol::Lookup;
+
+    if let Some(rest) = raw.strip_prefix("/plugin/") {
+        // /plugin/<name>/cmd/<id> — re-parse to validate shape.
+        let path = devix_protocol::path::Path::parse(raw)
+            .map_err(|_| ManifestRegisterError::UnknownKeymapCommand(raw.to_string()))?;
+        let (plugin, id) = CommandId::plugin_segments_from_path(&path).ok_or_else(|| {
+            ManifestRegisterError::UnknownKeymapCommand(raw.to_string())
+        })?;
+        if commands.lookup(&path).is_none() {
+            // Either the plugin or the command id isn't registered.
+            let _ = rest; // (kept to satisfy the prefix check above)
+            return Err(ManifestRegisterError::UnknownKeymapCommand(raw.to_string()));
+        }
+        return Ok(CommandId::plugin(intern_id(plugin), intern_id(id)));
+    }
+
+    let bare_id: &str = if raw.starts_with('/') {
+        raw.strip_prefix("/cmd/").ok_or_else(|| {
+            ManifestRegisterError::UnknownKeymapCommand(raw.to_string())
+        })?
+    } else {
+        raw
+    };
+    command_id_in_registry(commands, bare_id).ok_or_else(|| {
+        ManifestRegisterError::UnknownKeymapCommand(bare_id.to_string())
+    })
 }
 
 fn command_id_in_registry(
@@ -371,14 +391,7 @@ pub fn apply_keymap_overrides(
                 reason,
             }
         })?;
-        let bare_id: &str = if let Some(s) = cmd_str.strip_prefix("/cmd/") {
-            s
-        } else {
-            cmd_str.as_str()
-        };
-        let cmd_id = command_id_in_registry(commands, bare_id).ok_or_else(|| {
-            ManifestRegisterError::UnknownKeymapCommand(bare_id.to_string())
-        })?;
+        let cmd_id = resolve_keymap_command(commands, &cmd_str)?;
         keymap.bind_command(chord, cmd_id);
         count += 1;
     }
@@ -494,6 +507,97 @@ mod tests {
         assert!(found[1].ends_with("bravo/manifest.json"));
 
         std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn keymap_resolves_plugin_path_command() {
+        use crate::editor::commands::cmd::Quit;
+        use crate::editor::commands::keymap::Keymap;
+        use crate::editor::commands::registry::{
+            Command, CommandId, CommandRegistry,
+        };
+        use devix_protocol::manifest::{
+            Contributes, Engines, KeymapSpec, Manifest,
+        };
+        use std::sync::Arc;
+
+        // Pre-register a plugin command so the manifest binding resolves.
+        let mut reg = CommandRegistry::new();
+        reg.register(Command {
+            id: CommandId::plugin("acme", "do-thing"),
+            label: "Do Thing",
+            category: Some("Plugin"),
+            action: Arc::new(Quit),
+        });
+
+        let json = format!(
+            r#"{{
+                "name": "acme",
+                "version": "0.1.0",
+                "engines": {{ "devix": "0.1", "pulse_bus": "0.1", "manifest": "0.1" }},
+                "contributes": {{
+                    "keymaps": [
+                        {{ "key": "ctrl-d", "command": "/plugin/acme/cmd/do-thing" }}
+                    ]
+                }}
+            }}"#
+        );
+        let m: Manifest = parse_manifest_bytes(
+            json.as_bytes(),
+            FsPath::new("/test/manifest.json"),
+        )
+        .unwrap();
+
+        let mut keymap = Keymap::new();
+        let n = register_keymap_contributions(&mut keymap, &m, &reg).unwrap();
+        assert_eq!(n, 1);
+
+        // Resolve the chord back to the plugin command id.
+        use crossterm::event::{KeyCode, KeyModifiers};
+        use crate::editor::commands::keymap::Chord;
+        let chord = Chord::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+        let action = keymap.resolve_chord(chord, &reg);
+        assert!(action.is_some(), "chord resolves through plugin registration");
+
+        // Silence unused-imports.
+        let _: KeymapSpec = KeymapSpec {
+            key: devix_protocol::input::Chord::parse("ctrl-q").unwrap(),
+            command: "_".into(),
+            when: None,
+        };
+        let _ = Contributes::default();
+        let _ = Engines {
+            protocol_version: devix_protocol::protocol::ProtocolVersion::new(0, 1),
+            pulse_bus: devix_protocol::protocol::ProtocolVersion::new(0, 1),
+            manifest: devix_protocol::protocol::ProtocolVersion::new(0, 1),
+        };
+    }
+
+    #[test]
+    fn keymap_rejects_unknown_plugin_path_command() {
+        use crate::editor::commands::keymap::Keymap;
+        use crate::editor::commands::registry::CommandRegistry;
+        use devix_protocol::manifest::Manifest;
+
+        let json = r#"{
+            "name": "ghost",
+            "version": "0.1.0",
+            "engines": { "devix": "0.1", "pulse_bus": "0.1", "manifest": "0.1" },
+            "contributes": {
+                "keymaps": [
+                    { "key": "ctrl-x", "command": "/plugin/ghost/cmd/missing" }
+                ]
+            }
+        }"#;
+        let m: Manifest = parse_manifest_bytes(
+            json.as_bytes(),
+            FsPath::new("/test/manifest.json"),
+        )
+        .unwrap();
+        let reg = CommandRegistry::new();
+        let mut keymap = Keymap::new();
+        let err = register_keymap_contributions(&mut keymap, &m, &reg);
+        assert!(matches!(err, Err(ManifestRegisterError::UnknownKeymapCommand(_))));
     }
 
     #[test]
