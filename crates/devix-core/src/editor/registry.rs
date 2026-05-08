@@ -93,11 +93,18 @@ impl PaneRegistry {
     }
 
     pub fn leaves_with_rects(&self, area: Rect) -> Vec<(LeafRef, Rect)> {
-        self.as_layout().leaves_with_rects(area)
+        let mut out = Vec::new();
+        pane_collect_leaves(self.root.as_ref(), area, &mut out);
+        out
     }
 
     pub fn path_to_leaf(&self, target: LeafRef) -> Option<Vec<usize>> {
-        self.as_layout().path_to_leaf(target)
+        let mut path = Vec::new();
+        if pane_path_to_leaf(self.root.as_ref(), target, &mut path) {
+            Some(path)
+        } else {
+            None
+        }
     }
 
     pub fn pane_at_xy(&self, area: Rect, col: u16, row: u16) -> Option<(Rect, &LayoutNode)> {
@@ -338,6 +345,49 @@ fn pane_sidebar_present(node: &dyn Pane, slot: SidebarSlot) -> bool {
     node.children(zero)
         .into_iter()
         .any(|(_, child)| pane_sidebar_present(child, slot))
+}
+
+/// Extract a `LeafRef` from `node` if it represents a layout leaf
+/// (LayoutFrame or LayoutSidebar — directly or via the transitional
+/// `LayoutNode` enum wrapper). Returns `None` for splits or
+/// non-layout panes.
+fn pane_leaf_id(node: &dyn Pane) -> Option<LeafRef> {
+    let any = node.as_any()?;
+    if let Some(f) = any.downcast_ref::<LayoutFrame>() {
+        return Some(LeafRef::Frame(f.frame));
+    }
+    if let Some(s) = any.downcast_ref::<LayoutSidebar>() {
+        return Some(LeafRef::Sidebar(s.slot));
+    }
+    if let Some(n) = any.downcast_ref::<LayoutNode>() {
+        return n.leaf_id();
+    }
+    None
+}
+
+fn pane_collect_leaves(node: &dyn Pane, area: Rect, out: &mut Vec<(LeafRef, Rect)>) {
+    if let Some(id) = pane_leaf_id(node) {
+        out.push((id, area));
+        return;
+    }
+    for (rect, child) in node.children(area) {
+        pane_collect_leaves(child, rect, out);
+    }
+}
+
+fn pane_path_to_leaf(node: &dyn Pane, target: LeafRef, out: &mut Vec<usize>) -> bool {
+    if pane_leaf_id(node) == Some(target) {
+        return true;
+    }
+    let zero = Rect::default();
+    for (idx, (_, child)) in node.children(zero).into_iter().enumerate() {
+        out.push(idx);
+        if pane_path_to_leaf(child, target, out) {
+            return true;
+        }
+        out.pop();
+    }
+    false
 }
 
 fn pane_collect_frames(node: &dyn Pane, out: &mut Vec<FrameId>) {
