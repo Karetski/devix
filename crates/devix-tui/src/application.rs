@@ -16,7 +16,7 @@ use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use devix_core::{CommandRegistry, Editor, Keymap, LayoutCtx};
+use devix_core::{CommandRegistry, Editor, Keymap, LayoutCtx, RenderCache};
 use devix_core::{Clipboard, Theme};
 use devix_core::PluginRuntime;
 use ratatui::Terminal;
@@ -36,6 +36,11 @@ pub struct Application<B: Backend = CrosstermBackend<Stdout>> {
     pub keymap: Keymap,
     pub theme: Theme,
     pub clipboard: Box<dyn Clipboard>,
+    /// Layout/render cache. Carved out of `Editor` per T-92; the cache
+    /// is tui-internal (`namespace.md` migration table). The render
+    /// loop populates it via `editor.layout(area, &mut self.cache)`;
+    /// hit-test and command paths read it through `AppContext`.
+    pub layout_cache: RenderCache,
 
     /// Plugin host, if one was loaded. Holding the runtime keeps its
     /// worker thread alive; dropping it closes the channels and the
@@ -76,6 +81,7 @@ impl Application<CrosstermBackend<Stdout>> {
             keymap,
             theme,
             clipboard,
+            layout_cache: RenderCache::default(),
             plugin: None,
             sink,
             rx,
@@ -150,6 +156,7 @@ impl<B: Backend> Application<B> {
                 theme: &self.theme,
                 clipboard: self.clipboard.as_mut(),
                 sink: &self.sink,
+                layout_cache: &self.layout_cache,
                 dirty_request: &mut dirty_request,
                 quit_request: &mut quit_request,
             };
@@ -212,6 +219,7 @@ impl<B: Backend> Application<B> {
         let Self {
             ref mut terminal,
             ref mut editor,
+            ref mut layout_cache,
             ref keymap,
             ref theme,
             ref commands,
@@ -219,14 +227,14 @@ impl<B: Backend> Application<B> {
         } = *self;
         terminal.draw(|frame| {
             let area = frame.area();
-            editor.layout(area);
+            editor.layout(area, layout_cache);
 
             let focused_leaf = editor.panes.at_path(&editor.focus).and_then(|n| devix_core::editor::registry::pane_leaf_id(n));
             let layout_ctx = LayoutCtx {
                 documents: &editor.documents,
                 cursors: &editor.cursors,
                 theme,
-                render_cache: &editor.render_cache,
+                render_cache: layout_cache,
                 focused_leaf,
             };
             editor.panes.render(area, frame, &layout_ctx);
@@ -291,6 +299,7 @@ mod test_support {
                 keymap,
                 theme,
                 clipboard,
+                layout_cache: RenderCache::default(),
                 plugin: None,
                 sink,
                 rx,

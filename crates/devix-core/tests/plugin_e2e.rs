@@ -99,6 +99,7 @@ fn hello_command_round_trips_through_registry_and_keymap() {
     let mut editor = Editor::open(None).unwrap();
     let mut clipboard = devix_core::NoClipboard;
     let mut quit = false;
+    let cache = devix_core::RenderCache::default();
     {
         let mut ctx = Context {
             editor: &mut editor,
@@ -106,6 +107,7 @@ fn hello_command_round_trips_through_registry_and_keymap() {
             quit: &mut quit,
             viewport: Viewport::default(),
             commands: &commands,
+            layout_cache: &cache,
         };
         action.invoke(&mut ctx);
     }
@@ -320,17 +322,14 @@ fn bundled_file_tree_example_loads_and_lists_cwd() {
 #[test]
 fn sidebar_slot_pane_renders_lua_pane_inside_chrome() {
     use devix_core::Pane as _;
-    use devix_core::SidebarSlotPane;
-    use devix_core::SidebarPane as SidebarChrome;
+    use devix_core::LayoutSidebar;
 
     let path = write_plugin();
     let runtime = PluginRuntime::load(&path).unwrap();
     let pane = runtime.pane_for(SidebarSlot::Left).expect("left pane registered");
     let lua: Box<dyn devix_core::Pane> = Box::new(pane.into_pane());
-    let slot = SidebarSlotPane {
-        chrome: SidebarChrome { title: "left".into(), focused: false },
-        content: Some(lua),
-    };
+    let mut slot = LayoutSidebar::empty(SidebarSlot::Left);
+    slot.content = Some(lua);
 
     let backend = TestBackend::new(20, 5);
     let mut terminal = Terminal::new(backend).unwrap();

@@ -41,6 +41,6 @@ impl<'a> Action<Context<'a>> for ToggleSidebar {
 pub struct FocusDir(pub Direction);
 impl<'a> Action<Context<'a>> for FocusDir {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        ctx.editor.focus_dir(self.0);
+        ctx.editor.focus_dir(self.0, ctx.layout_cache);
     }
 }

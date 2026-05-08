@@ -27,7 +27,7 @@ pub struct ClickAt {
 }
 impl<'a> Action<Context<'a>> for ClickAt {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        ctx.editor.focus_at_screen(self.col, self.row);
+        ctx.editor.focus_at_screen(self.col, self.row, ctx.layout_cache);
         let Some(idx) = dispatch::click_to_char_idx(ctx, self.col, self.row) else {
             return;
         };

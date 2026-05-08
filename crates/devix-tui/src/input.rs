@@ -136,12 +136,12 @@ fn handle_mouse(ev: Event, me: MouseEvent, ctx: &mut AppContext<'_>) {
     match me.kind {
         MouseEventKind::Down(button @ (MouseButton::Left | MouseButton::Right | MouseButton::Middle)) => {
             if button == MouseButton::Left {
-                if let Some(hit) = ctx.editor.tab_strip_hit(me.column, me.row) {
+                if let Some(hit) = ctx.editor.tab_strip_hit(me.column, me.row, ctx.layout_cache) {
                     handle_tab_strip_click(ctx, hit);
                     return;
                 }
             }
-            ctx.editor.focus_at_screen(me.column, me.row);
+            ctx.editor.focus_at_screen(me.column, me.row, ctx.layout_cache);
             if dispatch_to_focused_leaf(ctx, &ev) == Outcome::Consumed {
                 ctx.request_redraw();
                 return;
@@ -163,14 +163,14 @@ fn handle_mouse(ev: Event, me: MouseEvent, ctx: &mut AppContext<'_>) {
             });
         }
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-            if let Some(fid) = ctx.editor.frame_at_strip(me.column, me.row) {
-                if ctx.editor.tab_strip_can_scroll(fid) {
+            if let Some(fid) = ctx.editor.frame_at_strip(me.column, me.row, ctx.layout_cache) {
+                if ctx.editor.tab_strip_can_scroll(fid, ctx.layout_cache) {
                     let delta: isize = if matches!(me.kind, MouseEventKind::ScrollUp) {
                         -2
                     } else {
                         2
                     };
-                    ctx.editor.scroll_tab_strip(fid, delta);
+                    ctx.editor.scroll_tab_strip(fid, delta, ctx.layout_cache);
                     ctx.request_redraw();
                     return;
                 }
@@ -190,14 +190,14 @@ fn handle_mouse(ev: Event, me: MouseEvent, ctx: &mut AppContext<'_>) {
             ctx.run(&cmd::ScrollBy(delta));
         }
         MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
-            if let Some(fid) = ctx.editor.frame_at_strip(me.column, me.row) {
-                if ctx.editor.tab_strip_can_scroll(fid) {
+            if let Some(fid) = ctx.editor.frame_at_strip(me.column, me.row, ctx.layout_cache) {
+                if ctx.editor.tab_strip_can_scroll(fid, ctx.layout_cache) {
                     let delta: isize = if matches!(me.kind, MouseEventKind::ScrollLeft) {
                         -2
                     } else {
                         2
                     };
-                    ctx.editor.scroll_tab_strip(fid, delta);
+                    ctx.editor.scroll_tab_strip(fid, delta, ctx.layout_cache);
                     ctx.request_redraw();
                 }
             }
@@ -267,18 +267,17 @@ fn dispatch_to_leaf_at(
 /// spans the bounding box of every populated entry. Mirrors
 /// `Editor::layout`'s input area without re-plumbing it here.
 fn root_area(ctx: &AppContext<'_>) -> Rect {
+    let cache = ctx.layout_cache;
     let mut min_x = u16::MAX;
     let mut min_y = u16::MAX;
     let mut max_x: u16 = 0;
     let mut max_y: u16 = 0;
     let mut any = false;
-    for r in ctx
-        .editor
-        .render_cache
+    for r in cache
         .frame_rects
         .values()
         .copied()
-        .chain(ctx.editor.render_cache.sidebar_rects.values().copied())
+        .chain(cache.sidebar_rects.values().copied())
     {
         any = true;
         min_x = min_x.min(r.x);

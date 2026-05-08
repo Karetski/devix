@@ -107,6 +107,7 @@ mod tests {
     use super::*;
     use crate::editor::commands::context::Viewport;
     use crate::editor::commands::registry::CommandRegistry;
+    use crate::editor::editor::RenderCache;
     use crate::editor::Editor;
 
     fn make_ctx<'a>(
@@ -114,6 +115,7 @@ mod tests {
         clipboard: &'a mut dyn crate::Clipboard,
         quit: &'a mut bool,
         commands: &'a CommandRegistry,
+        layout_cache: &'a RenderCache,
     ) -> Context<'a> {
         Context {
             editor: ws,
@@ -121,6 +123,7 @@ mod tests {
             quit,
             viewport: Viewport::default(),
             commands,
+            layout_cache,
         }
     }
 
@@ -130,7 +133,8 @@ mod tests {
         let mut clipboard = crate::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
-        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands);
+        let cache = RenderCache::default();
+        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands, &cache);
         Quit.invoke(&mut ctx);
         assert!(quit, "Quit action should set the quit flag");
     }
@@ -146,12 +150,13 @@ mod tests {
         let mut clipboard = crate::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
+        let cache = RenderCache::default();
 
         let actions: Vec<Box<dyn EditorCommand>> =
             vec![Box::new(NewTab), Box::new(NextTab), Box::new(NewTab)];
 
         for action in &actions {
-            let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands);
+            let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands, &cache);
             action.invoke(&mut ctx);
         }
         let fid = ws.active_frame().unwrap();
@@ -165,7 +170,8 @@ mod tests {
         let mut clipboard = crate::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
-        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands);
+        let cache = RenderCache::default();
+        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands, &cache);
         OpenPalette.invoke(&mut ctx);
         assert!(ws.modal.is_some());
         assert!(
@@ -195,7 +201,8 @@ mod tests {
         let mut clipboard = crate::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
-        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands);
+        let cache = RenderCache::default();
+        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands, &cache);
         AddCursorBelow.invoke(&mut ctx);
         AddCursorBelow.invoke(&mut ctx);
         InsertChar('x').invoke(&mut ctx);
@@ -216,7 +223,8 @@ mod tests {
         let mut clipboard = crate::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
-        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands);
+        let cache = RenderCache::default();
+        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands, &cache);
         AddCursorAbove.invoke(&mut ctx);
         let cid = ws.active_ids().unwrap().1;
         assert_eq!(ws.cursors[cid].selection.len(), 1);
@@ -228,7 +236,8 @@ mod tests {
         let mut clipboard = crate::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
-        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands);
+        let cache = RenderCache::default();
+        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands, &cache);
         AddCursorBelow.invoke(&mut ctx);
         MoveRight { extend: false }.invoke(&mut ctx);
         MoveRight { extend: false }.invoke(&mut ctx);
@@ -255,7 +264,8 @@ mod tests {
         let mut clipboard = crate::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
-        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands);
+        let cache = RenderCache::default();
+        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands, &cache);
         DeleteBack { word: false }.invoke(&mut ctx);
         let did = ws.active_cursor().unwrap().doc;
         assert_eq!(ws.documents[did].buffer.rope().to_string(), "a\nb");
@@ -267,7 +277,8 @@ mod tests {
         let mut clipboard = crate::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
-        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands);
+        let cache = RenderCache::default();
+        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands, &cache);
         AddCursorBelow.invoke(&mut ctx);
         AddCursorBelow.invoke(&mut ctx);
         CollapseSelection.invoke(&mut ctx);
@@ -287,7 +298,8 @@ mod tests {
         let mut clipboard = crate::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();
-        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands);
+        let cache = RenderCache::default();
+        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands, &cache);
         CloseModal.invoke(&mut ctx);
         assert!(ws.modal.is_none());
     }

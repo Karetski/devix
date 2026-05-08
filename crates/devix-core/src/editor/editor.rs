@@ -101,7 +101,6 @@ pub struct Editor {
     /// (via `Editor::set_focus`) exactly once.
     pub focus: FocusChain,
     pub doc_index: HashMap<PathBuf, DocId>,
-    pub render_cache: RenderCache,
 }
 
 impl Editor {
@@ -139,7 +138,6 @@ impl Editor {
             modal: ModalSlot::new(),
             focus,
             doc_index,
-            render_cache: RenderCache::default(),
             bus,
         })
     }
@@ -229,7 +227,7 @@ impl Editor {
     /// This is the only mutation hook that runs between input dispatch and
     /// paint. After it returns, paint is pure — render functions read state
     /// and emit cells, never write back.
-    pub fn layout(&mut self, area: Rect) {
+    pub fn layout(&mut self, area: Rect, cache: &mut RenderCache) {
         use crate::TabInfo;
         use crate::widgets::layout::{VRect, ensure_visible, set_scroll};
         use crate::tab_strip_layout;
@@ -239,15 +237,15 @@ impl Editor {
         // below (for `Frame` leaves' tab-strip + body rects) and the
         // sidebar arm (for `sidebar_rects`) repopulate it. Hit-testing
         // and click-routing read these tables.
-        self.render_cache.frame_rects.clear();
-        self.render_cache.sidebar_rects.clear();
-        self.render_cache.tab_strips.clear();
+        cache.frame_rects.clear();
+        cache.sidebar_rects.clear();
+        cache.tab_strips.clear();
 
         let leaves = self.panes.leaves_with_rects(area);
         for (leaf, rect) in leaves {
             let fid = match leaf {
                 LeafRef::Sidebar(slot) => {
-                    self.render_cache.sidebar_rects.insert(slot, rect);
+                    cache.sidebar_rects.insert(slot, rect);
                     continue;
                 }
                 LeafRef::Frame(fid) => fid,
@@ -304,7 +302,7 @@ impl Editor {
                 .iter()
                 .map(|h| crate::editor::TabHit { idx: h.idx, rect: h.rect })
                 .collect();
-            self.render_cache.tab_strips.insert(
+            cache.tab_strips.insert(
                 fid,
                 crate::editor::TabStripCache {
                     strip_rect: strip_area,
@@ -312,7 +310,7 @@ impl Editor {
                     hits,
                 },
             );
-            self.render_cache.frame_rects.insert(fid, body_area);
+            cache.frame_rects.insert(fid, body_area);
 
             let Some(cid) = self.panes.find_frame(fid).and_then(|f| f.active_cursor())
             else {
@@ -519,11 +517,12 @@ mod tests {
         ws.split_active(Axis::Horizontal);
         let new_fid = ws.active_frame().unwrap();
         assert_ne!(original, new_fid);
+        let cache = make_test_cache(&ws);
 
-        ws.focus_dir(Direction::Left);
+        ws.focus_dir(Direction::Left, &cache);
         assert_eq!(ws.active_frame(), Some(original));
 
-        ws.focus_dir(Direction::Right);
+        ws.focus_dir(Direction::Right, &cache);
         assert_eq!(ws.active_frame(), Some(new_fid));
     }
 
@@ -532,7 +531,8 @@ mod tests {
         use crate::Direction;
         let mut ws = Editor::open(None).unwrap();
         ws.toggle_sidebar(SidebarSlot::Left);
-        ws.focus_dir(Direction::Left);
+        let cache = make_test_cache(&ws);
+        ws.focus_dir(Direction::Left, &cache);
         let node = ws.panes.at_path(&ws.focus).expect("focus resolves");
         assert_eq!(crate::editor::registry::pane_leaf_id(node), Some(LeafRef::Sidebar(SidebarSlot::Left)));
     }
@@ -563,7 +563,8 @@ mod tests {
         use crate::Direction;
         let mut ws = Editor::open(None).unwrap();
         ws.toggle_sidebar(SidebarSlot::Left);
-        ws.focus_dir(Direction::Left);
+        let cache = make_test_cache(&ws);
+        ws.focus_dir(Direction::Left, &cache);
         let node = ws.panes.at_path(&ws.focus).expect("focus resolves");
         assert_eq!(crate::editor::registry::pane_leaf_id(node), Some(LeafRef::Sidebar(SidebarSlot::Left)));
         ws.toggle_sidebar(SidebarSlot::Left);
@@ -629,18 +630,19 @@ mod tests {
                 TabHit { idx: 1, rect: Rect { x: 11, y: 0, width: 10, height: 1 } },
             ],
         };
-        ws.render_cache.tab_strips.insert(fid, strip);
+        let mut cache = RenderCache::default();
+        cache.tab_strips.insert(fid, strip);
 
         assert_eq!(
-            ws.tab_strip_hit(5, 0),
+            ws.tab_strip_hit(5, 0, &cache),
             Some(TabStripHit::Tab { frame: fid, idx: 0 }),
         );
         assert_eq!(
-            ws.tab_strip_hit(15, 0),
+            ws.tab_strip_hit(15, 0, &cache),
             Some(TabStripHit::Tab { frame: fid, idx: 1 }),
         );
-        assert_eq!(ws.tab_strip_hit(50, 0), None);
-        assert_eq!(ws.tab_strip_hit(5, 5), None);
+        assert_eq!(ws.tab_strip_hit(50, 0, &cache), None);
+        assert_eq!(ws.tab_strip_hit(5, 5, &cache), None);
     }
 
     #[test]
@@ -659,14 +661,15 @@ mod tests {
     fn scroll_tab_strip_clamps_to_content_minus_strip_width() {
         let mut ws = Editor::open(None).unwrap();
         let fid = ws.active_frame().unwrap();
-        ws.render_cache.tab_strips.insert(fid, TabStripCache {
+        let mut cache = RenderCache::default();
+        cache.tab_strips.insert(fid, TabStripCache {
             strip_rect: Rect { x: 0, y: 0, width: 20, height: 1 },
             content_width: 50,
             hits: Vec::new(),
         });
-        ws.scroll_tab_strip(fid, 100);
+        ws.scroll_tab_strip(fid, 100, &cache);
         assert_eq!(ws.panes.find_frame(fid).unwrap().tab_strip_scroll.0, 30, "clamped to 50 - 20");
-        ws.scroll_tab_strip(fid, -1000);
+        ws.scroll_tab_strip(fid, -1000, &cache);
         assert_eq!(ws.panes.find_frame(fid).unwrap().tab_strip_scroll.0, 0, "clamped at 0");
     }
 
@@ -674,26 +677,28 @@ mod tests {
     fn scroll_tab_strip_noop_when_content_fits() {
         let mut ws = Editor::open(None).unwrap();
         let fid = ws.active_frame().unwrap();
-        ws.render_cache.tab_strips.insert(fid, TabStripCache {
+        let mut cache = RenderCache::default();
+        cache.tab_strips.insert(fid, TabStripCache {
             strip_rect: Rect { x: 0, y: 0, width: 20, height: 1 },
             content_width: 15,
             hits: Vec::new(),
         });
-        ws.scroll_tab_strip(fid, 5);
+        ws.scroll_tab_strip(fid, 5, &cache);
         assert_eq!(ws.panes.find_frame(fid).unwrap().tab_strip_scroll.0, 0);
     }
 
     #[test]
     fn frame_at_strip_resolves_full_strip_row() {
-        let mut ws = Editor::open(None).unwrap();
+        let ws = Editor::open(None).unwrap();
         let fid = ws.active_frame().unwrap();
-        ws.render_cache.tab_strips.insert(fid, TabStripCache {
+        let mut cache = RenderCache::default();
+        cache.tab_strips.insert(fid, TabStripCache {
             strip_rect: Rect { x: 0, y: 4, width: 30, height: 1 },
             content_width: 10,
             hits: Vec::new(),
         });
-        assert_eq!(ws.frame_at_strip(25, 4), Some(fid));
-        assert_eq!(ws.frame_at_strip(25, 5), None);
+        assert_eq!(ws.frame_at_strip(25, 4, &cache), Some(fid));
+        assert_eq!(ws.frame_at_strip(25, 5, &cache), None);
     }
 
     #[test]
@@ -892,14 +897,44 @@ mod tests {
         use devix_protocol::pulse::PulseKind;
         let mut ws = Editor::open(None).unwrap();
         ws.split_active(Axis::Horizontal);
+        let cache = make_test_cache(&ws);
         let captured = capture_pulses(&ws.bus);
-        ws.focus_dir(Direction::Left);
-        ws.focus_dir(Direction::Left); // already at the leftmost — no change
+        ws.focus_dir(Direction::Left, &cache);
+        ws.focus_dir(Direction::Left, &cache); // already at the leftmost — no change
         let pulses = captured.lock().unwrap();
         let count = pulses
             .iter()
             .filter(|p| p.kind() == PulseKind::FocusChanged)
             .count();
         assert_eq!(count, 1, "FocusChanged fires once for the real transition");
+    }
+
+    /// Synthesize a `RenderCache` with a 100x40 area distributed across
+    /// every leaf in `ws.panes`. Used by focus-traversal tests so the
+    /// geometry-aware picker has rect data to read.
+    fn make_test_cache(ws: &Editor) -> RenderCache {
+        let mut cache = RenderCache::default();
+        let area = Rect { x: 0, y: 0, width: 100, height: 40 };
+        for (leaf, rect) in ws.panes.leaves_with_rects(area) {
+            match leaf {
+                LeafRef::Frame(fid) => {
+                    let body = Rect {
+                        y: rect.y.saturating_add(1),
+                        height: rect.height.saturating_sub(1),
+                        ..rect
+                    };
+                    cache.frame_rects.insert(fid, body);
+                    cache.tab_strips.insert(fid, TabStripCache {
+                        strip_rect: Rect { height: 1, ..rect },
+                        content_width: 0,
+                        hits: Vec::new(),
+                    });
+                }
+                LeafRef::Sidebar(slot) => {
+                    cache.sidebar_rects.insert(slot, rect);
+                }
+            }
+        }
+        cache
     }
 }

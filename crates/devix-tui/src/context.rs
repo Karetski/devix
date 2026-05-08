@@ -11,7 +11,8 @@
 //! the one site that used it (wheel-scroll coalescing) was inlined.
 
 use devix_core::{
-    CommandRegistry, Context as EditorContext, Editor, EditorCommand, Keymap, Viewport,
+    CommandRegistry, Context as EditorContext, Editor, EditorCommand, Keymap, RenderCache,
+    Viewport,
 };
 use devix_core::{Clipboard, Theme};
 
@@ -24,6 +25,10 @@ pub struct AppContext<'a> {
     pub theme: &'a Theme,
     pub clipboard: &'a mut dyn Clipboard,
     pub sink: &'a EventSink,
+    /// Layout/render cache. Lives on `Application` (T-92 carved it
+    /// out of `Editor` — the cache is tui-internal). Commands read
+    /// it for hit-testing and frame-rect queries.
+    pub layout_cache: &'a RenderCache,
     /// Set by `request_redraw`; the runtime ORs this into its `dirty`
     /// flag after the delivery returns.
     pub(crate) dirty_request: &'a mut bool,
@@ -42,7 +47,7 @@ impl AppContext<'_> {
 
     /// Invoke an editor command.
     pub fn run(&mut self, action: &dyn EditorCommand) {
-        let viewport = active_viewport(self.editor);
+        let viewport = active_viewport(self.editor, self.layout_cache);
         let mut quit = false;
         {
             let mut cx = EditorContext {
@@ -51,6 +56,7 @@ impl AppContext<'_> {
                 quit: &mut quit,
                 viewport,
                 commands: self.commands,
+                layout_cache: self.layout_cache,
             };
             action.invoke(&mut cx);
         }
@@ -61,12 +67,12 @@ impl AppContext<'_> {
     }
 }
 
-/// Compute the viewport for the active frame: rect from the render cache,
-/// gutter width derived from the active document's line count.
-pub(crate) fn active_viewport(editor: &Editor) -> Viewport {
+/// Compute the viewport for the active frame: rect from the render
+/// cache, gutter width derived from the active document's line count.
+pub(crate) fn active_viewport(editor: &Editor, cache: &RenderCache) -> Viewport {
     let rect = editor
         .active_frame()
-        .and_then(|fid| editor.render_cache.frame_rects.get(&fid).copied())
+        .and_then(|fid| cache.frame_rects.get(&fid).copied())
         .unwrap_or_default();
     let gutter_width = editor
         .active_doc()

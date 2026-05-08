@@ -19,14 +19,14 @@ use crate::{Axis, Direction, SidebarSlot};
 use super::{Editor, LeafRef, RenderCache};
 
 impl Editor {
-    pub fn focus_dir(&mut self, dir: Direction) {
-        let area = root_area(&self.render_cache);
+    pub fn focus_dir(&mut self, dir: Direction, cache: &RenderCache) {
+        let area = root_area(cache);
         if let Some(target_path) = compute_focus_target(
             &self.panes,
             area,
             self.focus.active(),
             dir,
-            &self.render_cache,
+            cache,
         ) {
             self.set_focus(target_path);
             return;
