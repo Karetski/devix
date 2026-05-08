@@ -89,8 +89,8 @@ pub use editor::tree::{
 // Plugin surface (pre-Stage-1: was `devix-plugin`'s public surface).
 pub use plugin::{
     CommandSpec as PluginCommandSpec, Contributions as PluginContributions,
-    InputSender, InvokeSender, LuaAction, LuaPane, LuaPaneHandle, MsgSink,
-    PaneSpec as PluginPaneSpec, PluginCommandAction, PluginHost, PluginInput, PluginMsg,
-    PluginPane, PluginRuntime, default_plugin_path, make_command_action, parse_chord,
-    send_input, send_invoke,
+    InputSender, InvokeSender, LuaAction, LuaCallback, LuaPane, LuaPaneHandle, MsgSink,
+    PaneSpec as PluginPaneSpec, PluginCallbacks, PluginCommandAction, PluginHost,
+    PluginInput, PluginMsg, PluginPane, PluginRuntime, default_plugin_path,
+    make_command_action, parse_chord, send_input, send_invoke,
 };

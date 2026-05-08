@@ -103,6 +103,15 @@ impl PluginHost {
         self.setting_callbacks.clone()
     }
 
+    /// Snapshot the registered Lua callbacks as a path-keyed
+    /// [`PluginCallbacks`] registry under `plugin` (`<name>` in
+    /// `/plugin/<name>/cb/<u64>`). The returned registry shares the
+    /// underlying `Arc<Mutex<…>>` with the host, so live registrations
+    /// remain visible. T-56 full close.
+    pub fn plugin_callbacks(&self, plugin: impl Into<String>) -> super::PluginCallbacks {
+        super::PluginCallbacks::new(plugin.into(), self.callbacks.clone())
+    }
+
     fn install_devix_table(&self) -> Result<()> {
         let lua = &self.lua;
         let devix = lua.create_table()?;

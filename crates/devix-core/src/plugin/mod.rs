@@ -83,6 +83,99 @@ pub use host::PluginHost;
 pub use pane_handle::{LuaPane, LuaPaneHandle, PluginPane};
 pub use runtime::{MsgSink, PluginRuntime, host_capabilities};
 
+/// Marker type for a registered Lua callback. Per `namespace.md`'s
+/// migration table, plugin callbacks live at `/plugin/<name>/cb/<u64>`
+/// and are addressable via the [`devix_protocol::Lookup`] trait.
+/// Returning `&LuaCallback` from `lookup` is a *presence check*: a
+/// `Some` answer says "yes, this handle is registered and dispatchable
+/// through the runtime"; the actual invocation routes through
+/// [`PluginRuntime::invoke_sender`] + `host.invoke(handle)` because
+/// the Lua state itself can't cross the worker thread boundary.
+///
+/// The marker shape (zero-sized type) works around the
+/// `Arc<Mutex<HashMap<…>>>` ownership of the underlying registry —
+/// `Lookup::lookup` wants `&Self::Resource`, but a `MutexGuard`'s
+/// borrow doesn't outlive the call. By making `Resource` a ZST whose
+/// instances are interchangeable, the registry returns
+/// `Some(&LUA_CALLBACK)` when the handle exists. This was the
+/// "storage redesign" the original T-56 partial flagged; the redesign
+/// turned out to be the resource type, not the storage. Locked
+/// during T-56 full close (2026-05-08).
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub struct LuaCallback;
+
+/// Singleton instance of [`LuaCallback`] borrowed by
+/// `PluginCallbacks::lookup` — every plugin handle resolves to the
+/// same marker.
+const LUA_CALLBACK: LuaCallback = LuaCallback;
+
+/// Per-plugin callback registry exposed as a [`Lookup`]
+/// (`Resource = LuaCallback`). Holds a clone of the underlying
+/// registry's `Arc<Mutex<HashMap<u64, …>>>` so multiple consumers
+/// (the editor's path-keyed dispatcher, future contribution
+/// inspector tooling) can share read access. T-56 full close.
+pub struct PluginCallbacks {
+    plugin: String,
+    callbacks: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, mlua::RegistryKey>>>,
+}
+
+impl PluginCallbacks {
+    pub(crate) fn new(
+        plugin: String,
+        callbacks: std::sync::Arc<
+            std::sync::Mutex<std::collections::HashMap<u64, mlua::RegistryKey>>,
+        >,
+    ) -> Self {
+        Self { plugin, callbacks }
+    }
+
+    /// Plugin name this registry covers (the `<name>` in
+    /// `/plugin/<name>/cb/<u64>`).
+    pub fn plugin_name(&self) -> &str {
+        &self.plugin
+    }
+}
+
+impl devix_protocol::Lookup for PluginCallbacks {
+    type Resource = LuaCallback;
+
+    fn lookup(&self, path: &devix_protocol::path::Path) -> Option<&LuaCallback> {
+        let (name, handle) = handle_from_callback_path(path)?;
+        if name != self.plugin {
+            return None;
+        }
+        let map = self.callbacks.lock().ok()?;
+        if map.contains_key(&handle) {
+            Some(&LUA_CALLBACK)
+        } else {
+            None
+        }
+    }
+
+    fn lookup_mut(
+        &mut self,
+        _path: &devix_protocol::path::Path,
+    ) -> Option<&mut LuaCallback> {
+        // The marker has no mutable state — `Lookup::lookup_mut`
+        // doesn't apply to presence-only registries. Returning `None`
+        // matches the trait's "no such mutable resource" semantics
+        // without panicking.
+        None
+    }
+
+    fn paths(&self) -> Box<dyn Iterator<Item = devix_protocol::path::Path> + '_> {
+        let plugin = self.plugin.clone();
+        let snapshot: Vec<u64> = self
+            .callbacks
+            .lock()
+            .map(|m| m.keys().copied().collect())
+            .unwrap_or_default();
+        Box::new(snapshot.into_iter().filter_map(move |h| {
+            plugin_callback_path(&plugin, h)
+        }))
+    }
+}
+
 /// Editor-held handle for the host's invoke channel. Wrapped in
 /// `Arc<Mutex<…>>` so the supervisor can swap a fresh sender into
 /// the same `Arc` on restart without rewiring every editor-side
@@ -973,6 +1066,48 @@ mod tests {
                 assert_eq!(children.len(), 2);
             }
             other => panic!("expected Stack, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plugin_callbacks_lookup_resolves_registered_handles() {
+        use devix_protocol::Lookup;
+
+        let p = write_temp(
+            "cb_lookup",
+            r#"
+                devix.register_action({ id = "a", label = "A", run = function() end })
+                devix.register_action({ id = "b", label = "B", run = function() end })
+            "#,
+        );
+        let host = PluginHost::new().unwrap();
+        let c = host.load_file(&p).unwrap();
+        assert_eq!(c.commands.len(), 2);
+
+        let registry = host.plugin_callbacks("myplug");
+        for spec in &c.commands {
+            let path =
+                plugin_callback_path("myplug", spec.handle).expect("encodes");
+            assert!(
+                registry.lookup(&path).is_some(),
+                "registered handle {} should resolve through Lookup",
+                spec.handle,
+            );
+        }
+        // Wrong plugin name → None.
+        let cross = plugin_callback_path("other", c.commands[0].handle).unwrap();
+        assert!(registry.lookup(&cross).is_none());
+        // Unknown handle → None.
+        let absent = plugin_callback_path("myplug", 9_999).unwrap();
+        assert!(registry.lookup(&absent).is_none());
+        // `paths()` enumerates the registered handles.
+        let paths: Vec<String> = registry
+            .paths()
+            .map(|p| p.as_str().to_string())
+            .collect();
+        assert_eq!(paths.len(), c.commands.len());
+        for p in &paths {
+            assert!(p.starts_with("/plugin/myplug/cb/"));
         }
     }
 
