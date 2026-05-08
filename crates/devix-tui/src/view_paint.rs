@@ -1,0 +1,338 @@
+//! Structural View IR interpreter.
+//!
+//! Walks the closed `View` tree from `devix-protocol::view` and
+//! emits ratatui draw calls. Lives alongside the legacy direct-paint
+//! Pane render path; T-95 retires the legacy path and wires this
+//! interpreter into the App's render loop.
+//!
+//! Scope at T-44 is structural — Stack / Split partition area
+//! correctly, Empty is a no-op, and leaf variants render a
+//! minimum-viable representation. Byte parity with the legacy
+//! renderer comes when T-95 makes this the sole renderer.
+
+use devix_protocol::view::{Anchor, AnchorEdge, Axis, PopupChrome, View};
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style as TuiStyle};
+use ratatui::text::Line;
+use ratatui::widgets::{Block, Borders, Paragraph};
+
+/// Paint a `View` tree into `area` of `frame`.
+///
+/// `theme` is unused at T-44 but threaded through for T-95's
+/// byte-parity work; the legacy path consumes it.
+pub fn paint_view(view: &View, area: Rect, frame: &mut Frame<'_>, _theme: &devix_core::Theme) {
+    paint_inner(view, area, frame);
+}
+
+fn paint_inner(view: &View, area: Rect, frame: &mut Frame<'_>) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    match view {
+        View::Empty => {}
+        View::Stack {
+            axis,
+            weights,
+            children,
+            ..
+        }
+        | View::Split {
+            axis,
+            weights,
+            children,
+            ..
+        } => {
+            paint_stack_or_split(*axis, weights, children, area, frame);
+        }
+        View::Text { spans, .. } => {
+            let line: Line = spans
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<Vec<_>>()
+                .join("")
+                .into();
+            frame.render_widget(Paragraph::new(line), area);
+        }
+        View::List { items, selected, .. } => {
+            paint_list(items, *selected, area, frame);
+        }
+        View::Buffer { path, .. } => {
+            // Minimum-viable: render the buffer's path as a label.
+            // Full buffer rendering parity lands at T-95.
+            let label = format!("[buffer {}]", path.as_str());
+            frame.render_widget(Paragraph::new(label), area);
+        }
+        View::TabStrip { tabs, active, .. } => {
+            paint_tab_strip(tabs, *active, area, frame);
+        }
+        View::Sidebar {
+            title,
+            focused,
+            content,
+            ..
+        } => {
+            paint_sidebar(title, *focused, content, area, frame);
+        }
+        View::Popup {
+            anchor,
+            content,
+            max_size,
+            chrome,
+            ..
+        } => {
+            paint_popup(*anchor, content, *max_size, *chrome, area, frame);
+        }
+        View::Modal { title, content, .. } => {
+            paint_modal_view(title, content, area, frame);
+        }
+    }
+}
+
+fn paint_stack_or_split(
+    axis: Axis,
+    weights: &[u16],
+    children: &[View],
+    area: Rect,
+    frame: &mut Frame<'_>,
+) {
+    if children.is_empty() {
+        return;
+    }
+    let direction = match axis {
+        Axis::Horizontal => Direction::Horizontal,
+        Axis::Vertical => Direction::Vertical,
+    };
+    let constraints: Vec<Constraint> = weights
+        .iter()
+        .copied()
+        .chain(std::iter::repeat(1u16))
+        .take(children.len())
+        .map(|w| Constraint::Ratio(w.max(1) as u32, 1))
+        .collect();
+    let rects = Layout::default()
+        .direction(direction)
+        .constraints(constraints)
+        .split(area);
+    for (rect, child) in rects.iter().zip(children.iter()) {
+        paint_inner(child, *rect, frame);
+    }
+}
+
+fn paint_list(items: &[View], selected: Option<u32>, area: Rect, frame: &mut Frame<'_>) {
+    if items.is_empty() {
+        return;
+    }
+    // Each item gets one row. T-95 plugs in proper virtualization.
+    let rows = area.height as usize;
+    let mut y = area.y;
+    for (idx, item) in items.iter().take(rows).enumerate() {
+        let row_rect = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: 1,
+        };
+        if Some(idx as u32) == selected {
+            frame.render_widget(
+                Paragraph::new("").style(TuiStyle::default().add_modifier(Modifier::REVERSED)),
+                row_rect,
+            );
+        }
+        paint_inner(item, row_rect, frame);
+        y = y.saturating_add(1);
+    }
+}
+
+fn paint_tab_strip(tabs: &[devix_protocol::view::TabItem], active: u32, area: Rect, frame: &mut Frame<'_>) {
+    let mut buf = String::new();
+    for (i, tab) in tabs.iter().enumerate() {
+        if i > 0 {
+            buf.push_str(" │ ");
+        }
+        if i as u32 == active {
+            buf.push('[');
+        }
+        buf.push_str(&tab.label);
+        if tab.dirty {
+            buf.push('*');
+        }
+        if i as u32 == active {
+            buf.push(']');
+        }
+    }
+    frame.render_widget(Paragraph::new(buf), area);
+}
+
+fn paint_sidebar(title: &str, focused: bool, content: &View, area: Rect, frame: &mut Frame<'_>) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title.to_string())
+        .style(if focused {
+            TuiStyle::default().add_modifier(Modifier::BOLD)
+        } else {
+            TuiStyle::default()
+        });
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    paint_inner(content, inner, frame);
+}
+
+fn paint_popup(
+    anchor: Anchor,
+    content: &View,
+    max_size: Option<(u16, u16)>,
+    chrome: PopupChrome,
+    area: Rect,
+    frame: &mut Frame<'_>,
+) {
+    let (w, h) = max_size.unwrap_or((40, 10));
+    let popup_rect = match anchor.edge {
+        AnchorEdge::Below => Rect {
+            x: anchor.col,
+            y: anchor.row.saturating_add(1),
+            width: w.min(area.width),
+            height: h.min(area.height),
+        },
+        AnchorEdge::Above => Rect {
+            x: anchor.col,
+            y: anchor.row.saturating_sub(h),
+            width: w.min(area.width),
+            height: h.min(area.height),
+        },
+        AnchorEdge::Left => Rect {
+            x: anchor.col.saturating_sub(w),
+            y: anchor.row,
+            width: w.min(area.width),
+            height: h.min(area.height),
+        },
+        AnchorEdge::Right => Rect {
+            x: anchor.col.saturating_add(1),
+            y: anchor.row,
+            width: w.min(area.width),
+            height: h.min(area.height),
+        },
+    };
+    if let PopupChrome::Bordered = chrome {
+        let block = Block::default().borders(Borders::ALL);
+        let inner = block.inner(popup_rect);
+        frame.render_widget(block, popup_rect);
+        paint_inner(content, inner, frame);
+    } else {
+        paint_inner(content, popup_rect, frame);
+    }
+}
+
+fn paint_modal_view(title: &str, content: &View, area: Rect, frame: &mut Frame<'_>) {
+    // Center a 60% × 60% box in `area` (placeholder geometry; T-95
+    // refines).
+    let w = (area.width as u32 * 6 / 10) as u16;
+    let h = (area.height as u32 * 6 / 10) as u16;
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let modal_rect = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
+    let block = Block::default().borders(Borders::ALL).title(title.to_string());
+    let inner = block.inner(modal_rect);
+    frame.render_widget(block, modal_rect);
+    paint_inner(content, inner, frame);
+}
+
+#[cfg(test)]
+mod tests {
+    use devix_core::Theme;
+    use devix_protocol::path::Path;
+    use devix_protocol::view::{Axis, View, ViewNodeId};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    use super::*;
+
+    fn id(s: &str) -> ViewNodeId {
+        ViewNodeId(Path::parse(s).unwrap())
+    }
+
+    fn run<F: FnOnce(&mut Frame<'_>)>(width: u16, height: u16, f: F) -> ratatui::buffer::Buffer {
+        let backend = TestBackend::new(width, height);
+        let mut term = Terminal::new(backend).unwrap();
+        term.draw(|frame| f(frame)).unwrap();
+        term.backend().buffer().clone()
+    }
+
+    #[test]
+    fn empty_paints_nothing() {
+        let theme = Theme::default();
+        let buf = run(10, 3, |frame| {
+            paint_view(&View::Empty, frame.area(), frame, &theme);
+        });
+        // A blank buffer's cells are all default — assert by
+        // checking the first cell is not styled / has empty symbol.
+        let cell = buf.cell((0, 0)).unwrap();
+        assert_eq!(cell.symbol(), " ");
+    }
+
+    #[test]
+    fn vertical_stack_partitions_area() {
+        let theme = Theme::default();
+        let view = View::Stack {
+            id: id("/synthetic/stack/test"),
+            axis: Axis::Vertical,
+            weights: vec![1, 1],
+            children: vec![
+                View::Text {
+                    id: id("/synthetic/text/top"),
+                    spans: vec![devix_protocol::view::TextSpan {
+                        text: "TOP".into(),
+                        style: Default::default(),
+                    }],
+                    wrap: devix_protocol::view::WrapMode::NoWrap,
+                    transition: None,
+                },
+                View::Text {
+                    id: id("/synthetic/text/bot"),
+                    spans: vec![devix_protocol::view::TextSpan {
+                        text: "BOT".into(),
+                        style: Default::default(),
+                    }],
+                    wrap: devix_protocol::view::WrapMode::NoWrap,
+                    transition: None,
+                },
+            ],
+            spacing: 0,
+            transition: None,
+        };
+        let buf = run(10, 4, |frame| {
+            paint_view(&view, frame.area(), frame, &theme);
+        });
+        // Top row contains "TOP", bottom half contains "BOT".
+        let top = (0..3).map(|x| buf.cell((x, 0)).unwrap().symbol()).collect::<String>();
+        let bot = (0..3).map(|x| buf.cell((x, 2)).unwrap().symbol()).collect::<String>();
+        assert_eq!(top, "TOP");
+        assert_eq!(bot, "BOT");
+    }
+
+    #[test]
+    fn buffer_renders_path_label() {
+        let theme = Theme::default();
+        let view = View::Buffer {
+            id: id("/buf/42"),
+            path: Path::parse("/buf/42").unwrap(),
+            scroll_top_line: 0,
+            cursor: None,
+            selection: Vec::new(),
+            highlights: Vec::new(),
+            gutter: devix_protocol::view::GutterMode::None,
+            active: true,
+            transition: None,
+        };
+        let buf = run(20, 1, |frame| {
+            paint_view(&view, frame.area(), frame, &theme);
+        });
+        let row = (0..20).map(|x| buf.cell((x, 0)).unwrap().symbol()).collect::<String>();
+        assert!(row.contains("buffer /buf/42"));
+    }
+}

@@ -21,6 +21,7 @@ pub mod event_sink;
 pub mod input;
 mod input_thread;
 mod interpreter;
+pub mod view_paint;
 
 pub use application::Application;
 pub use context::AppContext;

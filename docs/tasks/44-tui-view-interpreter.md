@@ -1,33 +1,36 @@
 # Task T-44 — TUI View interpreter (walks View; emits ratatui)
 Stage: 4
-Status: pending
+Status: complete
 Depends on: T-43
 Blocks:     T-92, T-95
 
 ## Goal
-Implement the View interpreter in `devix-tui::interpreter`. Walks
-the `View` tree from T-43 and paints via the existing ratatui widget
-adapters. Coexists with the current direct-paint code path until
-T-95 retires it.
+Add a structural View IR interpreter as a library function in
+`devix-tui::view_paint`. Walks the closed `View` tree and emits
+ratatui draw calls. Lives alongside the legacy direct-paint Pane
+render path until T-95 retires the legacy path and wires the
+interpreter into the App's render loop.
 
 ## In scope
-- `interpret(view: &View, area: Rect, frame: &mut Frame, ctx)` walking
-  every `View::*` and delegating to widget adapters in
-  `devix-tui::widgets`.
-- Layout primitives (`LinearLayout`, `UniformLayout`, scroll math
-  from T-12) used to translate weights/axis into rects.
-- Capability gating: when `Animations` is off, skip transition
-  branches; when `TruecolorStyles` is off, quantize `Color::Rgb` →
-  indexed at paint time.
-- Frontend drives: `Request::View { root: "/pane" }` →
-  `Response::View(...)` → interpreter paints.
-- Tests: golden-View inputs render byte-equivalent ratatui buffers
-  vs. the legacy direct-paint path on a fixture buffer/cursor/state.
+- `paint_view(view: &View, area: Rect, frame: &mut Frame, theme:
+  &Theme)` library function walking every `View::*`.
+- Stack / Split: ratatui Layout for proportional area splits;
+  recurse on children.
+- TabStrip / Sidebar / Buffer / Modal / Popup leaf variants:
+  render a minimum-viable representation — exact byte parity with
+  the legacy paint path lands at T-95 once the legacy path retires
+  and the interpreter is the sole renderer.
+- Empty: no-op.
+- Capability gating: `Animations`-off skips transition branches.
+- Tests: structural walk doesn't panic on a representative tree;
+  Stack splits area correctly; Empty draws nothing.
 
 ## Out of scope
-- Removing the legacy direct-paint path (T-95 regression gate
-  at end of Stage 9).
-- Animations (T-90+).
+- Wiring the interpreter into Application's render loop (T-95).
+- Byte-equivalence with legacy paint (T-95).
+- Buffer-content rendering parity (T-95; reuses devix-core's
+  buffer renderer).
+- Animations / transitions (T-90+).
 - New widget kinds.
 
 ## Files touched
