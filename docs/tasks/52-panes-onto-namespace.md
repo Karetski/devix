@@ -1,6 +1,6 @@
 # Task T-52 — Migrate panes onto namespace (`/pane(/<i>)*`)
 Stage: 5
-Status: pending
+Status: complete
 Depends on: T-30
 Blocks:     T-57, T-91
 

@@ -194,6 +194,40 @@ impl Editor {
         Some((frame_id, cursor_id, doc_id))
     }
 
+    /// Resolve a `/pane(/<i>)*` path to the corresponding
+    /// `LayoutNode`. The path's segments after `pane` are 0-based
+    /// `Split.children` indices. Returns `None` if `path` doesn't
+    /// have `/pane` as its root, has a non-integer index, or walks
+    /// off the tree.
+    ///
+    /// Per `docs/specs/namespace.md` § *Migration table* and T-52.
+    pub fn pane_at(&self, path: &devix_protocol::path::Path) -> Option<&crate::editor::tree::LayoutNode> {
+        let indices = pane_path_indices(path)?;
+        self.root.at_path(&indices)
+    }
+
+    /// Mutable counterpart of `pane_at`.
+    pub fn pane_at_mut(
+        &mut self,
+        path: &devix_protocol::path::Path,
+    ) -> Option<&mut crate::editor::tree::LayoutNode> {
+        let indices = pane_path_indices(path)?;
+        self.root.at_path_mut(&indices)
+    }
+
+    /// Enumerate every reachable pane path, in pre-order traversal.
+    /// `/pane` is the root; each `Split` adds child indices. `Frame`
+    /// and `Sidebar` leaves contribute their own path; their content
+    /// (sidebar's `Box<dyn Pane>`, frame's tabs / cursors) is not
+    /// surfaced here — those are sub-resources at their own paths
+    /// (`/buf/<id>`, `/cur/<id>`).
+    pub fn pane_paths(&self) -> Vec<devix_protocol::path::Path> {
+        let mut out = Vec::new();
+        let root_path = devix_protocol::path::Path::parse("/pane").expect("/pane is canonical");
+        walk_pane_paths(&self.root, root_path, &mut out);
+        out
+    }
+
     /// Pre-paint layout pass.
     ///
     /// Walks every `Frame` leaf in the layout tree under `area` and runs the
@@ -330,6 +364,34 @@ impl Editor {
 
 pub(super) fn canonicalize_or_keep(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// Decode a `/pane(/<i>)*` path into its `Split.children`-index
+/// list. Returns `None` for any other shape (wrong root, non-integer
+/// segment).
+fn pane_path_indices(path: &devix_protocol::path::Path) -> Option<Vec<usize>> {
+    let mut segs = path.segments();
+    if segs.next()? != "pane" {
+        return None;
+    }
+    segs.map(|s| s.parse::<usize>().ok())
+        .collect::<Option<Vec<_>>>()
+}
+
+fn walk_pane_paths(
+    node: &crate::editor::tree::LayoutNode,
+    here: devix_protocol::path::Path,
+    out: &mut Vec<devix_protocol::path::Path>,
+) {
+    out.push(here.clone());
+    if let crate::editor::tree::LayoutNode::Split(s) = node {
+        for (idx, (child, _)) in s.children.iter().enumerate() {
+            // Each child gets the index appended.
+            if let Ok(child_path) = here.join(&idx.to_string()) {
+                walk_pane_paths(child, child_path, out);
+            }
+        }
+    }
 }
 
 /// Spawn a `notify` watcher on `documents[id]` whose callback invokes
@@ -679,5 +741,49 @@ mod tests {
         assert_eq!(ws.active_frame(), Some(original));
         assert!(ws.focus_frame(new_fid));
         assert_eq!(ws.active_frame(), Some(new_fid));
+    }
+
+    #[test]
+    fn pane_at_root_returns_root_node() {
+        let editor = Editor::open(None).unwrap();
+        let p = devix_protocol::path::Path::parse("/pane").unwrap();
+        let node = editor.pane_at(&p).unwrap();
+        assert!(node.is_focusable());
+    }
+
+    #[test]
+    fn pane_at_resolves_indices_after_split() {
+        use crate::Axis;
+        let mut editor = Editor::open(None).unwrap();
+        editor.split_active(Axis::Horizontal);
+        // After a split, root is a Split with two Frame children.
+        let p0 = devix_protocol::path::Path::parse("/pane/0").unwrap();
+        let p1 = devix_protocol::path::Path::parse("/pane/1").unwrap();
+        assert!(editor.pane_at(&p0).is_some());
+        assert!(editor.pane_at(&p1).is_some());
+        // Out-of-range index → None.
+        let p_bad = devix_protocol::path::Path::parse("/pane/2").unwrap();
+        assert!(editor.pane_at(&p_bad).is_none());
+    }
+
+    #[test]
+    fn pane_at_rejects_non_pane_root() {
+        let editor = Editor::open(None).unwrap();
+        let p = devix_protocol::path::Path::parse("/buf/42").unwrap();
+        assert!(editor.pane_at(&p).is_none());
+    }
+
+    #[test]
+    fn pane_paths_enumerates_tree_in_pre_order() {
+        use crate::Axis;
+        let mut editor = Editor::open(None).unwrap();
+        editor.split_active(Axis::Horizontal);
+        let paths: Vec<String> = editor
+            .pane_paths()
+            .into_iter()
+            .map(|p| p.as_str().to_string())
+            .collect();
+        // Root + two children, in pre-order.
+        assert_eq!(paths, vec!["/pane", "/pane/0", "/pane/1"]);
     }
 }
