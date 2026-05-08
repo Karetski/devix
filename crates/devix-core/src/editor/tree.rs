@@ -247,52 +247,11 @@ impl LayoutNode {
         out
     }
 
-    /// Every `FrameId` in the tree, in tree order.
-    pub fn frames(&self) -> Vec<FrameId> {
-        let mut out = Vec::new();
-        collect_frames(self, &mut out);
-        out
-    }
-
-    /// Whether a sidebar leaf for `slot` is present anywhere in the tree.
-    pub fn sidebar_present(&self, slot: SidebarSlot) -> bool {
-        match self {
-            LayoutNode::Sidebar(s) => s.slot == slot,
-            LayoutNode::Frame(_) => false,
-            LayoutNode::Split(s) => s.children.iter().any(|(c, _)| c.sidebar_present(slot)),
-        }
-    }
-
-    /// Find a frame leaf by id.
-    pub fn find_frame(&self, fid: FrameId) -> Option<&LayoutFrame> {
-        match self {
-            LayoutNode::Frame(f) if f.frame == fid => Some(f),
-            LayoutNode::Frame(_) | LayoutNode::Sidebar(_) => None,
-            LayoutNode::Split(s) => s.children.iter().find_map(|(c, _)| c.find_frame(fid)),
-        }
-    }
-
-    pub fn find_frame_mut(&mut self, fid: FrameId) -> Option<&mut LayoutFrame> {
-        match self {
-            LayoutNode::Frame(f) if f.frame == fid => Some(f),
-            LayoutNode::Frame(_) | LayoutNode::Sidebar(_) => None,
-            LayoutNode::Split(s) => s
-                .children
-                .iter_mut()
-                .find_map(|(c, _)| c.find_frame_mut(fid)),
-        }
-    }
-
-    pub fn find_sidebar_mut(&mut self, slot: SidebarSlot) -> Option<&mut LayoutSidebar> {
-        match self {
-            LayoutNode::Sidebar(s) if s.slot == slot => Some(s),
-            LayoutNode::Sidebar(_) | LayoutNode::Frame(_) => None,
-            LayoutNode::Split(s) => s
-                .children
-                .iter_mut()
-                .find_map(|(c, _)| c.find_sidebar_mut(slot)),
-        }
-    }
+    // T-91 phase 2: `frames`, `sidebar_present`, `find_frame`,
+    // `find_frame_mut`, `find_sidebar_mut` retired — `PaneRegistry`
+    // walks via `Pane::children` + downcast through helpers
+    // (`pane_collect_frames`, `pane_sidebar_present`,
+    // `pane_find_frame`, etc.) instead.
 
     /// Path of `Split.children` indices that leads to `target`, or
     /// `None` if no such leaf exists.
