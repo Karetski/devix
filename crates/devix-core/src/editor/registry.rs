@@ -56,7 +56,10 @@ impl PaneRegistry {
     }
 
     pub fn find_frame(&self, fid: FrameId) -> Option<&LayoutFrame> {
-        self.as_layout().find_frame(fid)
+        // T-91 phase 2: walk via the Pane trait. Works whether the
+        // tree is built from LayoutNode wrappers (today) or carved
+        // into standalone Pane impls (post phase-2 completion).
+        pane_find_frame(self.root.as_ref(), fid)
     }
 
     pub fn find_frame_mut(&mut self, fid: FrameId) -> Option<&mut LayoutFrame> {
@@ -199,4 +202,33 @@ fn walk_pane_paths_via_trait(
             walk_pane_paths_via_trait(child, rect, child_path, out);
         }
     }
+}
+
+/// Pane-trait-driven `find_frame`. Walks the Pane tree via
+/// `Pane::children`, downcasting each node to either `LayoutFrame`
+/// directly or to a `LayoutNode::Frame` variant (the current
+/// transitional state where the enum still wraps the variant).
+/// Once T-91 phase 2 retires the enum, only the direct downcast
+/// remains.
+fn pane_find_frame<'a>(node: &'a dyn Pane, fid: FrameId) -> Option<&'a LayoutFrame> {
+    if let Some(any) = node.as_any() {
+        if let Some(frame) = any.downcast_ref::<LayoutFrame>() {
+            if frame.frame == fid {
+                return Some(frame);
+            }
+        } else if let Some(LayoutNode::Frame(frame)) =
+            any.downcast_ref::<LayoutNode>()
+        {
+            if frame.frame == fid {
+                return Some(frame);
+            }
+        }
+    }
+    let zero = Rect::default();
+    for (_, child) in node.children(zero) {
+        if let Some(found) = pane_find_frame(child, fid) {
+            return Some(found);
+        }
+    }
+    None
 }
