@@ -364,7 +364,7 @@ pub enum InputEvent {
         x: u16,
         y: u16,
         button: Option<MouseButton>,
-        kind: MouseKind,
+        press: MouseKind,
         modifiers: Modifiers,
     },
     Scroll {

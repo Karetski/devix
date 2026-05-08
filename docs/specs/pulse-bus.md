@@ -62,8 +62,8 @@ pub enum Pulse {
     FocusChanged     { from: Option<Path>, to: Option<Path> },
 
     // ---- Modal ----
-    ModalOpened      { kind: ModalKind, frame: Option<Path> },
-    ModalDismissed   { kind: ModalKind },
+    ModalOpened      { modal: ModalKind, frame: Option<Path> },
+    ModalDismissed   { modal: ModalKind },
 
     // ---- Commands ----
     CommandInvoked   { command: Path, source: InvocationSource },

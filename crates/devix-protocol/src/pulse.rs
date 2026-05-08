@@ -93,13 +93,11 @@ pub enum Pulse {
 
     // ---- Modal ----
     ModalOpened {
-        #[serde(rename = "modal")]
-        kind: ModalKind,
+        modal: ModalKind,
         frame: Option<Path>,
     },
     ModalDismissed {
-        #[serde(rename = "modal")]
-        kind: ModalKind,
+        modal: ModalKind,
     },
 
     // ---- Commands ----

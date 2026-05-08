@@ -20,8 +20,7 @@ pub enum InputEvent {
         x: u16,
         y: u16,
         button: Option<MouseButton>,
-        #[serde(rename = "press")]
-        kind: MouseKind,
+        press: MouseKind,
         modifiers: Modifiers,
     },
     Scroll {

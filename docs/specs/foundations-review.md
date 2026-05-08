@@ -426,6 +426,28 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-07 — Inner `kind` field renames to avoid serde tag
+  collision.** Locked during the post-Stage-3 interactive review.
+  Three pulse / input variants previously declared an inner field
+  literally named `kind`, colliding with the outer
+  `#[serde(tag = "kind")]` discriminant on the parent enum.
+  Resolution: rename the Rust field name itself rather than
+  `#[serde(rename)]`-only:
+  - `pulse-bus.md` — `Pulse::ModalOpened.kind: ModalKind` →
+    `Pulse::ModalOpened.modal: ModalKind`; same on
+    `Pulse::ModalDismissed`.
+  - `frontend.md` — `InputEvent::Mouse.kind: MouseKind` →
+    `InputEvent::Mouse.press: MouseKind`.
+
+  The lane payload variants (`ClientToCore::Request`,
+  `ClientToCore::Pulse`, `CoreToClient::Response`,
+  `CoreToClient::Error`, `PluginToCore::Pulse`,
+  `CoreToPlugin::Error`) were converted from tuple variants to
+  struct variants nesting the payload — Rust field names already
+  disambiguate (`request`, `pulse`, `response`, `error`); no spec
+  text renames needed there. Matching spec text amendments landed
+  in `docs/specs/pulse-bus.md` and `docs/specs/frontend.md`.
+
 - **2026-05-07 — Stage-3-gating open questions resolved.**
   Locked during the pre-Stage-3 interactive review:
   - `namespace.md` Q1 (lookup_mut): `Lookup` stays single-resource;
