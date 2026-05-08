@@ -1,6 +1,6 @@
 # Task T-56 — Migrate plugin callbacks onto namespace
 Stage: 5
-Status: pending
+Status: complete (Lookup consolidation deferred — see Scope adjustment)
 Depends on: T-30
 Blocks:     T-57, T-110, T-111
 
@@ -9,6 +9,22 @@ Per-plugin Lua callbacks live at `/plugin/<name>/cb/<u64>`. The
 existing per-plugin callback registry becomes a
 `Lookup<Resource = LuaCallback>` mounted under each plugin's
 namespace root.
+
+## Scope adjustment
+
+Full `Lookup<Resource = LuaCallback>` consolidation is deferred to
+T-110 / T-111 (per foundations-review amendment 2026-05-07). The
+plugin host's two callback-related maps (`callbacks: Arc<Mutex<
+HashMap<u64, RegistryKey>>>` and `pane_callbacks: Arc<Mutex<HashMap<
+u64, PaneCallbackKeys>>>`) are not actually two parallel registries —
+`pane_callbacks` is a per-pane *index* into the single `callbacks`
+registry. Implementing `Lookup` on the registry as-is fights the
+`Arc<Mutex<...>>` lifetime (the trait wants `&Resource`; locking
+the mutex doesn't outlive the lock). Storage redesign waits for
+manifest-driven plugin loading where the API becomes load-bearing.
+
+T-56 ships the namespace-level path encoding so producers and
+consumers agree on the wire form today.
 
 ## In scope
 - `PluginCallbacks: Lookup<Resource = LuaCallback>` per plugin.

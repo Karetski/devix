@@ -1240,6 +1240,51 @@ pub fn default_plugin_path() -> Option<PathBuf> {
     std::env::var_os("DEVIX_PLUGIN").map(PathBuf::from)
 }
 
+// -- Namespace path encoding (T-56) -----------------------------------------
+//
+// Plugin Lua callbacks are addressed at /plugin/<name>/cb/<u64> per
+// `docs/specs/namespace.md` § *Migration table*. T-56 ships the
+// canonical path encoding plus a decoder; the full
+// `Lookup<Resource = LuaCallback>` impl is deferred until T-110 /
+// T-111 (per the 2026-05-07 foundations-review amendment) when
+// manifest-driven plugin loading lands and storage consolidation
+// becomes load-bearing.
+
+use devix_protocol::path::Path as DevixPath;
+
+/// Encode a plugin callback handle as its canonical path
+/// `/plugin/<name>/cb/<u64>`. Returns `None` if `plugin_name`
+/// violates the segment grammar (e.g. uppercase, contains
+/// reserved chars).
+pub fn plugin_callback_path(plugin_name: &str, handle: u64) -> Option<DevixPath> {
+    DevixPath::parse("/plugin")
+        .ok()?
+        .join(plugin_name)
+        .ok()?
+        .join("cb")
+        .ok()?
+        .join(&handle.to_string())
+        .ok()
+}
+
+/// Decode a `/plugin/<name>/cb/<u64>` path into its plugin name +
+/// handle. Returns `None` for any other shape.
+pub fn handle_from_callback_path(path: &DevixPath) -> Option<(String, u64)> {
+    let mut segs = path.segments();
+    if segs.next()? != "plugin" {
+        return None;
+    }
+    let name = segs.next()?.to_string();
+    if segs.next()? != "cb" {
+        return None;
+    }
+    let handle: u64 = segs.next()?.parse().ok()?;
+    if segs.next().is_some() {
+        return None;
+    }
+    Some((name, handle))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1515,5 +1560,46 @@ mod tests {
             msgs.iter().any(|m| matches!(m, PluginMsg::OpenPath(p) if p == &PathBuf::from("/tmp/devix-test-target"))),
             "expected OpenPath message, got {msgs:?}",
         );
+    }
+}
+
+#[cfg(test)]
+mod namespace_tests {
+    use super::*;
+
+    #[test]
+    fn callback_path_round_trips() {
+        let p = plugin_callback_path("file-tree", 42).unwrap();
+        assert_eq!(p.as_str(), "/plugin/file-tree/cb/42");
+        let (name, handle) = handle_from_callback_path(&p).unwrap();
+        assert_eq!(name, "file-tree");
+        assert_eq!(handle, 42);
+    }
+
+    #[test]
+    fn callback_path_rejects_invalid_name() {
+        // Path grammar (namespace.md) accepts ASCII alphanumeric +
+        // `-`, `_`, `.`. Lowercase-only is a manifest.md plugin-name
+        // contract, not a path-grammar one — "FileTree" is a legal
+        // path segment even though the manifest validator would
+        // reject it as a plugin name.
+        assert!(plugin_callback_path("FileTree", 1).is_some());
+        // Reserved chars (whitespace, `:`) violate the path grammar.
+        assert!(plugin_callback_path("file tree", 1).is_none());
+        assert!(plugin_callback_path("file:tree", 1).is_none());
+        // Empty name fails.
+        assert!(plugin_callback_path("", 1).is_none());
+    }
+
+    #[test]
+    fn handle_from_callback_path_rejects_other_shapes() {
+        let p = devix_protocol::path::Path::parse("/buf/3").unwrap();
+        assert!(handle_from_callback_path(&p).is_none());
+        let p = devix_protocol::path::Path::parse("/plugin/x/foo/4").unwrap();
+        assert!(handle_from_callback_path(&p).is_none());
+        let p = devix_protocol::path::Path::parse("/plugin/x/cb/abc").unwrap();
+        assert!(handle_from_callback_path(&p).is_none());
+        let p = devix_protocol::path::Path::parse("/plugin/x/cb/4/extra").unwrap();
+        assert!(handle_from_callback_path(&p).is_none());
     }
 }
