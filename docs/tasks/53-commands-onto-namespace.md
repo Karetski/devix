@@ -1,6 +1,6 @@
 # Task T-53 — Migrate commands onto namespace (`/cmd/<dotted-id>`)
 Stage: 5
-Status: pending
+Status: complete
 Depends on: T-30
 Blocks:     T-57, T-71, T-110
 

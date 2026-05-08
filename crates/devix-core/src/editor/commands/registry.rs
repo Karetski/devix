@@ -13,10 +13,37 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use devix_protocol::Lookup;
+use devix_protocol::path::Path;
+
 use crate::editor::commands::cmd::EditorCommand;
 
+/// A command id. Wire form on paths is `/cmd/<dotted-id>` per
+/// `docs/specs/namespace.md` § *Migration table*; the dotted form
+/// (`edit.copy`, `palette.open`) is preserved as a single segment.
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
 pub struct CommandId(pub &'static str);
+
+impl CommandId {
+    /// Encode this id into its canonical path (`/cmd/<dotted-id>`).
+    pub fn to_path(self) -> Path {
+        Path::parse(&format!("/cmd/{}", self.0)).expect("/cmd/<dotted-id> is canonical")
+    }
+
+    /// Decode a `/cmd/<dotted-id>` path back into a command-id
+    /// segment slice. Returns `None` for any other shape.
+    pub fn segment_from_path(path: &Path) -> Option<&str> {
+        let mut segs = path.segments();
+        if segs.next()? != "cmd" {
+            return None;
+        }
+        let id_seg = segs.next()?;
+        if segs.next().is_some() {
+            return None;
+        }
+        Some(id_seg)
+    }
+}
 
 pub struct Command {
     pub id: CommandId,
@@ -68,6 +95,38 @@ impl CommandRegistry {
     }
 }
 
+impl Lookup for CommandRegistry {
+    type Resource = dyn EditorCommand;
+
+    fn lookup(&self, path: &Path) -> Option<&dyn EditorCommand> {
+        let segment = CommandId::segment_from_path(path)?;
+        // Look up by dotted-segment string. Iterate `by_id` since
+        // CommandId wraps `&'static str` (no fast borrow-as-str
+        // hashmap key path); v0 catalog is small enough that the
+        // linear scan is a non-issue.
+        for (id, cmd) in &self.by_id {
+            if id.0 == segment {
+                return Some(&*cmd.action);
+            }
+        }
+        None
+    }
+
+    /// Commands are stored as `Arc<dyn EditorCommand>` (so
+    /// `resolve` can hand out cheap clones), which means
+    /// `lookup_mut` cannot hand out an exclusive `&mut`. Per the
+    /// 2026-05-07 lookup_mut resolution, mutating ops on the
+    /// registry use direct API (`register`) rather than
+    /// `lookup_mut`. This impl always returns `None`.
+    fn lookup_mut(&mut self, _path: &Path) -> Option<&mut dyn EditorCommand> {
+        None
+    }
+
+    fn paths(&self) -> Box<dyn Iterator<Item = Path> + '_> {
+        Box::new(self.order.iter().map(|id| id.to_path()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,6 +144,38 @@ mod tests {
         assert_eq!(reg.len(), 1);
         assert!(reg.resolve(CommandId("editor.quit")).is_some());
         assert!(reg.resolve(CommandId("missing")).is_none());
+    }
+
+    #[test]
+    fn command_id_round_trips_through_path() {
+        let id = CommandId("edit.copy");
+        let path = id.to_path();
+        assert_eq!(path.as_str(), "/cmd/edit.copy");
+        assert_eq!(CommandId::segment_from_path(&path), Some("edit.copy"));
+        // Reject non-cmd roots.
+        let p = Path::parse("/buf/3").unwrap();
+        assert_eq!(CommandId::segment_from_path(&p), None);
+        // Reject extra segments.
+        let p = Path::parse("/cmd/a/b").unwrap();
+        assert_eq!(CommandId::segment_from_path(&p), None);
+    }
+
+    #[test]
+    fn registry_lookup_returns_action_via_path() {
+        let mut reg = CommandRegistry::new();
+        reg.register(Command {
+            id: CommandId("editor.quit"),
+            label: "Quit",
+            category: Some("App"),
+            action: Arc::new(Quit),
+        });
+        let p = Path::parse("/cmd/editor.quit").unwrap();
+        assert!(reg.lookup(&p).is_some());
+        assert!(reg.lookup(&Path::parse("/cmd/missing").unwrap()).is_none());
+        // lookup_mut is always None for the Arc-backed registry.
+        assert!(reg.lookup_mut(&p).is_none());
+        let paths: Vec<String> = reg.paths().map(|p| p.as_str().to_string()).collect();
+        assert_eq!(paths, vec!["/cmd/editor.quit"]);
     }
 
     #[test]
