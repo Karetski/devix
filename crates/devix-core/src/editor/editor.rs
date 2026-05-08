@@ -733,4 +733,94 @@ mod tests {
         // Root + two children, in pre-order.
         assert_eq!(paths, vec!["/pane", "/pane/0", "/pane/1"]);
     }
+
+    /// Helper: subscribe to every pulse on `bus` and dump captures
+    /// into the returned `Arc<Mutex<Vec<Pulse>>>`. Used by ops-pulse
+    /// tests (T-102).
+    fn capture_pulses(
+        bus: &crate::PulseBus,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<devix_protocol::pulse::Pulse>>> {
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let cap = captured.clone();
+        bus.subscribe(devix_protocol::pulse::PulseFilter::any(), move |p| {
+            cap.lock().unwrap().push(p.clone());
+        });
+        captured
+    }
+
+    #[test]
+    fn split_active_publishes_frame_split_pulse() {
+        use crate::Axis;
+        use devix_protocol::pulse::{Pulse, PulseKind};
+        let mut ws = Editor::open(None).unwrap();
+        let captured = capture_pulses(&ws.bus);
+        ws.split_active(Axis::Horizontal);
+        let pulses = captured.lock().unwrap();
+        let split = pulses
+            .iter()
+            .find(|p| p.kind() == PulseKind::FrameSplit)
+            .expect("FrameSplit pulse fired");
+        if let Pulse::FrameSplit { source, new, .. } = split {
+            assert_eq!(source.as_str(), "/pane");
+            assert_eq!(new.as_str(), "/pane/1");
+        }
+    }
+
+    #[test]
+    fn close_active_frame_publishes_frame_closed_pulse() {
+        use crate::Axis;
+        use devix_protocol::pulse::{Pulse, PulseKind};
+        let mut ws = Editor::open(None).unwrap();
+        ws.split_active(Axis::Horizontal);
+        let captured = capture_pulses(&ws.bus);
+        ws.close_active_frame();
+        let pulses = captured.lock().unwrap();
+        let closed = pulses
+            .iter()
+            .find(|p| p.kind() == PulseKind::FrameClosed)
+            .expect("FrameClosed pulse fired");
+        if let Pulse::FrameClosed { frame } = closed {
+            assert_eq!(frame.as_str(), "/pane/1");
+        }
+    }
+
+    #[test]
+    fn toggle_sidebar_publishes_sidebar_toggled_pulse() {
+        use devix_protocol::pulse::{Pulse, PulseKind};
+        let mut ws = Editor::open(None).unwrap();
+        let captured = capture_pulses(&ws.bus);
+        ws.toggle_sidebar(SidebarSlot::Left);
+        ws.toggle_sidebar(SidebarSlot::Left);
+        let pulses = captured.lock().unwrap();
+        let events: Vec<bool> = pulses
+            .iter()
+            .filter_map(|p| match p {
+                Pulse::SidebarToggled { open, .. } => Some(*open),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(events, vec![true, false], "open then close");
+        let count = pulses
+            .iter()
+            .filter(|p| p.kind() == PulseKind::SidebarToggled)
+            .count();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn focus_dir_publishes_focus_changed_pulse_only_on_change() {
+        use crate::{Axis, Direction};
+        use devix_protocol::pulse::PulseKind;
+        let mut ws = Editor::open(None).unwrap();
+        ws.split_active(Axis::Horizontal);
+        let captured = capture_pulses(&ws.bus);
+        ws.focus_dir(Direction::Left);
+        ws.focus_dir(Direction::Left); // already at the leftmost — no change
+        let pulses = captured.lock().unwrap();
+        let count = pulses
+            .iter()
+            .filter(|p| p.kind() == PulseKind::FocusChanged)
+            .count();
+        assert_eq!(count, 1, "FocusChanged fires once for the real transition");
+    }
 }

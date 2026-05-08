@@ -9,6 +9,8 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use crate::Pane;
+use devix_protocol::path::Path;
+use devix_protocol::pulse::Pulse;
 
 use crate::editor::document::{DocId, Document};
 use crate::editor::frame::mint_id;
@@ -17,6 +19,22 @@ use crate::editor::tree::{LayoutFrame, LayoutNode, LayoutSidebar, LayoutSplit};
 use crate::editor::cursor::{Cursor, CursorId, ScrollMode};
 
 use super::{Editor, LeafRef, canonicalize_or_keep};
+
+fn pane_path(indices: &[usize]) -> Path {
+    let mut s = String::from("/pane");
+    for i in indices {
+        s.push('/');
+        s.push_str(&i.to_string());
+    }
+    Path::parse(&s).expect("/pane(/<i>)* is canonical")
+}
+
+fn axis_to_protocol(axis: Axis) -> devix_protocol::view::Axis {
+    match axis {
+        Axis::Horizontal => devix_protocol::view::Axis::Horizontal,
+        Axis::Vertical => devix_protocol::view::Axis::Vertical,
+    }
+}
 
 impl Editor {
     /// Open a fresh empty buffer in a new tab on the active frame.
@@ -124,6 +142,7 @@ impl Editor {
         let Some(fid) = self.active_frame() else { return };
         let path = self.focus.as_vec();
         if path.is_empty() { return; } // root is a single Frame; same as len==1
+        let frame_path = pane_path(&path);
 
         // Snapshot the dying frame's tabs *before* the structural mutation
         // drops the LayoutFrame.
@@ -142,6 +161,7 @@ impl Editor {
             self.cursors.remove(cid);
             self.try_remove_orphan_doc(did);
         }
+        self.bus.publish(Pulse::FrameClosed { frame: frame_path });
         // Re-anchor focus to the first remaining frame, deepest path.
         let new_focus = first_frame_path(self.panes.root());
         self.set_focus(new_focus);
@@ -188,11 +208,18 @@ impl Editor {
                 (LayoutNode::Frame(LayoutFrame::with_cursor(new_frame_id, new_cursor_id)), 1),
             ],
         });
+        let source_path = pane_path(&focus_path);
         if !self.panes.replace_at(&focus_path, new_split) {
             return;
         }
         let mut new_focus = focus_path;
         new_focus.push(1);
+        let new_pane_path = pane_path(&new_focus);
+        self.bus.publish(Pulse::FrameSplit {
+            source: source_path,
+            new: new_pane_path,
+            axis: axis_to_protocol(axis),
+        });
         self.set_focus(new_focus);
     }
 
@@ -227,13 +254,15 @@ impl Editor {
             .children
             .iter()
             .position(|(c, _)| matches!(c, LayoutNode::Sidebar(s) if s.slot == slot));
-        if let Some(i) = existing {
+        let (slot_path, opened) = if let Some(i) = existing {
+            let path = pane_path(&[i]);
             split.children.remove(i);
             self.focus.transform(|p| {
                 if let Some(top) = p.first_mut() {
                     if *top >= i && *top > 0 { *top -= 1; }
                 }
             });
+            (path, false)
         } else {
             let insert_at = match slot {
                 SidebarSlot::Left => 0,
@@ -248,7 +277,12 @@ impl Editor {
                     if *top >= insert_at { *top += 1; }
                 }
             });
-        }
+            (pane_path(&[insert_at]), true)
+        };
+        self.bus.publish(Pulse::SidebarToggled {
+            slot: slot_path,
+            open: opened,
+        });
     }
 
     /// If no surviving cursor references `did`, drop the document and
