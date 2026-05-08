@@ -426,6 +426,31 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-07 — Stage 6 scope re-allocation.** Original T-60 spec
+  said "Replace every existing EventSink::pulse / DiskSink::push /
+  MsgSink::send / Wakeup::request call site with PulseBus.publish*"
+  in one task. Doing all four producer paths plus the consumer-side
+  subscriber wiring in one atomic commit risks long-lived broken
+  state on the branch. Re-allocated:
+
+  - **T-60**: land the bus on `Editor` and drain it per tick in
+    `Application::run`. Add a dormant
+    `install_bus_watcher_for_doc(bus)` shape ready for the disk
+    producer to switch onto. No producer rewires yet — the
+    closure-based `EventSink` / `DiskSink` / `MsgSink` / `Wakeup`
+    paths still drive the runtime.
+  - **T-61**: migrate the disk-watcher producer
+    (`Pulse::DiskChanged`) plus its subscriber. Retire the
+    `DiskSink` callback type.
+  - **T-62**: migrate frontend-originated pulses (input,
+    viewport) and the plugin MsgSink (`PluginMsg` →
+    `Pulse::Plugin*` / `RenderDirty`).
+  - **T-63**: drop `Effect` / `EventSink` / `Wakeup`. Stage-6
+    regression gate.
+
+  End-of-Stage-6 state matches the original spec; only the
+  per-task boundary moves.
+
 - **2026-05-07 — T-56 plugin-callback Lookup deferred.** T-56
   ships path encoding/decoding helpers for `/plugin/<name>/cb/<u64>`
   but defers the full `Lookup<Resource = LuaCallback>` impl to
