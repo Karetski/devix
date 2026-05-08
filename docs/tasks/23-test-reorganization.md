@@ -1,6 +1,6 @@
 # Task T-23 — Test suite reorganization onto new crate layout
 Stage: 2
-Status: pending
+Status: complete
 Depends on: T-13
 Blocks:     T-31 (pulse bus tests need home), T-50
 
