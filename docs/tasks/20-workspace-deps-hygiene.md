@@ -1,6 +1,6 @@
 # Task T-20 — Workspace dependency hygiene
 Stage: 2
-Status: pending
+Status: complete
 Depends on: T-13
 Blocks:     T-30 (foundation skeletons need clean dep set)
 

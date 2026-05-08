@@ -18,4 +18,4 @@ crossterm.workspace = true
 ratatui.workspace = true
 devix-protocol.workspace = true
 devix-core.workspace = true
-arboard = { version = "3.4", default-features = false }
+arboard = { workspace = true }
