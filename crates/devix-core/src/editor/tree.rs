@@ -316,35 +316,9 @@ impl LayoutNode {
         if go(self, target, &mut p) { Some(p) } else { None }
     }
 
-    /// Render this node into `area`. `LayoutCtx` carries the editor
-    /// borrows leaves need (documents, cursors, theme, focus). No TLS,
-    /// no smuggling.
-    pub fn render(&self, area: Rect, frame: &mut Frame<'_>, ctx: &LayoutCtx<'_>) {
-        match self {
-            LayoutNode::Split(_) => {
-                for (rect, child) in self.children_at(area) {
-                    child.render(rect, frame, ctx);
-                }
-            }
-            LayoutNode::Frame(f) => render_frame(f, area, frame, ctx),
-            LayoutNode::Sidebar(s) => render_sidebar(s, area, frame, ctx),
-        }
-    }
-
-    /// Dispatch an input event to this node. The dispatcher resolves
-    /// the focused leaf (or the leaf under the mouse) and calls this on
-    /// the resulting `&mut LayoutNode`. Splits and frames don't yet
-    /// consume input directly — frames respond to chord-driven commands
-    /// dispatched by the keymap, not to handler walks.
-    pub fn handle_at(&mut self, ev: &Event, area: Rect, hctx: &mut HandleCtx<'_>) -> Outcome {
-        match self {
-            LayoutNode::Split(_) | LayoutNode::Frame(_) => Outcome::Ignored,
-            LayoutNode::Sidebar(s) => match s.content.as_mut() {
-                Some(content) => content.handle(ev, sidebar_inner_rect(area), hctx),
-                None => Outcome::Ignored,
-            },
-        }
-    }
+    // T-91 phase 2: the inherent `render` and `handle_at` methods
+    // retired — both go through `Pane::render` / `Pane::handle` now,
+    // delegating to the per-variant Pane impls.
 }
 
 // ---- Per-variant Pane impls (T-91 phase 2 prep) -------------------
