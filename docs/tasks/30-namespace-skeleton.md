@@ -1,6 +1,6 @@
 # Task T-30 — Namespace skeleton (`Path`, `PathError`, `Lookup`)
 Stage: 3
-Status: pending
+Status: complete
 Depends on: T-13, T-21
 Blocks:     T-50, T-51, T-52, T-53, T-54, T-55, T-56, T-57
 

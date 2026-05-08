@@ -33,6 +33,8 @@ pub mod protocol;
 pub mod pulse;
 pub mod view;
 
+pub use path::{Lookup, Path, PathError};
+
 /// `HighlightSpan` is defined in `devix-syntax`; re-exported here so
 /// consumers of the View IR (`view::View::Buffer.highlights`) reach for one
 /// import path.

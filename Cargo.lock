@@ -227,6 +227,8 @@ name = "devix-protocol"
 version = "0.1.0"
 dependencies = [
  "devix-syntax",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
