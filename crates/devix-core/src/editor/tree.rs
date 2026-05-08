@@ -161,6 +161,25 @@ impl LayoutNode {
         }
     }
 
+    /// Mutable counterpart of [`Self::children_at`].
+    pub fn children_at_mut(&mut self, area: Rect) -> Vec<(Rect, &mut LayoutNode)> {
+        match self {
+            LayoutNode::Split(s) => {
+                if s.children.is_empty() {
+                    return Vec::new();
+                }
+                let weights: Vec<u16> = s.children.iter().map(|(_, w)| *w).collect();
+                let rects = split_rects(area, s.axis, &weights);
+                s.children
+                    .iter_mut()
+                    .zip(rects)
+                    .map(|((child, _), rect)| (rect, child))
+                    .collect()
+            }
+            LayoutNode::Frame(_) | LayoutNode::Sidebar(_) => Vec::new(),
+        }
+    }
+
     /// Resolve a path of `Split.children` indices to the target node.
     pub fn at_path(&self, path: &[usize]) -> Option<&LayoutNode> {
         let mut cur = self;
@@ -355,6 +374,13 @@ impl Pane for LayoutNode {
         self.children_at(area)
             .into_iter()
             .map(|(r, child)| (r, child as &dyn Pane))
+            .collect()
+    }
+
+    fn children_mut(&mut self, area: Rect) -> Vec<(Rect, &mut dyn Pane)> {
+        self.children_at_mut(area)
+            .into_iter()
+            .map(|(r, child)| (r, child as &mut dyn Pane))
             .collect()
     }
 

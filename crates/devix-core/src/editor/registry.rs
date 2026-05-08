@@ -120,12 +120,20 @@ impl PaneRegistry {
     }
 
     /// Pre-order enumeration of every reachable pane path. `/pane` is
-    /// the root; each `Split` adds child indices.
+    /// the root; each composite (today: `LayoutSplit`; future: any
+    /// `Pane` with non-empty `children`) adds child indices.
+    /// Walks via `Pane::children` so the helper stays generic over
+    /// the pane kind — phase 2 of T-91 will introduce additional
+    /// composite Pane impls and they'll plug in here without code
+    /// changes.
     pub fn pane_paths(&self) -> Vec<devix_protocol::path::Path> {
         let mut out = Vec::new();
         let root_path =
             devix_protocol::path::Path::parse("/pane").expect("/pane is canonical");
-        walk_pane_paths(self.as_layout(), root_path, &mut out);
+        // The pane-path encoding doesn't depend on rect math; pass
+        // a zero rect — the walk only consults the children indices.
+        let zero = Rect::default();
+        walk_pane_paths_via_trait(self.root.as_ref(), zero, root_path, &mut out);
         out
     }
 
@@ -176,17 +184,19 @@ fn pane_path_indices(path: &devix_protocol::path::Path) -> Option<Vec<usize>> {
         .collect::<Option<Vec<_>>>()
 }
 
-fn walk_pane_paths(
-    node: &LayoutNode,
+/// Pane-trait-driven version of the pane-path walker (T-91 phase 2
+/// prep). Generic over the concrete `Pane` impl — any composite that
+/// returns children via `Pane::children` plugs in.
+fn walk_pane_paths_via_trait(
+    node: &dyn Pane,
+    area: Rect,
     here: devix_protocol::path::Path,
     out: &mut Vec<devix_protocol::path::Path>,
 ) {
     out.push(here.clone());
-    if let LayoutNode::Split(s) = node {
-        for (idx, (child, _)) in s.children.iter().enumerate() {
-            if let Ok(child_path) = here.join(&idx.to_string()) {
-                walk_pane_paths(child, child_path, out);
-            }
+    for (idx, (rect, child)) in node.children(area).into_iter().enumerate() {
+        if let Ok(child_path) = here.join(&idx.to_string()) {
+            walk_pane_paths_via_trait(child, rect, child_path, out);
         }
     }
 }

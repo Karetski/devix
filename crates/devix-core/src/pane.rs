@@ -109,6 +109,17 @@ pub trait Pane {
         Vec::new()
     }
 
+    /// Mutable counterpart of [`Self::children`]. Same shape, same
+    /// rect math, but yields `&mut dyn Pane` so mutate helpers
+    /// (T-91 phase 2: tree-mutation ops like `replace_at`,
+    /// `remove_at`, `collapse_singletons`,
+    /// `lift_into_horizontal_split`) can walk and rewrite the tree
+    /// without downcasting to a concrete composite struct. Default:
+    /// no children.
+    fn children_mut(&mut self, _area: Rect) -> Vec<(Rect, &mut dyn Pane)> {
+        Vec::new()
+    }
+
     /// Does this Pane accept focus? Layout containers (`SplitPane`)
     /// return false; leaves that take input (`EditorPane`, `SidebarPane`)
     /// return true. Used by the framework's focus-traversal walker to
