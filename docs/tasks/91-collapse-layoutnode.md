@@ -63,30 +63,46 @@ closed enum at the layout root.
   the enum kind.
 - **`Pane::children_mut`** added (default empty). Sets up the
   mutate-helper rewrite that comes next.
-- **`PaneRegistry::pane_paths`** rewritten to walk via
-  `Pane::children` rather than pattern-matching on
-  `LayoutNode::Split` — generic over the concrete composite.
+- **`PaneRegistry` methods migrated to Pane-trait walks**:
+  `pane_paths`, `find_frame`, `find_frame_mut`, `find_sidebar_mut`,
+  `sidebar_present`, `frames`, `leaves_with_rects`,
+  `path_to_leaf`. Each walks via `Pane::children` /
+  `children_mut` and downcasts at each node to the appropriate
+  variant struct or to `LayoutNode`'s wrapping variant
+  (transitional dual-downcast — once the enum is retired only the
+  direct downcast remains).
+- **Mutable walks** resolve the borrow-checker conflict (consecutive
+  `downcast_mut` calls on the same `Any`) by computing a
+  `SelfMatchVariant` enum from an immutable read first, then taking
+  exactly one mutable downcast in the matched arm.
 - **Three new tests** assert per-variant Pane behavior:
   weighted-rect children for `LayoutSplit`, focusable-leaf no-children
   for `LayoutFrame`, empty-slot Pane shape for `LayoutSidebar`.
 
 ## Phase-2 work still deferred (its own sprint)
 - Change `LayoutSplit.children` from `Vec<(LayoutNode, u16)>` to
-  `Vec<(Box<dyn Pane>, u16)>` so the structural tree can hold
-  arbitrary Pane impls (not just the three variants).
+  `Vec<(Box<dyn Pane>, u16)>`. Attempted in this session — the
+  cascade through `LayoutNode::children_at` /
+  `children_at_mut` (which return `Vec<(Rect, &LayoutNode)>` today),
+  every `LayoutNode` walk method (`find_frame`, `at_path`, etc. —
+  most now have Pane-trait alternatives, but the originals still
+  exist), the `mutate::*` helpers, and the constructor sites in
+  `editor/ops.rs` proved wider than fit cleanly into this session's
+  remaining context. Reverted; left for the next sprint.
+- Migrate the remaining `LayoutNode`-typed-return registry methods
+  (`at_path`, `at_path_mut`, `at_path_with_rect`, `pane_at`,
+  `pane_at_mut`, `pane_at_xy`) to either return `&dyn Pane` or
+  keep typed via a defensive downcast.
 - Rewrite the `mutate::{replace_at, remove_at, collapse_singletons,
   lift_into_horizontal_split}` helpers to walk via
-  `Pane::children_mut` + downcast on the composite.
-- Hoist the LayoutNode methods (`find_frame`, `at_path`,
-  `frames`, `leaves_with_rects`, `path_to_leaf`,
-  `sidebar_present`, `find_sidebar_mut`, etc.) into `PaneRegistry`
-  helper functions that walk `Box<dyn Pane>` via `Pane::children` +
-  downcast.
+  `Pane::children_mut` + downcast on the composite. Accept
+  `Box<dyn Pane>` for the `new` argument so non-LayoutNode panes
+  can be inserted.
 - Re-wire `editor::{focus, hittest, ops, view}` and the editor.rs
   test bodies to walk through `PaneRegistry` instead of pattern-
   matching on `LayoutNode`.
 - Delete the `LayoutNode` enum, the `mutate` module, and the
-  `LayoutCtx`-flavored render path.
+  `LayoutNode`-typed `render` / `handle_at` methods.
 - T-92 / T-94 / T-95 still gate on this completion.
 
 ## Spec references
