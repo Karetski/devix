@@ -1,6 +1,6 @@
 # Task T-91 — Collapse LayoutNode into a single Pane tree
 Stage: 9
-Status: partial (phase 1) — Editor.panes.root: Box<dyn Pane>; LayoutNode still concrete; carve into per-variant Pane structs deferred to phase 2
+Status: partial (phase 2 in flight) — Editor.panes.root: Box<dyn Pane>; per-variant Pane impls done; enum removal + mutate-helper carve deferred
 Depends on: T-52, T-90
 Blocks:     T-92, T-94, T-95
 
@@ -55,16 +55,39 @@ closed enum at the layout root.
   recovering `&LayoutNode` through `Pane::as_any` →
   `downcast_ref::<LayoutNode>`. Tests + ops continue to pattern-match
   on `editor.panes.root()`.
-- *Phase 2 deferred* (its own sprint): carve `LayoutSplit` /
-  `LayoutFrame` / `LayoutSidebar` into standalone `SplitPane` /
-  `FramePane` / `SidebarLayoutPane` Pane impls; rewrite
-  `mutate::{replace_at, remove_at, collapse_singletons,
-  lift_into_horizontal_split}` as Pane-tree mutations
-  (probably via a new `Pane::children_mut` trait method or
-  through downcast); delete the `LayoutNode` enum and its
-  match-based methods; re-wire `editor::{focus, hittest, ops,
-  view}` to use Pane-tree walks instead of typed downcasts.
-- T-92 / T-94 / T-95 still gate on phase 2.
+## Notes (2026-05-08) — phase 2 partial progress
+- **Per-variant Pane impls** landed: `LayoutSplit`, `LayoutFrame`,
+  `LayoutSidebar` each impl `Pane` directly. `LayoutNode`'s `Pane`
+  impl now delegates to the variant via match. Walks via
+  `Pane::children` resolve to the variant's logic without consulting
+  the enum kind.
+- **`Pane::children_mut`** added (default empty). Sets up the
+  mutate-helper rewrite that comes next.
+- **`PaneRegistry::pane_paths`** rewritten to walk via
+  `Pane::children` rather than pattern-matching on
+  `LayoutNode::Split` — generic over the concrete composite.
+- **Three new tests** assert per-variant Pane behavior:
+  weighted-rect children for `LayoutSplit`, focusable-leaf no-children
+  for `LayoutFrame`, empty-slot Pane shape for `LayoutSidebar`.
+
+## Phase-2 work still deferred (its own sprint)
+- Change `LayoutSplit.children` from `Vec<(LayoutNode, u16)>` to
+  `Vec<(Box<dyn Pane>, u16)>` so the structural tree can hold
+  arbitrary Pane impls (not just the three variants).
+- Rewrite the `mutate::{replace_at, remove_at, collapse_singletons,
+  lift_into_horizontal_split}` helpers to walk via
+  `Pane::children_mut` + downcast on the composite.
+- Hoist the LayoutNode methods (`find_frame`, `at_path`,
+  `frames`, `leaves_with_rects`, `path_to_leaf`,
+  `sidebar_present`, `find_sidebar_mut`, etc.) into `PaneRegistry`
+  helper functions that walk `Box<dyn Pane>` via `Pane::children` +
+  downcast.
+- Re-wire `editor::{focus, hittest, ops, view}` and the editor.rs
+  test bodies to walk through `PaneRegistry` instead of pattern-
+  matching on `LayoutNode`.
+- Delete the `LayoutNode` enum, the `mutate` module, and the
+  `LayoutCtx`-flavored render path.
+- T-92 / T-94 / T-95 still gate on this completion.
 
 ## Spec references
 - `docs/principles.md` — *MLIR — extend one primitive*.
