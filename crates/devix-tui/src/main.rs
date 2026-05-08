@@ -32,14 +32,27 @@ fn main() -> Result<()> {
 
     let mut plugin_runtime = match default_plugin_path() {
         Some(p) => {
-            let msg_sink: MsgSink = {
-                let sink = sink.clone();
-                Arc::new(move |msg| {
-                    let _ = sink.pulse(move |ctx: &mut AppContext<'_>| {
+            // Plugin → editor messages: PaneChanged migrates to the
+            // bus as Pulse::RenderDirty (T-62 slice); Status is a
+            // no-op today; OpenPath still routes through the closure
+            // path because it requires invoking a typed command (the
+            // command-invocation pulse mapping lands when plugin
+            // contributions go through the protocol layer, T-110+).
+            let sink_for_msgs = sink.clone();
+            let bus = editor.bus.clone();
+            let msg_sink: MsgSink = Arc::new(move |msg| match msg {
+                PluginMsg::PaneChanged => {
+                    bus.publish_async(devix_protocol::pulse::Pulse::RenderDirty {
+                        reason: devix_protocol::pulse::DirtyReason::Frontend,
+                    });
+                }
+                PluginMsg::Status(_) => {}
+                PluginMsg::OpenPath(_) => {
+                    let _ = sink_for_msgs.pulse(move |ctx: &mut AppContext<'_>| {
                         handle_plugin_msg(ctx, msg)
                     });
-                })
-            };
+                }
+            });
             PluginRuntime::load_with_sink(&p, msg_sink).ok()
         }
         None => None,

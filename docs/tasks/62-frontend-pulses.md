@@ -1,6 +1,6 @@
 # Task T-62 — Frontend-originated pulses (`InputReceived`, `ViewportChanged`)
 Stage: 6
-Status: pending
+Status: partial (PluginMsg::PaneChanged migrated; input thread + OpenPath defer to Stage-6 follow-up)
 Depends on: T-42, T-44, T-60
 Blocks:     T-63
 

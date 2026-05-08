@@ -178,9 +178,12 @@ impl<B: Backend> Application<B> {
                         eprintln!("disk-changed handler panicked; dropping");
                     }
                 }
-                // Other variants land in T-62 / T-63 as more
-                // producers migrate. Unhandled pulses fall back to
-                // bus subscribers via `drain` immediately after.
+                Pulse::RenderDirty { .. } => {
+                    self.dirty = true;
+                }
+                // Other variants land in T-63 as more producers
+                // migrate. Unhandled pulses fall back to bus
+                // subscribers via `drain` immediately after.
                 _ => {
                     // Re-enqueue so bus subscribers see it. Cheap —
                     // round-trips through the cross-thread queue.
