@@ -17,6 +17,7 @@ use devix_core::manifest_loader::{
     apply_keymap_overrides, discover_plugin_manifests, keymap_overrides_path, load_manifest,
     parse_manifest_bytes, plugin_dir,
 };
+use devix_core::settings_store::settings_overrides_path;
 use devix_core::{MsgSink, PluginMsg, PluginRuntime, default_plugin_path};
 
 fn main() -> Result<()> {
@@ -26,15 +27,17 @@ fn main() -> Result<()> {
     let (sink, rx) = EventSink::channel();
 
     let mut editor = Editor::open(path)?;
-    // Seed the editor's theme store from the embedded built-in
-    // manifest, then activate the "default" theme. T-112 made theme
-    // state live on `Editor`; runtime theme switches go through
-    // `editor.set_theme(id)` from then on.
+    // Seed the editor's theme + settings stores from the embedded
+    // built-in manifest. Activate the "default" theme so
+    // `editor.theme` reflects manifest-declared scope styles before
+    // the first render. T-112 (theme) + T-113 (settings) made these
+    // stores live on `Editor`.
     if let Ok(builtin) = parse_manifest_bytes(
         devix_core::BUILTIN_MANIFEST.as_bytes(),
         std::path::Path::new("<builtin>"),
     ) {
         editor.theme_store.register_from_manifest(&builtin);
+        editor.settings_store.register_from_manifest(&builtin);
     }
     let _ = editor.set_theme("default");
     // Disk-watch events flow as Pulse::DiskChanged on the editor's
@@ -168,17 +171,30 @@ fn main() -> Result<()> {
         }
     }
 
-    // Plugin manifests can also contribute themes; register them so
-    // `editor.set_theme(id)` can later activate any of them.
+    // Plugin manifests can also contribute themes + settings;
+    // register them so `editor.set_theme(id)` and the settings store
+    // see plugin-declared keys.
     if let Some(dir) = plugin_dir() {
         if let Ok(manifests) = discover_plugin_manifests(&dir) {
             for manifest_path in manifests {
                 if let Ok(m) = load_manifest(&manifest_path) {
                     editor.theme_store.register_from_manifest(&m);
+                    editor.settings_store.register_from_manifest(&m);
                 }
             }
         }
     }
+
+    // Apply user settings overrides from
+    // `$XDG_CONFIG_HOME/devix/settings.json` if present. Type
+    // mismatches and out-of-list enum values surface to stderr; the
+    // rest of the file's keys still apply.
+    if let Some(p) = settings_overrides_path() {
+        if let Err(e) = editor.settings_store.apply_overrides_from_file(&p) {
+            eprintln!("devix: settings overrides ignored ({}): {e}", p.display());
+        }
+    }
+
     let clipboard = clipboard::init();
 
     let mut app = Application::new(editor, commands, keymap, clipboard, sink, rx)?;

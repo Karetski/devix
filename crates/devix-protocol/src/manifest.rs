@@ -126,6 +126,23 @@ pub enum SettingSpec {
     },
 }
 
+/// Resolved typed value for one setting. Mirrors `SettingSpec`'s
+/// shape. v0 is intentionally flat — no nested objects, per
+/// `manifest.md` Q2 lock. Lives in `devix-protocol` so the wire
+/// shape on `Pulse::SettingChanged` matches the in-memory value
+/// `devix-core::SettingsStore` keeps.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", content = "value")]
+pub enum SettingValue {
+    Boolean(bool),
+    String(String),
+    Number(f64),
+    /// Enum value: a string drawn from the spec's `values` list. The
+    /// admissible-list check is the store's responsibility — the
+    /// wire form just carries the chosen value.
+    EnumString(String),
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct SubscriptionSpec {
     #[serde(flatten)]

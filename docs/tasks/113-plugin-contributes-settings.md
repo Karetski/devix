@@ -1,6 +1,6 @@
 # Task T-113 — Plugin contributes settings via manifest + Lua API
 Stage: 11
-Status: partial — store + manifest registration + override file landed; Lua bridge deferred
+Status: partial — store, set/get, Pulse::SettingChanged, manifest seed, override file landed; Lua bridge gated on T-81 full
 Depends on: T-110, T-111, T-112
 Blocks:     all of Stage 12+
 
@@ -50,14 +50,25 @@ boolean/string/number/enum (locked per `manifest.md` Q2).
 - Tests cover register-defaults, enum-with-values, first-wins,
   apply-typed-values, type-mismatch-errors, enum-out-of-range-errors,
   and missing-file-is-silent. Seven tests, all green.
-- *Deferred from full T-113 spec*: the `devix.setting(key)` Lua API
-  bridge. Adding it threads `Arc<Mutex<SettingsStore>>` through
-  `PluginHost::new` → `PluginRuntime::load*` and registers a
-  `devix.set("setting", ...)` closure inside `install_devix_table`.
-  That work belongs alongside the T-81 follow-up (where
-  `PluginHost`'s constructor signature is also being touched). The
-  storage is in place and exercisable from Rust today; the Lua
-  surface lights up in the next plugin-runtime sprint.
+- **2026-05-08 follow-up.** `SettingValue` moved from
+  `devix-core::settings_store` to `devix-protocol::manifest` so the
+  pulse wire form matches the in-memory value. Pulse catalog gains
+  `Pulse::SettingChanged { setting: Path, value: SettingValue }`
+  (minor pulse-bus.md bump). `SettingsStore::set(key, value, &bus)`
+  mutates + publishes; rejects unknown keys, type mismatches, and
+  out-of-list enum values without modifying state.
+  `SettingsStore` lives on `Editor` (parallel to `theme_store`);
+  `main.rs` seeds it from `BUILTIN_MANIFEST` + every discovered
+  plugin manifest, then applies overrides from
+  `$XDG_CONFIG_HOME/devix/settings.json`.
+- *Still deferred*: the `devix.setting(key)` /
+  `devix.on_setting_changed(callback)` Lua bridges. Wiring them
+  threads `Arc<Mutex<SettingsStore>>` through `PluginHost::new` and
+  installs the closures inside `install_devix_table` — same
+  constructor surface T-81 full's module reorg is touching. The
+  protocol-side wire form (`SettingValue` in `devix-protocol`,
+  `Pulse::SettingChanged` in the catalog) is in place so the bridge
+  can light up cleanly when T-81 lands.
 
 ## Spec references
 - `docs/specs/manifest.md` — *contributes.settings*, *Open Q2*.

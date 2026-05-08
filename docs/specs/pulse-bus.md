@@ -76,6 +76,9 @@ pub enum Pulse {
     // ---- Theme ----
     ThemeChanged     { theme: Path, palette: ThemePalette },
 
+    // ---- Settings ----
+    SettingChanged   { setting: Path, value: SettingValue },
+
     // ---- Render coordination ----
     RenderDirty      { reason: DirtyReason },
 

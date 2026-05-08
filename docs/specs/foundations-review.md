@@ -426,6 +426,41 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-08 — Stage-11 partial: T-112 ships; T-113 infra ships
+  (Lua bridge gated on T-81 full).**
+
+  **T-112.** `Editor` gains `theme: Theme` + `active_theme_id:
+  Option<String>` + `theme_store: ThemeStore`. `Editor::set_theme(id)`
+  activates a registered theme (publishes `Pulse::ThemeChanged`) and
+  swaps `self.theme`. `Application` no longer carries a theme field
+  — `LayoutCtx`, modal paint, palette paint all read `&editor.theme`.
+  `cmd::SetTheme(id)` and `cmd::CycleTheme` expose the runtime
+  switch; the built-in manifest registers `theme.cycle` so users get
+  a keyboard-reachable theme cycle. `main.rs` seeds
+  `editor.theme_store` from `BUILTIN_MANIFEST` + every discovered
+  plugin manifest, then activates `default` before the application
+  loop starts.
+
+  **T-113 infrastructure.** Pulse catalog gains
+  `Pulse::SettingChanged { setting: Path, value: SettingValue }`
+  (minor pulse-bus.md bump). `SettingValue` moved to
+  `devix-protocol::manifest` so the wire form on the pulse matches
+  the in-memory shape the store keeps. `SettingsStore::set(key,
+  value, &bus)` mutates + publishes; rejects unknown keys, type
+  mismatches, and out-of-list enum values without modifying state.
+  `Editor` carries `settings_store: SettingsStore` (parallel to
+  `theme_store`). `main.rs` seeds it from manifest declarations and
+  applies user overrides from
+  `$XDG_CONFIG_HOME/devix/settings.json`.
+
+  *Deferred from T-113 spec*: the Lua bridge
+  (`devix.setting(key)` / `devix.on_setting_changed(callback)`)
+  threads through `PluginHost::new` per `crates.md` and
+  `manifest.md`; that wiring is gated on T-81 full's plugin host
+  module reorg + `Arc<Mutex<…>>` topology. The infrastructure is in
+  place — store on Editor, pulse on the catalog, set/get APIs ready
+  — once T-81 lands, the bridge wires up.
+
 - **2026-05-08 — Stage-9 close (T-92 + T-94 ship; T-95 deferred).**
 
   **T-92 — full carve.** `Editor.render_cache` field retired. The

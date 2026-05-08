@@ -29,6 +29,7 @@ use crate::editor::registry::PaneRegistry;
 use crate::editor::tree::frame_pane;
 #[cfg(test)]
 use crate::editor::tree::{LayoutFrame, LayoutSplit};
+use crate::settings_store::SettingsStore;
 use crate::theme::Theme;
 use crate::theme_store::{self, ThemeStore};
 
@@ -116,6 +117,13 @@ pub struct Editor {
     /// theme id. T-112 introduces it on `Editor` so runtime theme
     /// switching has a stable home.
     pub theme_store: ThemeStore,
+    /// Settings registry. Holds the resolved typed value for every
+    /// `contributes.settings` declaration (built-in + plugin), plus
+    /// any user-applied overrides. T-113 introduces it on `Editor`
+    /// so command paths and plugin runtimes can read + mutate
+    /// through one source of truth; mutations publish
+    /// `Pulse::SettingChanged`.
+    pub settings_store: SettingsStore,
 }
 
 impl Editor {
@@ -156,6 +164,7 @@ impl Editor {
             theme: Theme::default(),
             active_theme_id: None,
             theme_store: ThemeStore::new(),
+            settings_store: SettingsStore::new(),
             bus,
         })
     }

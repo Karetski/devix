@@ -1,33 +1,25 @@
 //! Settings store — collects every `contributes.settings` declaration
 //! into a single typed key/value map, applies user-side overrides
-//! from a JSON file, and exposes a typed read API for plugins.
+//! from a JSON file, and exposes a typed read + mutate API.
 //!
-//! Per `manifest.md` § *contributes.settings*. T-113 partial ships
-//! the storage + registration + override path; the
-//! `devix.setting(key)` Lua bridge is its own follow-up since it
-//! threads through `PluginHost::new` (the store has to be shared
-//! across the editor and plugin threads via `Arc<Mutex<...>>`).
+//! Per `manifest.md` § *contributes.settings* and `pulse-bus.md` §
+//! *Settings*. `set` publishes `Pulse::SettingChanged` so subscribers
+//! (plugin runtimes exposing `devix.on_setting_changed`, future
+//! settings-UI panes) can react to runtime mutations. The Lua-side
+//! bridge that calls `set` is gated on T-81 full's plugin host
+//! restructure — see T-113 task notes.
 
 use std::collections::HashMap;
 use std::path::Path as FsPath;
 
 use devix_protocol::manifest::{Manifest, SettingSpec};
+use devix_protocol::path::Path;
+use devix_protocol::pulse::Pulse;
 use thiserror::Error;
 
-/// Resolved typed value for one setting. Mirrors `SettingSpec`'s
-/// shape. v0 is intentionally flat — no nested objects, per
-/// `manifest.md` Q2 lock.
-#[derive(Clone, Debug, PartialEq)]
-pub enum SettingValue {
-    Boolean(bool),
-    String(String),
-    Number(f64),
-    /// Enum value: a string drawn from the spec's `values` list.
-    /// We keep the typed variant separate so the Lua bridge (and
-    /// any future settings UI) can offer typed pickers without
-    /// re-reading the manifest.
-    EnumString(String),
-}
+pub use devix_protocol::manifest::SettingValue;
+
+use crate::PulseBus;
 
 #[derive(Default)]
 pub struct SettingsStore {
@@ -112,6 +104,37 @@ impl SettingsStore {
         self.by_key.get(key)
     }
 
+    /// Update `key` to `value` and publish `Pulse::SettingChanged` so
+    /// observers (plugin runtimes, settings UI) react. Returns
+    /// `false` if `key` was never registered (no manifest declared
+    /// it) or the new value's type contradicts the registered shape;
+    /// in either case the store is unchanged.
+    pub fn set(&mut self, key: &str, value: SettingValue, bus: &PulseBus) -> bool {
+        let Some(existing) = self.by_key.get(key) else {
+            return false;
+        };
+        if !same_kind(existing, &value) {
+            return false;
+        }
+        if let SettingValue::EnumString(s) = &value {
+            if let Some(values) = self.enum_values.get(key) {
+                if !values.iter().any(|v| v == s) {
+                    return false;
+                }
+            }
+        }
+        self.by_key.insert(key.to_string(), value.clone());
+        let setting_path = match Path::parse(&format!("/setting/{}", key)) {
+            Ok(p) => p,
+            Err(_) => return true,
+        };
+        bus.publish(Pulse::SettingChanged {
+            setting: setting_path,
+            value,
+        });
+        true
+    }
+
     pub fn len(&self) -> usize {
         self.by_key.len()
     }
@@ -119,6 +142,16 @@ impl SettingsStore {
     pub fn is_empty(&self) -> bool {
         self.by_key.is_empty()
     }
+}
+
+fn same_kind(a: &SettingValue, b: &SettingValue) -> bool {
+    matches!(
+        (a, b),
+        (SettingValue::Boolean(_), SettingValue::Boolean(_))
+            | (SettingValue::String(_), SettingValue::String(_))
+            | (SettingValue::Number(_), SettingValue::Number(_))
+            | (SettingValue::EnumString(_), SettingValue::EnumString(_)),
+    )
 }
 
 #[derive(Debug, Error)]
@@ -448,6 +481,73 @@ mod tests {
         let err = store.apply_overrides_from_file(&path).unwrap_err();
         assert!(matches!(err, SettingsOverrideError::EnumOutOfRange { .. }));
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn set_mutates_value_and_publishes_setting_changed() {
+        use devix_protocol::pulse::{Pulse, PulseFilter, PulseKind};
+        use std::sync::{Arc, Mutex};
+
+        let mut store = SettingsStore::new();
+        store.register_from_manifest(&manifest_with_settings(
+            "p",
+            vec![(
+                "p.flag",
+                SettingSpec::Boolean { default: false, label: "F".into() },
+            )],
+        ));
+        let bus = crate::PulseBus::new();
+        let captured = Arc::new(Mutex::new(Vec::<Pulse>::new()));
+        let cap = captured.clone();
+        bus.subscribe(PulseFilter::kind(PulseKind::SettingChanged), move |p| {
+            cap.lock().unwrap().push(p.clone());
+        });
+
+        assert!(store.set("p.flag", SettingValue::Boolean(true), &bus));
+        assert_eq!(store.get("p.flag"), Some(&SettingValue::Boolean(true)));
+        let pulses = captured.lock().unwrap();
+        assert_eq!(pulses.len(), 1);
+        if let Pulse::SettingChanged { setting, value } = &pulses[0] {
+            assert_eq!(setting.as_str(), "/setting/p.flag");
+            assert_eq!(*value, SettingValue::Boolean(true));
+        }
+    }
+
+    #[test]
+    fn set_rejects_unknown_key_and_type_mismatch() {
+        let mut store = SettingsStore::new();
+        store.register_from_manifest(&manifest_with_settings(
+            "p",
+            vec![(
+                "p.flag",
+                SettingSpec::Boolean { default: false, label: "F".into() },
+            )],
+        ));
+        let bus = crate::PulseBus::new();
+        // Unknown key — not in the store.
+        assert!(!store.set("nope.key", SettingValue::Boolean(true), &bus));
+        // Type mismatch — boolean key getting a string.
+        assert!(!store.set("p.flag", SettingValue::String("x".into()), &bus));
+        assert_eq!(store.get("p.flag"), Some(&SettingValue::Boolean(false)));
+    }
+
+    #[test]
+    fn set_enum_rejects_out_of_range_value() {
+        let mut store = SettingsStore::new();
+        store.register_from_manifest(&manifest_with_settings(
+            "p",
+            vec![(
+                "p.mode",
+                SettingSpec::Enum {
+                    default: "auto".into(),
+                    values: vec!["auto".into(), "manual".into()],
+                    label: "M".into(),
+                },
+            )],
+        ));
+        let bus = crate::PulseBus::new();
+        assert!(!store.set("p.mode", SettingValue::EnumString("nope".into()), &bus));
+        assert!(store.set("p.mode", SettingValue::EnumString("manual".into()), &bus));
     }
 
     #[test]

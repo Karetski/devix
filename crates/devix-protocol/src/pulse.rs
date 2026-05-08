@@ -125,6 +125,17 @@ pub enum Pulse {
         palette: ThemePalette,
     },
 
+    // ---- Settings ----
+    /// Setting `setting` (path-keyed `/setting/<dotted-key>`) was
+    /// updated to `value`. Producer is `SettingsStore::set`; consumers
+    /// are plugin runtimes that expose `devix.on_setting_changed` and
+    /// any future settings-UI subscriber. Added under T-113 per
+    /// foundations-review amendment log.
+    SettingChanged {
+        setting: Path,
+        value: crate::manifest::SettingValue,
+    },
+
     // ---- Render coordination ----
     RenderDirty {
         reason: DirtyReason,
@@ -192,6 +203,7 @@ pub enum PulseKind {
     PluginUnloaded,
     PluginError,
     ThemeChanged,
+    SettingChanged,
     RenderDirty,
     StartupFinished,
     ShutdownRequested,
@@ -228,6 +240,7 @@ impl Pulse {
             Pulse::PluginUnloaded { .. } => PulseKind::PluginUnloaded,
             Pulse::PluginError { .. } => PulseKind::PluginError,
             Pulse::ThemeChanged { .. } => PulseKind::ThemeChanged,
+            Pulse::SettingChanged { .. } => PulseKind::SettingChanged,
             Pulse::RenderDirty { .. } => PulseKind::RenderDirty,
             Pulse::StartupFinished => PulseKind::StartupFinished,
             Pulse::ShutdownRequested => PulseKind::ShutdownRequested,
