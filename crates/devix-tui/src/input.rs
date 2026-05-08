@@ -220,7 +220,7 @@ fn run_arc(ctx: &mut AppContext<'_>, action: Arc<dyn EditorCommand>) {
 /// Walk the focused-leaf path and invoke `LayoutNode::handle_at` on it.
 /// Returns `Ignored` if the focus path resolves to nothing.
 fn dispatch_to_focused_leaf(ctx: &mut AppContext<'_>, ev: &Event) -> Outcome {
-    let focus = ctx.editor.focus.clone();
+    let focus = ctx.editor.focus.as_vec();
     let area = ctx
         .editor
         .panes

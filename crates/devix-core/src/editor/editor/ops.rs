@@ -122,7 +122,7 @@ impl Editor {
     pub fn close_active_frame(&mut self) {
         if self.panes.frames().len() <= 1 { return; }
         let Some(fid) = self.active_frame() else { return };
-        let path = self.focus.clone();
+        let path = self.focus.as_vec();
         if path.is_empty() { return; } // root is a single Frame; same as len==1
 
         // Snapshot the dying frame's tabs *before* the structural mutation
@@ -143,7 +143,8 @@ impl Editor {
             self.try_remove_orphan_doc(did);
         }
         // Re-anchor focus to the first remaining frame, deepest path.
-        self.focus = first_frame_path(self.panes.root());
+        let new_focus = first_frame_path(self.panes.root());
+        self.set_focus(new_focus);
     }
 
     /// Replace the focused Frame leaf with a Split containing two frames:
@@ -151,7 +152,7 @@ impl Editor {
     /// active cursor.
     pub fn split_active(&mut self, axis: Axis) {
         let Some(active_fid) = self.active_frame() else { return };
-        let focus_path = self.focus.clone();
+        let focus_path = self.focus.as_vec();
 
         // Snapshot the active frame's state before mutating the tree.
         let Some(active_frame) = self.panes.find_frame(active_fid) else { return };
@@ -192,7 +193,7 @@ impl Editor {
         }
         let mut new_focus = focus_path;
         new_focus.push(1);
-        self.focus = new_focus;
+        self.set_focus(new_focus);
     }
 
     /// Install `pane` as the content of the sidebar slot `slot`. If the
@@ -211,10 +212,10 @@ impl Editor {
         // Lift the root into a horizontal Split if it isn't one.
         if !self.panes.root_is_horizontal_split() {
             self.panes.lift_into_horizontal_split();
-            // The focus path now needs a leading 0 (the editor body is child 0).
-            let mut new_focus = vec![0];
-            new_focus.extend(self.focus.iter().copied());
-            self.focus = new_focus;
+            // The focus path needs a leading 0 (editor body is child 0).
+            // This preserves the user's logical focus across the lift, so
+            // it goes through `transform` (no FocusChanged emit).
+            self.focus.transform(|p| p.insert(0, 0));
         }
 
         let split = self
@@ -228,9 +229,11 @@ impl Editor {
             .position(|(c, _)| matches!(c, LayoutNode::Sidebar(s) if s.slot == slot));
         if let Some(i) = existing {
             split.children.remove(i);
-            if let Some(top) = self.focus.first_mut() {
-                if *top >= i && *top > 0 { *top -= 1; }
-            }
+            self.focus.transform(|p| {
+                if let Some(top) = p.first_mut() {
+                    if *top >= i && *top > 0 { *top -= 1; }
+                }
+            });
         } else {
             let insert_at = match slot {
                 SidebarSlot::Left => 0,
@@ -240,9 +243,11 @@ impl Editor {
                 insert_at,
                 (LayoutNode::Sidebar(LayoutSidebar::empty(slot)), 20),
             );
-            if let Some(top) = self.focus.first_mut() {
-                if *top >= insert_at { *top += 1; }
-            }
+            self.focus.transform(|p| {
+                if let Some(top) = p.first_mut() {
+                    if *top >= insert_at { *top += 1; }
+                }
+            });
         }
     }
 

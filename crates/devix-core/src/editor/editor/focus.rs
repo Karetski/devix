@@ -19,10 +19,14 @@ use super::{Editor, LeafRef, RenderCache};
 impl Editor {
     pub fn focus_dir(&mut self, dir: Direction) {
         let area = root_area(&self.render_cache);
-        if let Some(target_path) =
-            compute_focus_target(self.panes.root(), area, &self.focus, dir, &self.render_cache)
-        {
-            self.focus = target_path;
+        if let Some(target_path) = compute_focus_target(
+            self.panes.root(),
+            area,
+            self.focus.active(),
+            dir,
+            &self.render_cache,
+        ) {
+            self.set_focus(target_path);
             return;
         }
         // Edge: try to move into a sidebar.
@@ -33,7 +37,7 @@ impl Editor {
         };
         if let Some(slot) = needed {
             if let Some(path) = self.panes.path_to_leaf(LeafRef::Sidebar(slot)) {
-                self.focus = path;
+                self.set_focus(path);
             }
         }
     }
@@ -41,7 +45,7 @@ impl Editor {
     /// Move focus to `frame`'s leaf, if it exists in the layout tree.
     pub fn focus_frame(&mut self, frame: FrameId) -> bool {
         if let Some(path) = self.panes.path_to_leaf(LeafRef::Frame(frame)) {
-            self.focus = path;
+            self.set_focus(path);
             true
         } else {
             false

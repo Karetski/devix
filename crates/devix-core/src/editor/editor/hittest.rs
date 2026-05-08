@@ -67,7 +67,7 @@ impl Editor {
         let Some((_, node)) = self.panes.pane_at_xy(area, col, row) else { return };
         let Some(leaf) = node.leaf_id() else { return };
         if let Some(path) = path_to_leaf(self.panes.root(), area, leaf) {
-            self.focus = path;
+            self.set_focus(path);
         }
     }
 

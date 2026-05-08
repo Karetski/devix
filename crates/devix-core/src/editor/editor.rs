@@ -21,6 +21,7 @@ use crate::{Pane, Rect};
 use crate::editor::cursor::{Cursor, CursorId};
 use crate::editor::document::{DocId, Document};
 
+use crate::editor::focus_chain::FocusChain;
 use crate::editor::frame::{FrameId, mint_id};
 use crate::SidebarSlot;
 use crate::editor::registry::PaneRegistry;
@@ -94,7 +95,11 @@ pub struct Editor {
     /// framework is generic over `&dyn Pane`; there is no closed enum
     /// of modal kinds.
     pub modal: Option<Box<dyn Pane>>,
-    pub focus: Vec<usize>,
+    /// Focus chain — owner of the active pane path. Carved out per
+    /// T-101. Mutations route through `FocusChain::replace` /
+    /// `transform`; real transitions emit `Pulse::FocusChanged`
+    /// (via `Editor::set_focus`) exactly once.
+    pub focus: FocusChain,
     pub doc_index: HashMap<PathBuf, DocId>,
     pub render_cache: RenderCache,
 }
@@ -121,7 +126,7 @@ impl Editor {
         let panes = PaneRegistry::new(LayoutNode::Frame(LayoutFrame::with_cursor(
             frame_id, cursor_id,
         )));
-        let focus = vec![]; // root is the frame leaf itself
+        let focus = FocusChain::new(); // root is the frame leaf itself
 
         let bus = crate::PulseBus::new();
         // Install bus-flavored disk watchers on every initially-open
@@ -155,9 +160,17 @@ impl Editor {
     }
 
     pub fn active_frame(&self) -> Option<FrameId> {
-        match self.panes.at_path(&self.focus)?.leaf_id()? {
+        match self.panes.at_path(self.focus.active())?.leaf_id()? {
             LeafRef::Frame(id) => Some(id),
             LeafRef::Sidebar(_) => None,
+        }
+    }
+
+    /// Set the active focus path. Publishes `Pulse::FocusChanged` iff
+    /// the path actually changes (T-101).
+    pub fn set_focus(&mut self, new: Vec<usize>) {
+        if let Some(t) = self.focus.replace(new) {
+            self.bus.publish(t.into_pulse());
         }
     }
 

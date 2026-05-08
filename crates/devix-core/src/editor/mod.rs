@@ -14,6 +14,7 @@ pub mod cursor;
 pub mod document;
 #[allow(clippy::module_inception)] // editor.rs holds the `Editor` struct; submodules at editor/editor/* per the legacy editor crate's layout. Renamed in T-100+.
 pub mod editor;
+pub mod focus_chain;
 pub mod frame;
 pub mod registry;
 pub mod tree;
@@ -30,6 +31,7 @@ pub use document::{DocId, Document};
 pub use editor::{
     Editor, LeafRef, RenderCache, TabHit, TabStripCache, TabStripHit, path_to_leaf,
 };
+pub use focus_chain::{FocusChain, FocusTransition};
 pub use frame::FrameId;
 pub use registry::PaneRegistry;
 pub use tree::{LayoutCtx, LayoutFrame, LayoutNode, LayoutSidebar, LayoutSplit};

@@ -1,6 +1,6 @@
 # Task T-101 — Focus chain owner
 Stage: 10
-Status: pending
+Status: complete
 Depends on: T-100
 Blocks:     T-104
 
@@ -27,10 +27,10 @@ events. Publishes `Pulse::FocusChanged` on transitions.
 - `crates/devix-core/src/editor/editor.rs`
 
 ## Acceptance criteria
-- [ ] FocusChain owns the active path.
-- [ ] FocusChanged pulse fires only on actual transitions.
-- [ ] `cargo build --workspace` passes.
-- [ ] `cargo test --workspace` passes.
+- [x] FocusChain owns the active path.
+- [x] FocusChanged pulse fires only on actual transitions.
+- [x] `cargo build --workspace` passes.
+- [x] `cargo test --workspace` passes.
 
 ## Spec references
 - `docs/specs/pulse-bus.md` — *Catalog → FocusChanged*.
