@@ -142,7 +142,7 @@ fn left_sidebar_pane_renders_lua_lines() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|f| {
-            let mut ctx = devix_core::RenderCtx { frame: f };
+            let mut ctx = devix_core::RenderCtx { frame: f, layout: None };
             lua_pane.render(Rect { x: 0, y: 0, width: 20, height: 5 }, &mut ctx);
         })
         .unwrap();
@@ -186,7 +186,7 @@ fn pane_set_lines_updates_render_after_load() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|f| {
-            let mut ctx = devix_core::RenderCtx { frame: f };
+            let mut ctx = devix_core::RenderCtx { frame: f, layout: None };
             lua_pane.render(Rect { x: 0, y: 0, width: 20, height: 3 }, &mut ctx);
         })
         .unwrap();
@@ -207,7 +207,7 @@ fn pane_set_lines_updates_render_after_load() {
     // Re-render the same LuaPane (which holds the shared `lines` Arc).
     terminal
         .draw(|f| {
-            let mut ctx = devix_core::RenderCtx { frame: f };
+            let mut ctx = devix_core::RenderCtx { frame: f, layout: None };
             lua_pane.render(Rect { x: 0, y: 0, width: 20, height: 3 }, &mut ctx);
         })
         .unwrap();
@@ -336,7 +336,7 @@ fn sidebar_slot_pane_renders_lua_pane_inside_chrome() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|f| {
-            let mut ctx = devix_core::RenderCtx { frame: f };
+            let mut ctx = devix_core::RenderCtx { frame: f, layout: None };
             slot.render(Rect { x: 0, y: 0, width: 20, height: 5 }, &mut ctx);
         })
         .unwrap();

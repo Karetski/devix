@@ -15,71 +15,92 @@ use crate::editor::tree::{
     LayoutCtx, LayoutFrame, LayoutNode, LayoutSidebar, LayoutSplit, mutate,
 };
 use crate::editor::LeafRef;
+use crate::pane::Pane;
 use crate::{Axis, Rect, SidebarSlot};
 
 pub struct PaneRegistry {
-    root: LayoutNode,
+    /// `Box<dyn Pane>` per T-91 acceptance criterion. The concrete
+    /// type is currently `LayoutNode` (which now `impl Pane`);
+    /// later T-91 phases carve the variants into standalone Pane
+    /// structs and retire the enum. Helper accessors `as_layout` /
+    /// `as_layout_mut` recover the typed view for the existing
+    /// per-variant operations until the carve completes.
+    root: Box<dyn Pane>,
 }
 
 impl PaneRegistry {
     pub fn new(root: LayoutNode) -> Self {
-        Self { root }
+        Self { root: Box::new(root) }
     }
 
-    /// Read-only access to the underlying tree. The closed `LayoutNode`
-    /// shape is still the source of truth pre-T-91; callers that need to
-    /// pattern-match on it (e.g. tests asserting structural shape) go
-    /// through this accessor.
+    fn as_layout(&self) -> &LayoutNode {
+        self.root
+            .as_any()
+            .and_then(|a| a.downcast_ref::<LayoutNode>())
+            .expect("PaneRegistry root is currently always a LayoutNode (T-91 phase 1)")
+    }
+
+    fn as_layout_mut(&mut self) -> &mut LayoutNode {
+        self.root
+            .as_any_mut()
+            .and_then(|a| a.downcast_mut::<LayoutNode>())
+            .expect("PaneRegistry root is currently always a LayoutNode (T-91 phase 1)")
+    }
+
+    /// Read-only access to the underlying layout tree. Wraps the
+    /// downcast through `Pane::as_any`; pattern-matching on the
+    /// LayoutNode variant stays available until the variants are
+    /// carved into standalone Pane structs (T-91 phase 2).
     pub fn root(&self) -> &LayoutNode {
-        &self.root
+        self.as_layout()
     }
 
     pub fn find_frame(&self, fid: FrameId) -> Option<&LayoutFrame> {
-        self.root.find_frame(fid)
+        self.as_layout().find_frame(fid)
     }
 
     pub fn find_frame_mut(&mut self, fid: FrameId) -> Option<&mut LayoutFrame> {
-        self.root.find_frame_mut(fid)
+        self.as_layout_mut().find_frame_mut(fid)
     }
 
     pub fn find_sidebar_mut(&mut self, slot: SidebarSlot) -> Option<&mut LayoutSidebar> {
-        self.root.find_sidebar_mut(slot)
+        self.as_layout_mut().find_sidebar_mut(slot)
     }
 
     pub fn sidebar_present(&self, slot: SidebarSlot) -> bool {
-        self.root.sidebar_present(slot)
+        self.as_layout().sidebar_present(slot)
     }
 
     pub fn frames(&self) -> Vec<FrameId> {
-        self.root.frames()
+        self.as_layout().frames()
     }
 
     pub fn at_path(&self, path: &[usize]) -> Option<&LayoutNode> {
-        self.root.at_path(path)
+        self.as_layout().at_path(path)
     }
 
     pub fn at_path_mut(&mut self, path: &[usize]) -> Option<&mut LayoutNode> {
-        self.root.at_path_mut(path)
+        self.as_layout_mut().at_path_mut(path)
     }
 
     pub fn at_path_with_rect(&self, area: Rect, path: &[usize]) -> Option<(Rect, &LayoutNode)> {
-        self.root.at_path_with_rect(area, path)
+        self.as_layout().at_path_with_rect(area, path)
     }
 
     pub fn leaves_with_rects(&self, area: Rect) -> Vec<(LeafRef, Rect)> {
-        self.root.leaves_with_rects(area)
+        self.as_layout().leaves_with_rects(area)
     }
 
     pub fn path_to_leaf(&self, target: LeafRef) -> Option<Vec<usize>> {
-        self.root.path_to_leaf(target)
+        self.as_layout().path_to_leaf(target)
     }
 
     pub fn pane_at_xy(&self, area: Rect, col: u16, row: u16) -> Option<(Rect, &LayoutNode)> {
-        self.root.pane_at(area, col, row)
+        self.as_layout().pane_at(area, col, row)
     }
 
     pub fn render(&self, area: Rect, frame: &mut Frame<'_>, ctx: &LayoutCtx<'_>) {
-        self.root.render(area, frame, ctx);
+        self.as_layout().render(area, frame, ctx);
     }
 
     /// Resolve a `/pane(/<i>)*` path to the corresponding `LayoutNode`.
@@ -87,7 +108,7 @@ impl PaneRegistry {
     /// Per `docs/specs/namespace.md` § *Migration table* and T-52.
     pub fn pane_at(&self, path: &devix_protocol::path::Path) -> Option<&LayoutNode> {
         let indices = pane_path_indices(path)?;
-        self.root.at_path(&indices)
+        self.as_layout().at_path(&indices)
     }
 
     pub fn pane_at_mut(
@@ -95,7 +116,7 @@ impl PaneRegistry {
         path: &devix_protocol::path::Path,
     ) -> Option<&mut LayoutNode> {
         let indices = pane_path_indices(path)?;
-        self.root.at_path_mut(&indices)
+        self.as_layout_mut().at_path_mut(&indices)
     }
 
     /// Pre-order enumeration of every reachable pane path. `/pane` is
@@ -104,36 +125,36 @@ impl PaneRegistry {
         let mut out = Vec::new();
         let root_path =
             devix_protocol::path::Path::parse("/pane").expect("/pane is canonical");
-        walk_pane_paths(&self.root, root_path, &mut out);
+        walk_pane_paths(self.as_layout(), root_path, &mut out);
         out
     }
 
     /// Replace the node at `path`. Empty path replaces the root.
     pub fn replace_at(&mut self, path: &[usize], new: LayoutNode) -> bool {
-        mutate::replace_at(&mut self.root, path, new)
+        mutate::replace_at(self.as_layout_mut(), path, new)
     }
 
     /// Remove the child at `path` from its parent split.
     pub fn remove_at(&mut self, path: &[usize]) -> bool {
-        mutate::remove_at(&mut self.root, path)
+        mutate::remove_at(self.as_layout_mut(), path)
     }
 
     /// Collapse single-child splits anywhere in the tree.
     pub fn collapse_singletons(&mut self) {
-        mutate::collapse_singletons(&mut self.root);
+        mutate::collapse_singletons(self.as_layout_mut());
     }
 
     /// Lift the root into a horizontal split so a sidebar can be inserted
     /// alongside it.
     pub fn lift_into_horizontal_split(&mut self) {
-        mutate::lift_into_horizontal_split(&mut self.root);
+        mutate::lift_into_horizontal_split(self.as_layout_mut());
     }
 
     /// Mutable access to the root split for the (currently in-tree) op
     /// patterns that destructure the root after `lift_into_horizontal_split`.
     /// Crate-internal so external callers stay on the typed API.
     pub(crate) fn root_split_mut(&mut self) -> Option<&mut LayoutSplit> {
-        match &mut self.root {
+        match self.as_layout_mut() {
             LayoutNode::Split(s) => Some(s),
             _ => None,
         }
@@ -142,7 +163,7 @@ impl PaneRegistry {
     /// Whether the root is a horizontal split. Used by `toggle_sidebar`
     /// to decide whether to lift first.
     pub fn root_is_horizontal_split(&self) -> bool {
-        matches!(&self.root, LayoutNode::Split(s) if s.axis == Axis::Horizontal)
+        matches!(self.as_layout(), LayoutNode::Split(s) if s.axis == Axis::Horizontal)
     }
 }
 

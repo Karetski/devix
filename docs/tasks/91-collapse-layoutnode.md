@@ -1,6 +1,6 @@
 # Task T-91 — Collapse LayoutNode into a single Pane tree
 Stage: 9
-Status: deferred — session-scale refactor; standalone Stage-9 sprint
+Status: partial (phase 1) — Editor.panes.root: Box<dyn Pane>; LayoutNode still concrete; carve into per-variant Pane structs deferred to phase 2
 Depends on: T-52, T-90
 Blocks:     T-92, T-94, T-95
 
@@ -34,10 +34,37 @@ closed enum at the layout root.
 
 ## Acceptance criteria
 - [ ] No `enum LayoutNode` survives.
-- [ ] Editor's `root` is `Box<dyn Pane>`.
+- [x] Editor's `root` is `Box<dyn Pane>`.
 - [ ] All ops mutate the tree in place via walk helpers.
-- [ ] `cargo build --workspace` passes.
-- [ ] `cargo test --workspace` passes.
+- [x] `cargo build --workspace` passes.
+- [x] `cargo test --workspace` passes.
+
+## Notes (2026-05-08) — phase 1 partial close
+- **Render-context decision locked**: `RenderCtx` widens with
+  `layout: Option<&'a LayoutCtx<'a>>`. Structural-render walker
+  populates `Some`; chrome panes pass `None` and ignore. Alternatives
+  considered (parallel render paths, sub-trait `LayoutPane`)
+  recorded in `foundations-review.md` § *Amendment log*.
+- **`PaneRegistry.root: Box<dyn Pane>`** lands now.
+  `LayoutNode` `impl Pane` (delegating render to its existing
+  match-based `render(area, frame, &LayoutCtx)` via `ctx.layout`,
+  handle to `handle_at`, children to `children_at`,
+  is_focusable to the variant test, `as_any` / `as_any_mut` to
+  `Some(self)`). The registry's typed methods (`find_frame`,
+  `at_path`, `replace_at`, etc.) keep their signatures by
+  recovering `&LayoutNode` through `Pane::as_any` →
+  `downcast_ref::<LayoutNode>`. Tests + ops continue to pattern-match
+  on `editor.panes.root()`.
+- *Phase 2 deferred* (its own sprint): carve `LayoutSplit` /
+  `LayoutFrame` / `LayoutSidebar` into standalone `SplitPane` /
+  `FramePane` / `SidebarLayoutPane` Pane impls; rewrite
+  `mutate::{replace_at, remove_at, collapse_singletons,
+  lift_into_horizontal_split}` as Pane-tree mutations
+  (probably via a new `Pane::children_mut` trait method or
+  through downcast); delete the `LayoutNode` enum and its
+  match-based methods; re-wire `editor::{focus, hittest, ops,
+  view}` to use Pane-tree walks instead of typed downcasts.
+- T-92 / T-94 / T-95 still gate on phase 2.
 
 ## Spec references
 - `docs/principles.md` — *MLIR — extend one primitive*.

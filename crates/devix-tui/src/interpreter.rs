@@ -20,7 +20,7 @@ pub(crate) fn paint_modal(
     if let Some(p) = any.and_then(|a| a.downcast_ref::<PalettePane>()) {
         paint_palette(p, area, frame, theme, commands, keymap);
     } else {
-        let mut overlay_ctx = RenderCtx { frame };
+        let mut overlay_ctx = RenderCtx { frame, layout: None };
         modal.render(area, &mut overlay_ctx);
     }
 }

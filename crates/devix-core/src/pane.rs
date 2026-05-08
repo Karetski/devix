@@ -63,8 +63,19 @@ pub enum Outcome {
 
 /// Render-time context. Carries the ratatui frame and any read-only
 /// services a Pane needs to draw.
+///
+/// `layout` is `Some` when the structural-render walker
+/// (`PaneRegistry::render`) is in progress — it carries the editor
+/// borrows (documents, cursors, theme, render-cache, focused leaf)
+/// that the layout-tree leaves (`FramePane`, `SidebarLayoutPane`)
+/// need to actually paint content. Chrome panes and modal panes
+/// (`TabbedPane`, `SidebarSlotPane`, `PalettePane`, plugin panes)
+/// pass `None` and ignore it. Decision locked 2026-05-08 — see
+/// `foundations-review.md` § *Amendment log* for the alternatives
+/// considered (parallel render paths, sub-trait `LayoutPane`).
 pub struct RenderCtx<'a, 'frame> {
     pub frame: &'a mut ratatui::Frame<'frame>,
+    pub layout: Option<&'a crate::editor::tree::LayoutCtx<'a>>,
 }
 
 /// Event-time context. The mutable counterpart to `RenderCtx`. Carries

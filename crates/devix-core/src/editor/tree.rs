@@ -328,6 +328,50 @@ impl LayoutNode {
     }
 }
 
+/// `Pane` impl for `LayoutNode` (T-91 phase 1). Lets the registry's
+/// root be `Box<dyn Pane>` while the underlying enum lives on as the
+/// concrete impl. Subsequent T-91 phases carve `LayoutSplit` /
+/// `LayoutFrame` / `LayoutSidebar` into standalone Pane structs and
+/// retire the enum.
+impl Pane for LayoutNode {
+    fn render(&self, area: Rect, ctx: &mut crate::pane::RenderCtx<'_, '_>) {
+        // Structural-render path: `ctx.layout` carries the editor
+        // borrows. The registry populates it before calling here.
+        if let Some(layout) = ctx.layout {
+            self.render(area, ctx.frame, layout);
+        }
+    }
+
+    fn handle(
+        &mut self,
+        ev: &Event,
+        area: Rect,
+        hctx: &mut crate::pane::HandleCtx<'_>,
+    ) -> Outcome {
+        self.handle_at(ev, area, hctx)
+    }
+
+    fn children(&self, area: Rect) -> Vec<(Rect, &dyn Pane)> {
+        self.children_at(area)
+            .into_iter()
+            .map(|(r, child)| (r, child as &dyn Pane))
+            .collect()
+    }
+
+    fn is_focusable(&self) -> bool {
+        // Structural Split nodes don't accept focus; Frame and Sidebar leaves do.
+        matches!(self, LayoutNode::Frame(_) | LayoutNode::Sidebar(_))
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+}
+
 fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
     col >= rect.x
         && col < rect.x.saturating_add(rect.width)
@@ -409,7 +453,7 @@ fn render_frame(f: &LayoutFrame, area: Rect, frame: &mut Frame<'_>, ctx: &Layout
             active,
         },
     };
-    let mut rctx = RenderCtx { frame };
+    let mut rctx = RenderCtx { frame, layout: None };
     tabbed.render(area, &mut rctx);
 }
 
@@ -420,7 +464,7 @@ fn render_sidebar(s: &LayoutSidebar, area: Rect, frame: &mut Frame<'_>, ctx: &La
     };
     let focused = matches!(ctx.focused_leaf, Some(LeafRef::Sidebar(slot)) if slot == s.slot);
     let chrome = SidebarChrome { title: title.to_string(), focused };
-    let mut rctx = RenderCtx { frame };
+    let mut rctx = RenderCtx { frame, layout: None };
     chrome.render(area, &mut rctx);
     if let Some(content) = s.content.as_ref() {
         let inner = sidebar_inner_rect(area);
