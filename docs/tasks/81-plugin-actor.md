@@ -1,6 +1,6 @@
 # Task T-81 — Plugin runtime as supervised actor
 Stage: 8
-Status: deferred — supervisor primitive ready (T-82); plugin-runtime restructure is its own sprint
+Status: partial — supervisor wraps plugin thread (escalate-only, no restart); module reorg deferred
 Depends on: T-82
 Blocks:     T-95
 
@@ -30,10 +30,36 @@ supervisor wraps it with crash recovery.
 - `crates/devix-core/src/supervise/plugin.rs`
 
 ## Acceptance criteria
-- [ ] Forced plugin panic surfaces as `PluginError`; editor still
+- [x] Forced plugin panic surfaces as `PluginError`; editor still
       responsive.
-- [ ] `cargo build --workspace` passes.
-- [ ] `cargo test --workspace` passes.
+- [x] `cargo build --workspace` passes.
+- [x] `cargo test --workspace` passes.
+
+## Notes (2026-05-08) — partial close
+- `PluginRuntime::load_supervised(path, sink, bus)` wraps the plugin
+  worker thread in `crate::supervise::supervise(...)` with
+  `RestartPolicy { max_restarts: 0, window: 30s }`. Practical
+  consequence: a panic in the Lua VM (or any of the wrapper code on
+  that thread) escalates immediately as `Pulse::PluginError` on the
+  editor's bus and the plugin thread stops; the editor's main thread
+  is unaffected.
+- Successful load publishes `Pulse::PluginLoaded { plugin: /plugin/<stem>,
+  version }` on the bus. (Stage 11 / T-110 will switch the source of
+  `plugin` from filename stem to the manifest's `name` field.)
+- Channel-re-acquisition on restart is **deferred**. The receiver
+  halves are moved into the factory closure; on respawn the closure
+  has nothing to consume from. True "supervisor restarts the plugin
+  runtime" needs a channel-topology refactor (e.g., a stable
+  `Arc<Mutex<Option<UnboundedSender>>>` indirection so editor-held
+  senders refresh across restarts). That work goes alongside the
+  module reorg into `host.rs`/`runtime.rs`/`bridge.rs`/`pane_handle.rs`
+  per `crates.md`.
+- `PluginRuntime` gains `shutdown_tx: Option<oneshot::Sender<()>>` and
+  a custom `Drop` that fires the signal. Necessary because installed
+  plugin panes (held by the editor) keep clones of `input_tx` alive
+  past `PluginRuntime` drop, so the supervised loop's `tokio::select!`
+  would never observe channel close. The shutdown branch breaks the
+  loop cleanly so `SupervisedChild::drop` joins immediately.
 
 ## Spec references
 - `docs/principles.md` — *Erlang/OTP*.
