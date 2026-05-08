@@ -775,6 +775,44 @@ mod tests {
     }
 
     #[test]
+    fn split_pane_trait_returns_children_with_weighted_rects() {
+        // T-91 phase 2: the LayoutSplit Pane impl exposes children
+        // through `Pane::children` independently of the enum.
+        let f1 = fake_frame_id();
+        let f2 = fake_frame_id();
+        let split = LayoutSplit {
+            axis: Axis::Horizontal,
+            children: vec![(frame_node(f1), 1), (frame_node(f2), 3)],
+        };
+        let kids = Pane::children(&split, full());
+        assert_eq!(kids.len(), 2);
+        // 1:3 weight on a width-100 area → 25 / 75 split.
+        assert_eq!(kids[0].0.width, 25);
+        assert_eq!(kids[1].0.width, 75);
+    }
+
+    #[test]
+    fn frame_pane_trait_is_focusable_no_children() {
+        let f = LayoutFrame {
+            frame: fake_frame_id(),
+            tabs: Vec::new(),
+            active_tab: 0,
+            tab_strip_scroll: (0, 0),
+            recenter_active: false,
+        };
+        assert!(f.is_focusable());
+        assert!(Pane::children(&f, full()).is_empty());
+    }
+
+    #[test]
+    fn sidebar_pane_trait_handles_empty_slot() {
+        let s = LayoutSidebar::empty(SidebarSlot::Left);
+        assert!(s.is_focusable());
+        // No content → Pane::children empty, leaf in the layout tree.
+        assert!(Pane::children(&s, full()).is_empty());
+    }
+
+    #[test]
     fn frame_leaf_pane_at_returns_full_rect() {
         let fid = fake_frame_id();
         let tree = frame_node(fid);
