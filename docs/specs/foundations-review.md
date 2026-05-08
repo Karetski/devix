@@ -426,6 +426,19 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-07 — T-56 plugin-callback Lookup deferred.** T-56
+  ships path encoding/decoding helpers for `/plugin/<name>/cb/<u64>`
+  but defers the full `Lookup<Resource = LuaCallback>` impl to
+  T-110 / T-111 (manifest-driven plugin loading). Reason: the
+  plugin host's two callback-related maps are an
+  `Arc<Mutex<HashMap<u64, RegistryKey>>>` registry plus a
+  per-pane *index* into it (`Arc<Mutex<HashMap<u64,
+  PaneCallbackKeys>>>`), not two parallel registries. Implementing
+  `Lookup` on the locked registry fights the trait's
+  `&Resource`-borrow shape; storage redesign waits for the API to
+  become load-bearing in plugin contributions. Path encoding
+  alone is enough for T-57's pulse-payload sweep.
+
 - **2026-05-07 — Stage-4 deviations accepted.** Three small
   deviations from the spec text accepted during the post-Stage-4
   review:
