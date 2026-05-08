@@ -1,6 +1,6 @@
 # Task T-91 — Collapse LayoutNode into a single Pane tree
 Stage: 9
-Status: partial (phase 2 in flight) — Editor.panes.root: Box<dyn Pane>; per-variant Pane impls done; enum removal + mutate-helper carve deferred
+Status: complete — LayoutNode enum retired; structural tree is `Box<dyn Pane>` end-to-end
 Depends on: T-52, T-90
 Blocks:     T-92, T-94, T-95
 
@@ -33,9 +33,9 @@ closed enum at the layout root.
 - `crates/devix-core/src/pane.rs` / `pane_walk.rs`
 
 ## Acceptance criteria
-- [ ] No `enum LayoutNode` survives.
+- [x] No `enum LayoutNode` survives.
 - [x] Editor's `root` is `Box<dyn Pane>`.
-- [ ] All ops mutate the tree in place via walk helpers.
+- [x] All ops mutate the tree in place via walk helpers.
 - [x] `cargo build --workspace` passes.
 - [x] `cargo test --workspace` passes.
 
@@ -97,39 +97,33 @@ closed enum at the layout root.
   for the `tree.rs` test suite that still exercises LayoutNode
   directly.
 
-## Phase-2 work still deferred (its own sprint)
-- Change `LayoutSplit.children` from `Vec<(LayoutNode, u16)>` to
-  `Vec<(Box<dyn Pane>, u16)>`. Attempted twice in this session — the
-  cascade through `LayoutNode::children_at` /
-  `children_at_mut` (which return `Vec<(Rect, &LayoutNode)>`),
-  remaining `LayoutNode` walk methods that recurse via children
-  (`at_path`, `pane_at`, `path_to_leaf`, `leaves_with_rects`),
-  the `mutate::*` helpers, the `editor::view` walk-by-variant, the
-  `editor::focus` `compute_focus_target` / `walk_into` pattern
-  matches, and the `editor/ops.rs` constructor sites all need
-  rewriting at once. Reverted; left for the next sprint.
-- Rewrite the `mutate::{replace_at, remove_at, collapse_singletons,
-  lift_into_horizontal_split}` helpers to walk via
-  `Pane::children_mut` + downcast on the composite. Accept
-  `Box<dyn Pane>` for the `new` argument so non-LayoutNode panes
-  can be inserted. Currently registry wraps these via
-  `as_layout_mut()`.
-- Rewrite `editor::view::walk_layout` and `editor::focus`'s
-  `compute_focus_target` / `walk_into` to walk via Pane trait
-  instead of pattern-matching on `LayoutNode::Split`.
-- Re-wire the `editor.rs` test bodies that still pattern-match on
-  `ws.panes.root()` (e.g. `match ws.panes.root() { LayoutNode::Split(s)
-  => ... }`) — switch to typed downcast through `Pane::as_any` or
-  use registry helpers.
-- Delete the `LayoutNode` enum and the remaining inherent walkers
-  on it (`children_at`, `children_at_mut`, `at_path`,
-  `at_path_mut`, `at_path_with_rect`, `pane_at`,
-  `leaves_with_rects`, `path_to_leaf`, `leaf_id`, `is_focusable`,
-  `frame`, `sidebar` constructors); migrate their tree-level
-  tests to use the per-variant structs / registry walks.
-- Remove the `mutate` module entirely (replace with Pane-trait
-  walk helpers).
-- T-92 / T-94 / T-95 still gate on this completion.
+## Notes (2026-05-08) — phase 2 close
+- `LayoutSplit.children` shifted to `Vec<(Box<dyn Pane>, u16)>`.
+  The structural skeleton nests `Box<dyn Pane>` end-to-end; there is
+  no `LayoutNode` enum anywhere in the codebase.
+- `mutate::{replace_at, remove_at, collapse_singletons,
+  lift_into_horizontal_split}` rewritten to operate on
+  `&mut Box<dyn Pane>` and downcast to `LayoutSplit` when typed
+  access to `children` is required. `replace_at` accepts an
+  arbitrary `Box<dyn Pane>` for the `new` argument, so plugin /
+  composite panes can be inserted directly.
+- `PaneRegistry` exposes `root() -> &dyn Pane` (no `as_layout` /
+  `as_layout_mut` shims); `replace_at` takes `Box<dyn Pane>`;
+  `root_split_mut` / `root_is_horizontal_split` now downcast
+  through `Pane::as_any_mut` / `as_any`.
+- `editor::view::walk_layout` and `editor::focus`'s
+  `compute_focus_target` / `walk_into` walk via `Pane::children`
+  / downcasts to the concrete struct; no closed-enum pattern
+  match remains.
+- `editor::editor::hittest::focus_at_screen` uses
+  `panes.path_to_leaf` directly; the `editor::focus::path_to_leaf`
+  re-export retired (it was a pass-through to
+  `LayoutNode::path_to_leaf`).
+- `editor.rs` tests downcast through `Pane::as_any` to assert
+  layout shape (`LayoutFrame` / `LayoutSplit`) instead of
+  matching the retired enum.
+- 278 unit + integration tests pass; build clean; clippy clean
+  against pre-existing baseline. T-92 / T-94 / T-95 are unblocked.
 
 ## Spec references
 - `docs/principles.md` — *MLIR — extend one primitive*.

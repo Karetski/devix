@@ -426,6 +426,30 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-08 — T-91 phase-2 close: LayoutNode enum retired.**
+
+  The closed `LayoutNode` enum is gone. `LayoutSplit.children`
+  shifted from `Vec<(LayoutNode, u16)>` to
+  `Vec<(Box<dyn Pane>, u16)>`; the structural skeleton nests
+  `Box<dyn Pane>` end-to-end, with `LayoutFrame` / `LayoutSidebar`
+  / `LayoutSplit` as the concrete Pane impls plugged into the
+  trait. The `mutate::*` helpers (`replace_at`, `remove_at`,
+  `collapse_singletons`, `lift_into_horizontal_split`) operate on
+  `&mut Box<dyn Pane>` and downcast to `LayoutSplit` for typed
+  access to `children`; `replace_at` accepts arbitrary
+  `Box<dyn Pane>` so plugin / composite panes can replace any
+  layout slot. `PaneRegistry::root()` returns `&dyn Pane`;
+  `as_layout` / `as_layout_mut` shims and the transitional
+  dual-downcast (LayoutNode-or-direct) are gone — every walk
+  downcasts to the concrete struct directly.
+  `editor::view::walk_layout`, `editor::focus`'s
+  `compute_focus_target` / `walk_into`, and
+  `editor::ops::first_frame_path` walk via the Pane trait. The
+  `path_to_leaf(&LayoutNode, …)` free-function re-export retired
+  in favour of the registry's method. MLIR principle realized at
+  the layout root: one open primitive (`Pane`), no closed enum.
+  T-92 / T-94 / T-95 unblocked.
+
 - **2026-05-08 — T-91 phase 1 + phase-2 partial progress.**
 
   Phase 1: `RenderCtx` widens with `layout: Option<&'a
