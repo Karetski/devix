@@ -1,6 +1,6 @@
 # Task T-32 — Protocol skeleton (envelopes, lanes, capabilities, handles)
 Stage: 3
-Status: pending
+Status: complete
 Depends on: T-30, T-31
 Blocks:     T-43, T-110
 

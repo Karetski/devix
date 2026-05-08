@@ -35,11 +35,16 @@ pub mod view;
 
 pub use input::{Chord, InputEvent, KeyCode, Modifiers, MouseButton, MouseKind};
 pub use path::{Lookup, Path, PathError};
+pub use protocol::{
+    Capability, ClientHello, ClientToCore, CoreHandle, CoreToClient, CoreToPlugin, Envelope,
+    FrontendHandle, PathKind, PluginHandle, PluginHello, PluginToCore, PluginWelcome,
+    ProtocolError, ProtocolVersion, Request, RequestError, Response, ServerWelcome, ViewResponse,
+};
 pub use pulse::{
     DirtyReason, InvocationSource, ModalKind, Pulse, PulseField, PulseFilter, PulseKind,
     SubscriptionId, ThemePalette,
 };
-pub use view::{Axis, Color, NamedColor, SidebarSlot, Style};
+pub use view::{Axis, Color, NamedColor, SidebarSlot, Style, View, ViewNodeId};
 
 /// `HighlightSpan` is defined in `devix-syntax`; re-exported here so
 /// consumers of the View IR (`view::View::Buffer.highlights`) reach for one
