@@ -502,6 +502,7 @@ impl PluginRuntime {
                 spec.visible_rows.clone(),
                 spec.has_on_key.clone(),
                 spec.has_on_click.clone(),
+                spec.view.clone(),
                 self.input_tx.clone(),
             );
             editor.install_sidebar_pane(slot, Box::new(pane));
@@ -670,6 +671,7 @@ impl PluginRuntime {
                 spec.visible_rows.clone(),
                 spec.has_on_key.clone(),
                 spec.has_on_click.clone(),
+                spec.view.clone(),
                 self.input_tx.clone(),
             );
             editor.install_sidebar_pane(slot, Box::new(pane));
@@ -691,6 +693,7 @@ impl PluginRuntime {
             visible_rows: spec.visible_rows.clone(),
             has_on_key: spec.has_on_key.clone(),
             has_on_click: spec.has_on_click.clone(),
+            view: spec.view.clone(),
             input_tx: self.input_tx.clone(),
         })
     }

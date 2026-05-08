@@ -181,6 +181,8 @@ impl PluginHost {
                     let visible_rows = Arc::new(AtomicU16::new(0));
                     let has_on_key = Arc::new(AtomicBool::new(false));
                     let has_on_click = Arc::new(AtomicBool::new(false));
+                    let view: Arc<Mutex<Option<devix_protocol::view::View>>> =
+                        Arc::new(Mutex::new(None));
 
                     let handle = LuaPaneHandle::new(
                         pane_id,
@@ -189,6 +191,7 @@ impl PluginHost {
                         visible_rows.clone(),
                         has_on_key.clone(),
                         has_on_click.clone(),
+                        view.clone(),
                         callbacks.clone(),
                         pane_callbacks.clone(),
                         next_handle_arc.clone(),
@@ -216,6 +219,7 @@ impl PluginHost {
                             visible_rows,
                             has_on_key,
                             has_on_click,
+                            view,
                         });
 
                     Ok(handle)

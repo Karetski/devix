@@ -76,6 +76,7 @@ mod bridge;
 mod host;
 mod pane_handle;
 mod runtime;
+mod view_lua;
 
 pub use bridge::{LuaAction, PluginCommandAction, make_command_action};
 pub use host::PluginHost;
@@ -115,6 +116,10 @@ pub struct CommandSpec {
 /// same scroll offset. `visible_rows` is read-only from Lua's
 /// perspective: the renderer writes the last-painted body height so
 /// plugins can keep selection in view.
+///
+/// `view` carries the optional View IR a plugin pushes via
+/// `pane:set_view(view_table)` — when set, the renderer paints the
+/// View instead of the line fallback. T-111.
 #[derive(Clone, Debug)]
 pub struct PaneSpec {
     pub slot: SidebarSlot,
@@ -124,6 +129,7 @@ pub struct PaneSpec {
     pub visible_rows: Arc<AtomicU16>,
     pub has_on_key: Arc<AtomicBool>,
     pub has_on_click: Arc<AtomicBool>,
+    pub view: Arc<Mutex<Option<devix_protocol::view::View>>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -933,6 +939,41 @@ mod tests {
             matches!(&msgs[..], [PluginMsg::Status(s)] if s == "8.0"),
             "expected `8.0`, got {msgs:?}",
         );
+    }
+
+    #[test]
+    fn pane_set_view_stores_view_ir_for_render() {
+        use devix_protocol::view::View;
+
+        let p = write_temp(
+            "set_view",
+            r#"
+                local pane = devix.register_pane({ slot = "left" })
+                pane:set_view({
+                    kind = "stack",
+                    axis = "vertical",
+                    weights = { 1, 1 },
+                    children = {
+                        { kind = "text", spans = { { text = "row-1" } } },
+                        { kind = "text", spans = { { text = "row-2", style = { bold = true } } } },
+                    },
+                })
+            "#,
+        );
+        let host = PluginHost::new().unwrap();
+        let c = host.load_file(&p).unwrap();
+        assert_eq!(c.panes.len(), 1);
+        let stored = c.panes[0].view.lock().unwrap().clone();
+        let view = stored.expect("set_view stored a View");
+        match view {
+            View::Stack { axis, weights, children, .. } => {
+                use devix_protocol::view::Axis;
+                assert_eq!(axis, Axis::Vertical);
+                assert_eq!(weights, vec![1, 1]);
+                assert_eq!(children.len(), 2);
+            }
+            other => panic!("expected Stack, got {other:?}"),
+        }
     }
 
     #[test]

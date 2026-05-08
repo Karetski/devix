@@ -22,10 +22,13 @@ use anyhow::anyhow;
 use crossterm::event::{KeyEvent, MouseButton};
 use mlua::{Function, RegistryKey, UserData, UserDataMethods, Value};
 
+use devix_protocol::view::View;
+
 use crate::geom::Rect;
 use crate::pane::{HandleCtx, Outcome, Pane, RenderCtx};
 use crate::Event;
 
+use super::view_lua::view_from_lua_table;
 use super::{InputSender, PluginInput, PluginMsg, next_handle, parse_lines_value, send_input};
 
 /// Per-pane callback handles. Keys into [`PluginHost::callbacks`].
@@ -43,7 +46,8 @@ pub(crate) enum PaneCallbackKind {
 
 /// Userdata handed back to Lua from `devix.register_pane`. Holds the
 /// shared lines / flag state plus the channels needed to mutate it
-/// from inside Lua callbacks (`set_lines`, `on_key`, `on_click`).
+/// from inside Lua callbacks (`set_lines`, `on_key`, `on_click`,
+/// `set_view`).
 #[derive(Clone)]
 pub struct LuaPaneHandle {
     pane_id: u64,
@@ -52,6 +56,7 @@ pub struct LuaPaneHandle {
     visible_rows: Arc<AtomicU16>,
     has_on_key: Arc<AtomicBool>,
     has_on_click: Arc<AtomicBool>,
+    view: Arc<Mutex<Option<View>>>,
     callbacks: Arc<Mutex<HashMap<u64, RegistryKey>>>,
     pane_callbacks: Arc<Mutex<HashMap<u64, PaneCallbackKeys>>>,
     next_handle: Arc<Mutex<u64>>,
@@ -67,6 +72,7 @@ impl LuaPaneHandle {
         visible_rows: Arc<AtomicU16>,
         has_on_key: Arc<AtomicBool>,
         has_on_click: Arc<AtomicBool>,
+        view: Arc<Mutex<Option<View>>>,
         callbacks: Arc<Mutex<HashMap<u64, RegistryKey>>>,
         pane_callbacks: Arc<Mutex<HashMap<u64, PaneCallbackKeys>>>,
         next_handle: Arc<Mutex<u64>>,
@@ -79,6 +85,7 @@ impl LuaPaneHandle {
             visible_rows,
             has_on_key,
             has_on_click,
+            view,
             callbacks,
             pane_callbacks,
             next_handle,
@@ -135,6 +142,23 @@ impl UserData for LuaPaneHandle {
             this.replace_lines(lines);
             Ok(())
         });
+        methods.add_method("set_view", |_, this, value: Value| {
+            let view_opt = match value {
+                Value::Nil => None,
+                Value::Table(t) => Some(view_from_lua_table(&t)?),
+                other => {
+                    return Err(mlua::Error::external(anyhow!(
+                        "expected view as table or nil, got {:?}",
+                        other,
+                    )));
+                }
+            };
+            if let Ok(mut slot) = this.view.lock() {
+                *slot = view_opt;
+            }
+            this.notify_pane_changed();
+            Ok(())
+        });
         methods.add_method("on_key", |lua, this, cb: Function| {
             let key = lua.create_registry_value(cb)?;
             this.set_callback(PaneCallbackKind::OnKey, key)?;
@@ -163,9 +187,10 @@ impl UserData for LuaPaneHandle {
     }
 }
 
-/// Sidebar pane painted from a Lua-driven list of lines. Reads the
-/// shared `lines` storage on every render and forwards events to the
-/// plugin thread when a callback is registered.
+/// Sidebar pane painted from a Lua-driven list of lines (or, if
+/// the plugin pushed View IR via `pane:set_view`, from that View
+/// directly). Reads the shared state on every render and forwards
+/// events to the plugin thread when a callback is registered.
 pub struct LuaPane {
     pub lines: Arc<Mutex<Vec<String>>>,
     pane_id: u64,
@@ -173,6 +198,7 @@ pub struct LuaPane {
     visible_rows: Arc<AtomicU16>,
     has_on_key: Arc<AtomicBool>,
     has_on_click: Arc<AtomicBool>,
+    pub(crate) view: Arc<Mutex<Option<View>>>,
     pub(crate) input_tx: InputSender,
 }
 
@@ -185,6 +211,7 @@ impl LuaPane {
         visible_rows: Arc<AtomicU16>,
         has_on_key: Arc<AtomicBool>,
         has_on_click: Arc<AtomicBool>,
+        view: Arc<Mutex<Option<View>>>,
         input_tx: InputSender,
     ) -> Self {
         Self {
@@ -194,6 +221,7 @@ impl LuaPane {
             visible_rows,
             has_on_key,
             has_on_click,
+            view,
             input_tx,
         }
     }
@@ -263,6 +291,18 @@ impl LuaPane {
 impl Pane for LuaPane {
     fn render(&self, area: Rect, ctx: &mut RenderCtx<'_, '_>) {
         if area.width == 0 || area.height == 0 {
+            return;
+        }
+        // View IR path (T-111): if the plugin pushed a view via
+        // `pane:set_view`, paint that instead of the line fallback.
+        let view_snapshot: Option<View> = self
+            .view
+            .lock()
+            .ok()
+            .and_then(|g| g.clone());
+        if let Some(view) = view_snapshot {
+            super::view_lua::paint_minimal(&view, area, ctx.frame);
+            self.visible_rows.store(area.height, std::sync::atomic::Ordering::Release);
             return;
         }
         let snapshot: Vec<String> = self
@@ -370,6 +410,7 @@ pub struct PluginPane {
     pub visible_rows: Arc<AtomicU16>,
     pub has_on_key: Arc<AtomicBool>,
     pub has_on_click: Arc<AtomicBool>,
+    pub view: Arc<Mutex<Option<View>>>,
     pub input_tx: InputSender,
 }
 
@@ -382,6 +423,7 @@ impl PluginPane {
             visible_rows: self.visible_rows,
             has_on_key: self.has_on_key,
             has_on_click: self.has_on_click,
+            view: self.view,
             input_tx: self.input_tx,
         }
     }

@@ -1,6 +1,6 @@
 # Task T-111 — Plugin contributes panes via manifest
 Stage: 11
-Status: partial — manifest pane declarations cross-checked against Lua-side register_pane; full View-IR Lua handle deferred
+Status: complete — manifest cross-check + Lua → View IR via `pane:set_view` + minimal painter shipped
 Depends on: T-110, T-43
 Blocks:     T-113
 
@@ -46,20 +46,37 @@ tree the host marshals into the canonical `View` IR.
   `manifest_declares_pane_without_matching_lua_pane_publishes_plugin_error`
   and the matching-decl-is-silent counterpart confirm the validation
   path.
-- *Deferred from full T-111 spec*:
-  - **Lua → Rust `View` IR marshaling**. v0 panes still flow through
-    the line-based `LuaPaneHandle` (`pane:set_lines`); the full
-    handle-returns-View-tree marshaling is a substantial Lua-glue
-    chunk that lands together with the structural `/pane`-tree
-    unification (Stage 9 / T-91).
-  - **`/plugin/<name>/pane/<id>` path-based addressing**. The
-    declared `id` is documented but not yet used as a registry key —
-    panes still install onto the editor's structural tree by slot.
-    Once T-91 collapses LayoutNode into a unified Pane tree, the
-    plugin-pane path becomes its address.
-  - **`StableViewIds` capability gating**. Same situation as T-110 /
-    T-112: capability negotiation is plugin-side wire work, blocked
-    on T-81 full.
+- **2026-05-08 follow-up (full close).**
+  - **Lua → View IR marshaling.** New module
+    `plugin/view_lua.rs` deserializes Lua tables shaped like the
+    JSON wire form into `devix_protocol::view::View`. v0 supports
+    `Empty`, `Text`, `Stack` — enough for plugin sidebars to paint
+    structured content. Other variants (`Buffer`, `TabStrip`,
+    `Sidebar`, `Popup`, `Modal`, `Split`, `List`) are rejected at
+    deserialize time because they carry editor-side context plugins
+    shouldn't fabricate.
+  - `pane:set_view(view_table)` method on `LuaPaneHandle` stores the
+    deserialized View into a shared `Arc<Mutex<Option<View>>>`.
+  - `LuaPane::render` checks the View first; if set, paints via the
+    minimal painter in `view_lua::paint_minimal`. Falls back to the
+    line-based path otherwise (back-compat for plugins on the older
+    `pane:set_lines` API).
+  - The minimal painter mirrors the supported variants (`Stack`
+    proportional layout, `Text` with style runs). The full
+    `paint_view` walker in `devix-tui` becomes the sole renderer at
+    T-95; until then the in-core minimal painter avoids the
+    `devix-core ↔ devix-tui` cycle.
+  - Test: `pane_set_view_stores_view_ir_for_render` exercises a
+    nested stack-of-text from Lua and asserts the deserialized
+    structure.
+- *Still deferred*:
+  - **`/plugin/<name>/pane/<id>` path-based addressing**. Panes
+    install on the editor's structural tree by slot today; the
+    `id` is documented but unused as a registry key. Lands when a
+    consumer of `panes.pane_at(/plugin/<name>/pane/<id>)` arrives.
+  - **`StableViewIds` capability gating**. Synthetic IDs are
+    generated under `/synthetic/plugin/<kind>-<n>` per render — the
+    `StableViewIds` advert is purely informational at v0.
 
 ## Spec references
 - `docs/specs/manifest.md` — *contributes.panes*.
