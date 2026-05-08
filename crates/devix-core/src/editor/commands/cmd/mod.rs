@@ -155,7 +155,7 @@ mod tests {
             action.invoke(&mut ctx);
         }
         let fid = ws.active_frame().unwrap();
-        let frame = ws.root.find_frame(fid).unwrap();
+        let frame = ws.panes.find_frame(fid).unwrap();
         assert_eq!(frame.tabs.len(), 3);
     }
 

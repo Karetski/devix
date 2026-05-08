@@ -43,7 +43,7 @@ impl Editor {
         if root.as_str() != "/pane" {
             return Err(RequestError::UnknownPath(root.clone()));
         }
-        Ok(walk_layout(&self.root, &[], self))
+        Ok(walk_layout(self.panes.root(), &[], self))
     }
 }
 

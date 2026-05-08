@@ -23,6 +23,7 @@ use crate::editor::document::{DocId, Document};
 
 use crate::editor::frame::{FrameId, mint_id};
 use crate::SidebarSlot;
+use crate::editor::registry::PaneRegistry;
 use crate::editor::tree::{LayoutFrame, LayoutNode};
 
 mod focus;
@@ -78,13 +79,13 @@ pub struct Editor {
     /// Stage 6 / T-60 introduces the bus; T-61 / T-62 / T-63 migrate
     /// remaining closure-as-message producers off `EventSink`.
     pub bus: crate::PulseBus,
-    /// Structural Pane tree — the layout source of truth, and **also**
-    /// the only place per-frame state lives now. `LayoutFrame` owns its
-    /// `tabs`/`active_tab`/`tab_strip_scroll`/`recenter_active`
-    /// directly. Lookups by `FrameId` go through tree walks
-    /// (`find_frame` / `find_frame_mut`); they're O(tree-size) which is
-    /// fine at TUI scales.
-    pub root: LayoutNode,
+    /// Pane registry — owner of the structural layout tree. Carved out
+    /// of the god-`Editor` per T-100. Lookups (`find_frame`,
+    /// `at_path`, `pane_at`) and tree mutations (`replace_at`,
+    /// `remove_at`, `collapse_singletons`, `lift_into_horizontal_split`)
+    /// flow through this owner; per-frame state still lives on the
+    /// underlying `LayoutFrame`.
+    pub panes: PaneRegistry,
     /// Head of the responder chain. When `Some`, the modal Pane gets
     /// first crack at every input event before the focused-leaf path,
     /// and paints last (z-top). Concrete modals (`PalettePane`,
@@ -117,7 +118,9 @@ impl Editor {
         };
         let cursor_id = cursors.insert(Cursor::new(doc_id));
         let frame_id = mint_id();
-        let root = LayoutNode::Frame(LayoutFrame::with_cursor(frame_id, cursor_id));
+        let panes = PaneRegistry::new(LayoutNode::Frame(LayoutFrame::with_cursor(
+            frame_id, cursor_id,
+        )));
         let focus = vec![]; // root is the frame leaf itself
 
         let bus = crate::PulseBus::new();
@@ -129,7 +132,7 @@ impl Editor {
         Ok(Self {
             documents,
             cursors,
-            root,
+            panes,
             modal: None,
             focus,
             doc_index,
@@ -141,18 +144,18 @@ impl Editor {
 
     pub fn active_cursor(&self) -> Option<&Cursor> {
         let frame_id = self.active_frame()?;
-        let cursor_id = self.root.find_frame(frame_id)?.active_cursor()?;
+        let cursor_id = self.panes.find_frame(frame_id)?.active_cursor()?;
         self.cursors.get(cursor_id)
     }
 
     pub fn active_cursor_mut(&mut self) -> Option<&mut Cursor> {
         let frame_id = self.active_frame()?;
-        let cursor_id = self.root.find_frame(frame_id)?.active_cursor()?;
+        let cursor_id = self.panes.find_frame(frame_id)?.active_cursor()?;
         self.cursors.get_mut(cursor_id)
     }
 
     pub fn active_frame(&self) -> Option<FrameId> {
-        match self.root.at_path(&self.focus)?.leaf_id()? {
+        match self.panes.at_path(&self.focus)?.leaf_id()? {
             LeafRef::Frame(id) => Some(id),
             LeafRef::Sidebar(_) => None,
         }
@@ -172,43 +175,9 @@ impl Editor {
     /// so callers can take disjoint &mut borrows on the underlying slot-maps.
     pub fn active_ids(&self) -> Option<(FrameId, CursorId, DocId)> {
         let frame_id = self.active_frame()?;
-        let cursor_id = self.root.find_frame(frame_id)?.active_cursor()?;
+        let cursor_id = self.panes.find_frame(frame_id)?.active_cursor()?;
         let doc_id = self.cursors[cursor_id].doc;
         Some((frame_id, cursor_id, doc_id))
-    }
-
-    /// Resolve a `/pane(/<i>)*` path to the corresponding
-    /// `LayoutNode`. The path's segments after `pane` are 0-based
-    /// `Split.children` indices. Returns `None` if `path` doesn't
-    /// have `/pane` as its root, has a non-integer index, or walks
-    /// off the tree.
-    ///
-    /// Per `docs/specs/namespace.md` § *Migration table* and T-52.
-    pub fn pane_at(&self, path: &devix_protocol::path::Path) -> Option<&crate::editor::tree::LayoutNode> {
-        let indices = pane_path_indices(path)?;
-        self.root.at_path(&indices)
-    }
-
-    /// Mutable counterpart of `pane_at`.
-    pub fn pane_at_mut(
-        &mut self,
-        path: &devix_protocol::path::Path,
-    ) -> Option<&mut crate::editor::tree::LayoutNode> {
-        let indices = pane_path_indices(path)?;
-        self.root.at_path_mut(&indices)
-    }
-
-    /// Enumerate every reachable pane path, in pre-order traversal.
-    /// `/pane` is the root; each `Split` adds child indices. `Frame`
-    /// and `Sidebar` leaves contribute their own path; their content
-    /// (sidebar's `Box<dyn Pane>`, frame's tabs / cursors) is not
-    /// surfaced here — those are sub-resources at their own paths
-    /// (`/buf/<id>`, `/cur/<id>`).
-    pub fn pane_paths(&self) -> Vec<devix_protocol::path::Path> {
-        let mut out = Vec::new();
-        let root_path = devix_protocol::path::Path::parse("/pane").expect("/pane is canonical");
-        walk_pane_paths(&self.root, root_path, &mut out);
-        out
     }
 
     /// Pre-paint layout pass.
@@ -235,7 +204,7 @@ impl Editor {
         self.render_cache.sidebar_rects.clear();
         self.render_cache.tab_strips.clear();
 
-        let leaves = self.root.leaves_with_rects(area);
+        let leaves = self.panes.leaves_with_rects(area);
         for (leaf, rect) in leaves {
             let fid = match leaf {
                 LeafRef::Sidebar(slot) => {
@@ -251,7 +220,7 @@ impl Editor {
                 ..rect
             };
 
-            let tabs: Vec<TabInfo> = match self.root.find_frame(fid) {
+            let tabs: Vec<TabInfo> = match self.panes.find_frame(fid) {
                 Some(frame) => frame
                     .tabs
                     .iter()
@@ -273,10 +242,10 @@ impl Editor {
                     .collect(),
                 None => continue,
             };
-            let Some(active_tab) = self.root.find_frame(fid).map(|f| f.active_tab) else {
+            let Some(active_tab) = self.panes.find_frame(fid).map(|f| f.active_tab) else {
                 continue;
             };
-            let Some(f) = self.root.find_frame_mut(fid) else {
+            let Some(f) = self.panes.find_frame_mut(fid) else {
                 continue;
             };
             crate::layout_tabstrip(
@@ -306,7 +275,7 @@ impl Editor {
             );
             self.render_cache.frame_rects.insert(fid, body_area);
 
-            let Some(cid) = self.root.find_frame(fid).and_then(|f| f.active_cursor())
+            let Some(cid) = self.panes.find_frame(fid).and_then(|f| f.active_cursor())
             else {
                 continue;
             };
@@ -349,34 +318,6 @@ pub(super) fn canonicalize_or_keep(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
-/// Decode a `/pane(/<i>)*` path into its `Split.children`-index
-/// list. Returns `None` for any other shape (wrong root, non-integer
-/// segment).
-fn pane_path_indices(path: &devix_protocol::path::Path) -> Option<Vec<usize>> {
-    let mut segs = path.segments();
-    if segs.next()? != "pane" {
-        return None;
-    }
-    segs.map(|s| s.parse::<usize>().ok())
-        .collect::<Option<Vec<_>>>()
-}
-
-fn walk_pane_paths(
-    node: &crate::editor::tree::LayoutNode,
-    here: devix_protocol::path::Path,
-    out: &mut Vec<devix_protocol::path::Path>,
-) {
-    out.push(here.clone());
-    if let crate::editor::tree::LayoutNode::Split(s) = node {
-        for (idx, (child, _)) in s.children.iter().enumerate() {
-            // Each child gets the index appended.
-            if let Ok(child_path) = here.join(&idx.to_string()) {
-                walk_pane_paths(child, child_path, out);
-            }
-        }
-    }
-}
-
 /// Install a notify watcher on `documents[id]` whose callback
 /// publishes `Pulse::DiskChanged { path, fs_path }` into `bus` via
 /// `publish_async`. Replaces the legacy closure-based DiskSink path
@@ -407,7 +348,7 @@ mod tests {
     #[test]
     fn fresh_workspace_has_one_frame_one_cursor() {
         let ws = Editor::open(None).unwrap();
-        assert_eq!(ws.root.frames().len(), 1);
+        assert_eq!(ws.panes.frames().len(), 1);
         assert_eq!(ws.cursors.len(), 1);
         assert_eq!(ws.documents.len(), 1);
         assert!(ws.active_cursor().is_some());
@@ -420,8 +361,8 @@ mod tests {
 
         ws.new_tab();
         let fid = ws.active_frame().unwrap();
-        assert_eq!(ws.root.find_frame(fid).unwrap().tabs.len(), 2);
-        assert_eq!(ws.root.find_frame(fid).unwrap().active_tab, 1);
+        assert_eq!(ws.panes.find_frame(fid).unwrap().tabs.len(), 2);
+        assert_eq!(ws.panes.find_frame(fid).unwrap().active_tab, 1);
 
         assert!(ws.close_active_tab(false));
         let active = ws.active_cursor().unwrap();
@@ -433,7 +374,7 @@ mod tests {
         let mut ws = Editor::open(None).unwrap();
         assert!(ws.close_active_tab(false));
         let fid = ws.active_frame().unwrap();
-        let frame = ws.root.find_frame(fid).unwrap();
+        let frame = ws.panes.find_frame(fid).unwrap();
         assert_eq!(frame.tabs.len(), 1);
         let c = ws.active_cursor().unwrap();
         assert!(ws.documents[c.doc].buffer.path().is_none());
@@ -472,12 +413,12 @@ mod tests {
         let mut ws = Editor::open(None).unwrap();
         let original_fid = ws.active_frame().unwrap();
         ws.split_active(crate::Axis::Horizontal);
-        assert_eq!(ws.root.frames().len(), 2);
+        assert_eq!(ws.panes.frames().len(), 2);
         let new_fid = ws.active_frame().unwrap();
         assert_ne!(original_fid, new_fid);
 
-        let Some(orig_cursor_id) = ws.root.find_frame(original_fid).and_then(|f| f.active_cursor()) else { panic!("original frame has no active cursor"); };
-        let Some(new_cursor_id) = ws.root.find_frame(new_fid).and_then(|f| f.active_cursor()) else { panic!("new frame has no active cursor"); };
+        let Some(orig_cursor_id) = ws.panes.find_frame(original_fid).and_then(|f| f.active_cursor()) else { panic!("original frame has no active cursor"); };
+        let Some(new_cursor_id) = ws.panes.find_frame(new_fid).and_then(|f| f.active_cursor()) else { panic!("new frame has no active cursor"); };
         let original_doc = ws.cursors[orig_cursor_id].doc;
         let new_doc = ws.cursors[new_cursor_id].doc;
         assert_eq!(original_doc, new_doc, "split clones cursor, shares document");
@@ -488,17 +429,17 @@ mod tests {
         use crate::Axis;
         let mut ws = Editor::open(None).unwrap();
         ws.split_active(Axis::Horizontal);
-        assert_eq!(ws.root.frames().len(), 2);
+        assert_eq!(ws.panes.frames().len(), 2);
         ws.close_active_frame();
-        assert_eq!(ws.root.frames().len(), 1);
-        assert!(matches!(&ws.root, LayoutNode::Frame(_)), "single frame at root");
+        assert_eq!(ws.panes.frames().len(), 1);
+        assert!(matches!(ws.panes.root(), LayoutNode::Frame(_)), "single frame at root");
     }
 
     #[test]
     fn toggle_left_sidebar_adds_then_removes_it() {
         let mut ws = Editor::open(None).unwrap();
         ws.toggle_sidebar(SidebarSlot::Left);
-        let split = match &ws.root {
+        let split = match ws.panes.root() {
             LayoutNode::Split(s) => s,
             _ => panic!("root lifted to a Split"),
         };
@@ -508,7 +449,7 @@ mod tests {
         // After removal the root may have collapsed or stayed a single-child
         // split-wrapper; both are valid outcomes (the architecture doesn't
         // require auto-collapse of toggle-removal).
-        assert!(!ws.root.frames().is_empty());
+        assert!(!ws.panes.frames().is_empty());
     }
 
     #[test]
@@ -533,7 +474,7 @@ mod tests {
         let mut ws = Editor::open(None).unwrap();
         ws.toggle_sidebar(SidebarSlot::Left);
         ws.focus_dir(Direction::Left);
-        let node = ws.root.at_path(&ws.focus).expect("focus resolves");
+        let node = ws.panes.at_path(&ws.focus).expect("focus resolves");
         assert_eq!(node.leaf_id(), Some(LeafRef::Sidebar(SidebarSlot::Left)));
     }
 
@@ -564,10 +505,10 @@ mod tests {
         let mut ws = Editor::open(None).unwrap();
         ws.toggle_sidebar(SidebarSlot::Left);
         ws.focus_dir(Direction::Left);
-        let node = ws.root.at_path(&ws.focus).expect("focus resolves");
+        let node = ws.panes.at_path(&ws.focus).expect("focus resolves");
         assert_eq!(node.leaf_id(), Some(LeafRef::Sidebar(SidebarSlot::Left)));
         ws.toggle_sidebar(SidebarSlot::Left);
-        let node = ws.root.at_path(&ws.focus).expect("focus resolves");
+        let node = ws.panes.at_path(&ws.focus).expect("focus resolves");
         assert!(
             matches!(node.leaf_id(), Some(LeafRef::Frame(_))),
             "after sidebar removal, focus should resolve to a Frame leaf",
@@ -580,15 +521,15 @@ mod tests {
         let mut ws = Editor::open(None).unwrap();
         ws.split_active(Axis::Horizontal);
         ws.split_active(Axis::Horizontal);
-        assert_eq!(ws.root.frames().len(), 3);
+        assert_eq!(ws.panes.frames().len(), 3);
 
         ws.close_active_frame();
-        assert_eq!(ws.root.frames().len(), 2);
+        assert_eq!(ws.panes.frames().len(), 2);
         assert!(
-            matches!(&ws.root, LayoutNode::Split(_)),
+            matches!(ws.panes.root(), LayoutNode::Split(_)),
             "two frames should be in a Split, not a flat Frame leaf",
         );
-        let node = ws.root.at_path(&ws.focus).expect("focus resolves");
+        let node = ws.panes.at_path(&ws.focus).expect("focus resolves");
         assert!(matches!(node.leaf_id(), Some(LeafRef::Frame(_))));
     }
 
@@ -646,9 +587,9 @@ mod tests {
         ws.new_tab();
         let fid = ws.active_frame().unwrap();
         ws.activate_tab(fid, 0);
-        assert_eq!(ws.root.find_frame(fid).unwrap().active_tab, 0);
+        assert_eq!(ws.panes.find_frame(fid).unwrap().active_tab, 0);
         ws.activate_tab(fid, 99);
-        assert_eq!(ws.root.find_frame(fid).unwrap().active_tab, 2);
+        assert_eq!(ws.panes.find_frame(fid).unwrap().active_tab, 2);
     }
 
     #[test]
@@ -661,9 +602,9 @@ mod tests {
             hits: Vec::new(),
         });
         ws.scroll_tab_strip(fid, 100);
-        assert_eq!(ws.root.find_frame(fid).unwrap().tab_strip_scroll.0, 30, "clamped to 50 - 20");
+        assert_eq!(ws.panes.find_frame(fid).unwrap().tab_strip_scroll.0, 30, "clamped to 50 - 20");
         ws.scroll_tab_strip(fid, -1000);
-        assert_eq!(ws.root.find_frame(fid).unwrap().tab_strip_scroll.0, 0, "clamped at 0");
+        assert_eq!(ws.panes.find_frame(fid).unwrap().tab_strip_scroll.0, 0, "clamped at 0");
     }
 
     #[test]
@@ -676,7 +617,7 @@ mod tests {
             hits: Vec::new(),
         });
         ws.scroll_tab_strip(fid, 5);
-        assert_eq!(ws.root.find_frame(fid).unwrap().tab_strip_scroll.0, 0);
+        assert_eq!(ws.panes.find_frame(fid).unwrap().tab_strip_scroll.0, 0);
     }
 
     #[test]
@@ -697,14 +638,14 @@ mod tests {
         let mut ws = Editor::open(None).unwrap();
         ws.new_tab();
         let fid = ws.active_frame().unwrap();
-        ws.root.find_frame_mut(fid).unwrap().recenter_active = false;
+        ws.panes.find_frame_mut(fid).unwrap().recenter_active = false;
 
         ws.next_tab();
-        assert!(ws.root.find_frame(fid).unwrap().recenter_active, "keyboard nav requests scroll-into-view");
+        assert!(ws.panes.find_frame(fid).unwrap().recenter_active, "keyboard nav requests scroll-into-view");
 
-        ws.root.find_frame_mut(fid).unwrap().recenter_active = false;
+        ws.panes.find_frame_mut(fid).unwrap().recenter_active = false;
         ws.activate_tab(fid, 0);
-        assert!(!ws.root.find_frame(fid).unwrap().recenter_active,
+        assert!(!ws.panes.find_frame(fid).unwrap().recenter_active,
             "click activation must not request scroll — strip stays put");
     }
 
@@ -714,9 +655,9 @@ mod tests {
         ws.new_tab();
         ws.new_tab();
         let fid = ws.active_frame().unwrap();
-        ws.root.find_frame_mut(fid).unwrap().tab_strip_scroll.0 = 7;
+        ws.panes.find_frame_mut(fid).unwrap().tab_strip_scroll.0 = 7;
         ws.activate_tab(fid, 0);
-        assert_eq!(ws.root.find_frame(fid).unwrap().tab_strip_scroll.0, 7,
+        assert_eq!(ws.panes.find_frame(fid).unwrap().tab_strip_scroll.0, 7,
             "click-to-activate must not relayout the strip");
     }
 
@@ -739,7 +680,7 @@ mod tests {
     fn pane_at_root_returns_root_node() {
         let editor = Editor::open(None).unwrap();
         let p = devix_protocol::path::Path::parse("/pane").unwrap();
-        let node = editor.pane_at(&p).unwrap();
+        let node = editor.panes.pane_at(&p).unwrap();
         assert!(node.is_focusable());
     }
 
@@ -751,18 +692,18 @@ mod tests {
         // After a split, root is a Split with two Frame children.
         let p0 = devix_protocol::path::Path::parse("/pane/0").unwrap();
         let p1 = devix_protocol::path::Path::parse("/pane/1").unwrap();
-        assert!(editor.pane_at(&p0).is_some());
-        assert!(editor.pane_at(&p1).is_some());
+        assert!(editor.panes.pane_at(&p0).is_some());
+        assert!(editor.panes.pane_at(&p1).is_some());
         // Out-of-range index → None.
         let p_bad = devix_protocol::path::Path::parse("/pane/2").unwrap();
-        assert!(editor.pane_at(&p_bad).is_none());
+        assert!(editor.panes.pane_at(&p_bad).is_none());
     }
 
     #[test]
     fn pane_at_rejects_non_pane_root() {
         let editor = Editor::open(None).unwrap();
         let p = devix_protocol::path::Path::parse("/buf/42").unwrap();
-        assert!(editor.pane_at(&p).is_none());
+        assert!(editor.panes.pane_at(&p).is_none());
     }
 
     #[test]
@@ -771,6 +712,7 @@ mod tests {
         let mut editor = Editor::open(None).unwrap();
         editor.split_active(Axis::Horizontal);
         let paths: Vec<String> = editor
+            .panes
             .pane_paths()
             .into_iter()
             .map(|p| p.as_str().to_string())

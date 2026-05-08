@@ -1,6 +1,6 @@
 # Task T-100 — Editor split: pane registry owner
 Stage: 10
-Status: pending
+Status: complete
 Depends on: T-95
 Blocks:     T-101, T-102, T-103, T-104
 
@@ -26,10 +26,10 @@ their pieces cleanly.
 - `crates/devix-core/src/editor/editor.rs`: delegate accessors
 
 ## Acceptance criteria
-- [ ] PaneRegistry owns the pane tree.
-- [ ] No external code reaches into Editor's private pane fields.
-- [ ] `cargo build --workspace` passes.
-- [ ] `cargo test --workspace` passes.
+- [x] PaneRegistry owns the pane tree.
+- [x] No external code reaches into Editor's private pane fields.
+- [x] `cargo build --workspace` passes.
+- [x] `cargo test --workspace` passes.
 
 ## Spec references
 - `docs/specs/crates.md` — *crates/editor/src/* (Stage-7+ internal

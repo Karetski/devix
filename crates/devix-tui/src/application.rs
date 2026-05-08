@@ -186,7 +186,7 @@ impl<B: Backend> Application<B> {
                 Pulse::OpenPathRequested { fs_path, .. } => {
                     self.with_context("open-path-requested", |ctx| {
                         if ctx.editor.active_frame().is_none() {
-                            if let Some(fid) = ctx.editor.root.frames().first().copied() {
+                            if let Some(fid) = ctx.editor.panes.frames().first().copied() {
                                 ctx.editor.focus_frame(fid);
                             }
                         }
@@ -221,7 +221,7 @@ impl<B: Backend> Application<B> {
             let area = frame.area();
             editor.layout(area);
 
-            let focused_leaf = editor.root.at_path(&editor.focus).and_then(|n| n.leaf_id());
+            let focused_leaf = editor.panes.at_path(&editor.focus).and_then(|n| n.leaf_id());
             let layout_ctx = LayoutCtx {
                 documents: &editor.documents,
                 cursors: &editor.cursors,
@@ -229,7 +229,7 @@ impl<B: Backend> Application<B> {
                 render_cache: &editor.render_cache,
                 focused_leaf,
             };
-            editor.root.render(area, frame, &layout_ctx);
+            editor.panes.render(area, frame, &layout_ctx);
 
             if let Some(modal) = editor.modal.as_ref() {
                 render::paint_modal(modal.as_ref(), area, frame, theme, commands, keymap);

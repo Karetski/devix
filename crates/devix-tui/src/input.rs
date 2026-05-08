@@ -223,11 +223,11 @@ fn dispatch_to_focused_leaf(ctx: &mut AppContext<'_>, ev: &Event) -> Outcome {
     let focus = ctx.editor.focus.clone();
     let area = ctx
         .editor
-        .root
+        .panes
         .at_path_with_rect(root_area(ctx), &focus)
         .map(|(rect, _)| rect)
         .unwrap_or_default();
-    let Some(leaf) = ctx.editor.root.at_path_mut(&focus) else {
+    let Some(leaf) = ctx.editor.panes.at_path_mut(&focus) else {
         return Outcome::Ignored;
     };
     let mut hctx = HandleCtx::default();
@@ -246,17 +246,17 @@ fn dispatch_to_leaf_at(
     let area = root_area(ctx);
     let Some((leaf_ref, leaf_area)) = ctx
         .editor
-        .root
+        .panes
         .leaves_with_rects(area)
         .into_iter()
         .find(|(_, r)| col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height)
     else {
         return Outcome::Ignored;
     };
-    let Some(path) = ctx.editor.root.path_to_leaf(leaf_ref) else {
+    let Some(path) = ctx.editor.panes.path_to_leaf(leaf_ref) else {
         return Outcome::Ignored;
     };
-    let Some(leaf) = ctx.editor.root.at_path_mut(&path) else {
+    let Some(leaf) = ctx.editor.panes.at_path_mut(&path) else {
         return Outcome::Ignored;
     };
     let mut hctx = HandleCtx::default();

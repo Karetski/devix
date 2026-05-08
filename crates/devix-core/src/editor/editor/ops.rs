@@ -1,8 +1,9 @@
 //! Mutating operations on an Editor: tabs, frames/splits, sidebars,
 //! file-open routing.
 //!
-//! Layout mutations rewrite `Editor.root` directly via `tree::mutate`
-//! helpers. The structural tree is the source of truth.
+//! Layout mutations rewrite the tree via `Editor.panes` (the
+//! `PaneRegistry` carved out at T-100). The structural tree remains
+//! the source of truth; the registry is the seam.
 
 use std::path::PathBuf;
 
@@ -12,7 +13,7 @@ use crate::Pane;
 use crate::editor::document::{DocId, Document};
 use crate::editor::frame::mint_id;
 use crate::{Axis, SidebarSlot};
-use crate::editor::tree::{LayoutFrame, LayoutNode, LayoutSidebar, LayoutSplit, mutate};
+use crate::editor::tree::{LayoutFrame, LayoutNode, LayoutSidebar, LayoutSplit};
 use crate::editor::cursor::{Cursor, CursorId, ScrollMode};
 
 use super::{Editor, LeafRef, canonicalize_or_keep};
@@ -23,7 +24,7 @@ impl Editor {
         let Some(fid) = self.active_frame() else { return };
         let did = self.documents.insert(Document::empty());
         let cid = self.cursors.insert(Cursor::new(did));
-        let Some(frame) = self.root.find_frame_mut(fid) else { return };
+        let Some(frame) = self.panes.find_frame_mut(fid) else { return };
         frame.tabs.push(cid);
         let new_idx = frame.tabs.len() - 1;
         frame.set_active(new_idx);
@@ -32,14 +33,14 @@ impl Editor {
     /// Returns false if the active doc is dirty; the caller should warn.
     pub fn close_active_tab(&mut self, force: bool) -> bool {
         let Some(fid) = self.active_frame() else { return false };
-        let Some(frame) = self.root.find_frame(fid) else { return false };
+        let Some(frame) = self.panes.find_frame(fid) else { return false };
         let Some(cid) = frame.active_cursor() else { return false };
         let did = self.cursors[cid].doc;
         if !force && self.documents[did].buffer.dirty() { return false; }
 
         // After this point we mutate. Re-borrow mutably; the immutable
         // `frame` ref above is dropped.
-        let frame = match self.root.find_frame_mut(fid) {
+        let frame = match self.panes.find_frame_mut(fid) {
             Some(f) => f,
             None => return false,
         };
@@ -47,7 +48,7 @@ impl Editor {
             // Last tab in the frame: replace with a fresh scratch cursor.
             let new_did = self.documents.insert(Document::empty());
             let new_cid = self.cursors.insert(Cursor::new(new_did));
-            let frame = match self.root.find_frame_mut(fid) {
+            let frame = match self.panes.find_frame_mut(fid) {
                 Some(f) => f,
                 None => return false,
             };
@@ -69,7 +70,7 @@ impl Editor {
 
     pub fn next_tab(&mut self) {
         let Some(fid) = self.active_frame() else { return };
-        let Some(frame) = self.root.find_frame_mut(fid) else { return };
+        let Some(frame) = self.panes.find_frame_mut(fid) else { return };
         if frame.tabs.is_empty() { return; }
         let next = (frame.active_tab + 1) % frame.tabs.len();
         frame.set_active(next);
@@ -77,7 +78,7 @@ impl Editor {
 
     pub fn prev_tab(&mut self) {
         let Some(fid) = self.active_frame() else { return };
-        let Some(frame) = self.root.find_frame_mut(fid) else { return };
+        let Some(frame) = self.panes.find_frame_mut(fid) else { return };
         if frame.tabs.is_empty() { return; }
         let prev = (frame.active_tab + frame.tabs.len() - 1) % frame.tabs.len();
         frame.set_active(prev);
@@ -103,11 +104,11 @@ impl Editor {
         let Some(fid) = self.active_frame() else {
             return Err(anyhow::anyhow!("no active frame to open path into"));
         };
-        let Some(old_cid) = self.root.find_frame(fid).and_then(|f| f.active_cursor()) else {
+        let Some(old_cid) = self.panes.find_frame(fid).and_then(|f| f.active_cursor()) else {
             return Err(anyhow::anyhow!("active frame has no tabs"));
         };
         let new_cid = self.cursors.insert(Cursor::new(did));
-        let Some(frame) = self.root.find_frame_mut(fid) else {
+        let Some(frame) = self.panes.find_frame_mut(fid) else {
             return Err(anyhow::anyhow!("active frame disappeared"));
         };
         frame.tabs[frame.active_tab] = new_cid;
@@ -119,7 +120,7 @@ impl Editor {
 
     /// Close the active frame if there are 2+ frames in the tree.
     pub fn close_active_frame(&mut self) {
-        if self.root.frames().len() <= 1 { return; }
+        if self.panes.frames().len() <= 1 { return; }
         let Some(fid) = self.active_frame() else { return };
         let path = self.focus.clone();
         if path.is_empty() { return; } // root is a single Frame; same as len==1
@@ -127,22 +128,22 @@ impl Editor {
         // Snapshot the dying frame's tabs *before* the structural mutation
         // drops the LayoutFrame.
         let dying_cursors: Vec<CursorId> = self
-            .root
+            .panes
             .find_frame(fid)
             .map(|f| f.tabs.clone())
             .unwrap_or_default();
 
-        if !mutate::remove_at(&mut self.root, &path) {
+        if !self.panes.remove_at(&path) {
             return;
         }
-        mutate::collapse_singletons(&mut self.root);
+        self.panes.collapse_singletons();
         for cid in dying_cursors {
             let did = self.cursors[cid].doc;
             self.cursors.remove(cid);
             self.try_remove_orphan_doc(did);
         }
         // Re-anchor focus to the first remaining frame, deepest path.
-        self.focus = first_frame_path(&self.root);
+        self.focus = first_frame_path(self.panes.root());
     }
 
     /// Replace the focused Frame leaf with a Split containing two frames:
@@ -153,7 +154,7 @@ impl Editor {
         let focus_path = self.focus.clone();
 
         // Snapshot the active frame's state before mutating the tree.
-        let Some(active_frame) = self.root.find_frame(active_fid) else { return };
+        let Some(active_frame) = self.panes.find_frame(active_fid) else { return };
         let original_tabs = active_frame.tabs.clone();
         let original_active_tab = active_frame.active_tab;
         let original_scroll = active_frame.tab_strip_scroll;
@@ -186,7 +187,7 @@ impl Editor {
                 (LayoutNode::Frame(LayoutFrame::with_cursor(new_frame_id, new_cursor_id)), 1),
             ],
         });
-        if !mutate::replace_at(&mut self.root, &focus_path, new_split) {
+        if !self.panes.replace_at(&focus_path, new_split) {
             return;
         }
         let mut new_focus = focus_path;
@@ -198,29 +199,28 @@ impl Editor {
     /// slot leaf doesn't exist yet, this also creates it (toggling the
     /// slot open). If a previous content was installed, it's replaced.
     pub fn install_sidebar_pane(&mut self, slot: SidebarSlot, pane: Box<dyn Pane>) {
-        if !self.root.sidebar_present(slot) {
+        if !self.panes.sidebar_present(slot) {
             self.toggle_sidebar(slot);
         }
-        if let Some(leaf) = self.root.find_sidebar_mut(slot) {
+        if let Some(leaf) = self.panes.find_sidebar_mut(slot) {
             leaf.content = Some(pane);
         }
     }
 
     pub fn toggle_sidebar(&mut self, slot: SidebarSlot) {
         // Lift the root into a horizontal Split if it isn't one.
-        let needs_lift = !matches!(&self.root, LayoutNode::Split(s) if s.axis == Axis::Horizontal);
-        if needs_lift {
-            mutate::lift_into_horizontal_split(&mut self.root);
+        if !self.panes.root_is_horizontal_split() {
+            self.panes.lift_into_horizontal_split();
             // The focus path now needs a leading 0 (the editor body is child 0).
             let mut new_focus = vec![0];
             new_focus.extend(self.focus.iter().copied());
             self.focus = new_focus;
         }
 
-        let split = match &mut self.root {
-            LayoutNode::Split(s) => s,
-            _ => unreachable!("root is a horizontal LayoutSplit after lift"),
-        };
+        let split = self
+            .panes
+            .root_split_mut()
+            .expect("root is a horizontal LayoutSplit after lift");
 
         let existing = split
             .children

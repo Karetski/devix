@@ -20,7 +20,7 @@ impl Editor {
     pub fn focus_dir(&mut self, dir: Direction) {
         let area = root_area(&self.render_cache);
         if let Some(target_path) =
-            compute_focus_target(&self.root, area, &self.focus, dir, &self.render_cache)
+            compute_focus_target(self.panes.root(), area, &self.focus, dir, &self.render_cache)
         {
             self.focus = target_path;
             return;
@@ -32,7 +32,7 @@ impl Editor {
             _ => None,
         };
         if let Some(slot) = needed {
-            if let Some(path) = self.root.path_to_leaf(LeafRef::Sidebar(slot)) {
+            if let Some(path) = self.panes.path_to_leaf(LeafRef::Sidebar(slot)) {
                 self.focus = path;
             }
         }
@@ -40,7 +40,7 @@ impl Editor {
 
     /// Move focus to `frame`'s leaf, if it exists in the layout tree.
     pub fn focus_frame(&mut self, frame: FrameId) -> bool {
-        if let Some(path) = self.root.path_to_leaf(LeafRef::Frame(frame)) {
+        if let Some(path) = self.panes.path_to_leaf(LeafRef::Frame(frame)) {
             self.focus = path;
             true
         } else {

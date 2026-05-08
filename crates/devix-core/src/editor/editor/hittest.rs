@@ -48,7 +48,7 @@ impl Editor {
             Some(strip) => strip.content_width.saturating_sub(strip.strip_rect.width as u32) as i64,
             None => return,
         };
-        let Some(f) = self.root.find_frame_mut(frame) else { return };
+        let Some(f) = self.panes.find_frame_mut(frame) else { return };
         let nx = (f.tab_strip_scroll.0 as i64 + delta as i64).clamp(0, max_x);
         f.tab_strip_scroll.0 = nx as u32;
     }
@@ -56,7 +56,7 @@ impl Editor {
     /// Activate `idx` on `frame` from a click on a visible tab. Does *not*
     /// scroll the strip — the user already picked a tab they could see.
     pub fn activate_tab(&mut self, frame: FrameId, idx: usize) {
-        let Some(f) = self.root.find_frame_mut(frame) else { return };
+        let Some(f) = self.panes.find_frame_mut(frame) else { return };
         if f.tabs.is_empty() { return; }
         f.select_visible(idx.min(f.tabs.len() - 1));
     }
@@ -64,9 +64,9 @@ impl Editor {
     /// Set focus to the leaf whose Rect contains (col, row), if any.
     pub fn focus_at_screen(&mut self, col: u16, row: u16) {
         let area = self.outer_editor_area();
-        let Some((_, node)) = self.root.pane_at(area, col, row) else { return };
+        let Some((_, node)) = self.panes.pane_at_xy(area, col, row) else { return };
         let Some(leaf) = node.leaf_id() else { return };
-        if let Some(path) = path_to_leaf(&self.root, area, leaf) {
+        if let Some(path) = path_to_leaf(self.panes.root(), area, leaf) {
             self.focus = path;
         }
     }
