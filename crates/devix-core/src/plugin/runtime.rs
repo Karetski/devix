@@ -49,14 +49,15 @@ use tokio::sync::mpsc::{
 use tokio::sync::oneshot;
 
 use crate::editor::{Command, CommandId, CommandRegistry, Editor, Keymap};
+use crate::settings_store::SettingsStore;
 use crate::SidebarSlot;
 
 use super::bridge::make_command_action;
-use super::host::PluginHost;
+use super::host::{PluginHost, SharedSettingsStore};
 use super::pane_handle::LuaPane;
 use super::{
     Contributions, InputSender, InvokeSender, PaneSpec, PluginInput, PluginMsg,
-    sanitize_plugin_segment,
+    sanitize_plugin_segment, send_input,
 };
 
 /// Push-callback for plugin messages. Production callers pass one of
@@ -117,7 +118,7 @@ impl PluginRuntime {
     /// queue; consumers drain via [`PluginRuntime::drain_messages`].
     /// Kept for tests; production uses [`Self::load_supervised`].
     pub fn load(path: &Path) -> Result<Self> {
-        Self::load_full(path, None, None)
+        Self::load_full(path, None, None, None)
     }
 
     /// Load with a push-callback. Every emitted [`PluginMsg`] is
@@ -126,7 +127,7 @@ impl PluginRuntime {
     /// fresh bus that nothing else listens to — for the editor-bus
     /// path use [`Self::load_supervised`] instead.
     pub fn load_with_sink(path: &Path, sink: MsgSink) -> Result<Self> {
-        Self::load_full(path, Some(sink), None)
+        Self::load_full(path, Some(sink), None, None)
     }
 
     /// Load with a push-callback and a bus to publish lifecycle pulses
@@ -140,13 +141,27 @@ impl PluginRuntime {
         sink: MsgSink,
         bus: crate::PulseBus,
     ) -> Result<Self> {
-        Self::load_full(path, Some(sink), Some(bus))
+        Self::load_full(path, Some(sink), Some(bus), None)
+    }
+
+    /// Like [`Self::load_supervised`] but also threads a shared
+    /// `SettingsStore` into the plugin host so the Lua bridge's
+    /// `devix.setting(key)` reads + `devix.on_setting_changed(cb)`
+    /// observers see the editor's settings state. T-113 full close.
+    pub fn load_supervised_with_settings(
+        path: &Path,
+        sink: MsgSink,
+        bus: crate::PulseBus,
+        settings: Arc<Mutex<SettingsStore>>,
+    ) -> Result<Self> {
+        Self::load_full(path, Some(sink), Some(bus), Some(settings))
     }
 
     fn load_full(
         path: &Path,
         msg_sink: Option<MsgSink>,
         bus: Option<crate::PulseBus>,
+        settings_store: Option<SharedSettingsStore>,
     ) -> Result<Self> {
         let (msg_tx, msg_rx) = unbounded_channel::<PluginMsg>();
 
@@ -173,6 +188,14 @@ impl PluginRuntime {
         // `load_supervised`).
         let bus = bus.unwrap_or_else(crate::PulseBus::new);
 
+        // The setting-callbacks list is shared between the host (where
+        // `devix.on_setting_changed(cb)` registers handles) and the
+        // bus subscriber that pushes per-callback `PluginInput::SettingChanged`
+        // when a `Pulse::SettingChanged` arrives. The runtime publishes
+        // a clone into the bus subscription closure; the host writes
+        // through its own clone during Lua execution.
+        let setting_callbacks: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+
         let factory_invoke = invoke_tx.clone();
         let factory_input = input_tx.clone();
         let factory_shutdown = shutdown_tx.clone();
@@ -180,6 +203,8 @@ impl PluginRuntime {
         let factory_msg_tx = msg_tx.clone();
         let factory_msg_sink = msg_sink.clone();
         let factory_path = path.clone();
+        let factory_settings = settings_store.clone();
+        let factory_setting_cbs = setting_callbacks.clone();
 
         let factory = move || {
             // Per-spawn channels. The fresh receivers stay local to
@@ -216,8 +241,10 @@ impl PluginRuntime {
                     return;
                 }
             };
+            let settings_for_host = factory_settings.clone();
+            let host_setting_cbs = factory_setting_cbs.clone();
             runtime.block_on(async move {
-                let host = match PluginHost::new() {
+                let host = match PluginHost::new_with(settings_for_host) {
                     Ok(h) => h,
                     Err(e) => {
                         if let Some(tx) = init_tx {
@@ -235,6 +262,15 @@ impl PluginRuntime {
                         return;
                     }
                 };
+                // Mirror the host's freshly-registered setting-changed
+                // callbacks into the runtime-level shared list so the
+                // bus subscriber sees them.
+                if let (Ok(mut shared), Ok(host_cbs)) = (
+                    host_setting_cbs.lock(),
+                    host.setting_callbacks().lock(),
+                ) {
+                    *shared = host_cbs.clone();
+                }
                 forward_messages(&host, &msg_tx_clone, msg_sink_clone.as_ref());
                 if let Some(tx) = init_tx {
                     if tx.send(Ok(contributions)).is_err() {
@@ -290,6 +326,42 @@ impl PluginRuntime {
         let contributions = init_rx
             .recv()
             .context("plugin host thread exited before reporting load result")??;
+
+        // Bus subscription: when `Pulse::SettingChanged` fires, fan
+        // out one `PluginInput::SettingChanged` per registered Lua
+        // callback through the (channel-refresh-aware) input sender.
+        // The subscriber runs on whichever thread published the
+        // pulse; it never touches Lua directly. T-113.
+        {
+            use devix_protocol::pulse::{PulseFilter, PulseKind};
+            let cb_handles = setting_callbacks.clone();
+            let input_sender = input_tx.clone();
+            bus.subscribe(
+                PulseFilter::kind(PulseKind::SettingChanged),
+                move |pulse| {
+                    if let devix_protocol::pulse::Pulse::SettingChanged { setting, value } =
+                        pulse
+                    {
+                        let key = setting_path_to_key(setting);
+                        let handles: Vec<u64> = cb_handles
+                            .lock()
+                            .ok()
+                            .map(|h| h.clone())
+                            .unwrap_or_default();
+                        for handle in handles {
+                            let _ = send_input(
+                                &input_sender,
+                                PluginInput::SettingChanged {
+                                    handle,
+                                    key: key.clone(),
+                                    value: value.clone(),
+                                },
+                            );
+                        }
+                    }
+                },
+            );
+        }
 
         // Plugin lifecycle: announce the load on the bus the caller
         // cares about. Plugin name is taken from the source file's
@@ -545,6 +617,21 @@ impl PluginRuntime {
 
 fn leak_str(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())
+}
+
+/// Decode a `/setting/<key>` path back to the dotted key. Returns
+/// the path's last segment (best-effort); paths shaped differently
+/// fall back to the full string form.
+fn setting_path_to_key(path: &devix_protocol::path::Path) -> String {
+    let mut segs = path.segments();
+    if segs.next() == Some("setting") {
+        if let Some(key) = segs.next() {
+            if segs.next().is_none() {
+                return key.to_string();
+            }
+        }
+    }
+    path.as_str().to_string()
 }
 
 fn forward_messages(

@@ -1,6 +1,6 @@
 # Task T-113 — Plugin contributes settings via manifest + Lua API
 Stage: 11
-Status: partial — store, set/get, Pulse::SettingChanged, manifest seed, override file landed; Lua bridge gated on T-81 full
+Status: complete — store, set/get, Pulse::SettingChanged, manifest seed, override file, Lua bridge (read + observe) all shipped
 Depends on: T-110, T-111, T-112
 Blocks:     all of Stage 12+
 
@@ -28,7 +28,7 @@ boolean/string/number/enum (locked per `manifest.md` Q2).
 - `crates/devix-core/src/plugin/bridge.rs`: `devix.setting` API
 
 ## Acceptance criteria
-- [ ] A test plugin reads its declared setting via `devix.setting`.
+- [x] A test plugin reads its declared setting via `devix.setting`.
 - [x] Setting file overrides defaults.
 - [x] `cargo build --workspace` passes.
 - [x] `cargo test --workspace` passes.
@@ -61,14 +61,33 @@ boolean/string/number/enum (locked per `manifest.md` Q2).
   `main.rs` seeds it from `BUILTIN_MANIFEST` + every discovered
   plugin manifest, then applies overrides from
   `$XDG_CONFIG_HOME/devix/settings.json`.
-- *Still deferred*: the `devix.setting(key)` /
-  `devix.on_setting_changed(callback)` Lua bridges. Wiring them
-  threads `Arc<Mutex<SettingsStore>>` through `PluginHost::new` and
-  installs the closures inside `install_devix_table` — same
-  constructor surface T-81 full's module reorg is touching. The
-  protocol-side wire form (`SettingValue` in `devix-protocol`,
-  `Pulse::SettingChanged` in the catalog) is in place so the bridge
-  can light up cleanly when T-81 lands.
+- **2026-05-08 full close (T-81 unblocked the bridge).**
+  - `Editor.settings_store` shifts to `Arc<Mutex<SettingsStore>>`
+    so the plugin worker thread shares the store with the editor.
+  - `PluginHost::new_with(Option<SharedSettingsStore>)` accepts the
+    shared store; `install_devix_table` exposes
+    `devix.setting(key) -> value | nil` (lock + read; unknown keys
+    return `nil`) and `devix.on_setting_changed(callback)` (registers
+    a Lua callback handle keyed in the host's `setting_callbacks`
+    list).
+  - `PluginInput::SettingChanged { handle, key, value }` carries
+    one bus-driven invocation across the worker boundary;
+    `dispatch_input` calls `host.invoke_with(handle, (key, value))`
+    with the value marshaled into a Lua scalar.
+  - `PluginRuntime::load_supervised_with_settings` is the
+    settings-aware constructor; on success it subscribes to
+    `Pulse::SettingChanged` and fans out one
+    `PluginInput::SettingChanged` per registered Lua handle through
+    the channel-refresh-aware `input_tx`. On restart, the host
+    re-registers callbacks deterministically and the runtime mirrors
+    the new handles into its shared list.
+  - `main.rs` switches plugin loading to
+    `load_supervised_with_settings`, threading
+    `editor.settings_store.clone()` into every supervised plugin.
+  - Tests: `devix_setting_reads_from_shared_store` exercises the
+    read path; `on_setting_changed_dispatches_via_input_channel`
+    exercises the observe path (host-level dispatch matching what
+    the bus subscriber drives).
 
 ## Spec references
 - `docs/specs/manifest.md` — *contributes.settings*, *Open Q2*.

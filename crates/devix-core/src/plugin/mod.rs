@@ -151,6 +151,16 @@ pub enum PluginMsg {
 pub enum PluginInput {
     Key { pane_id: u64, event: KeyEvent },
     Click { pane_id: u64, x: u16, y: u16, button: MouseButton },
+    /// A `Pulse::SettingChanged` matched a registered
+    /// `devix.on_setting_changed(callback)` handler. The runtime's
+    /// bus subscriber pushes one of these per registered callback;
+    /// the worker dispatches by calling `host.invoke_with(handle, …)`
+    /// with the (key, value) marshaled into a Lua table. T-113.
+    SettingChanged {
+        handle: u64,
+        key: String,
+        value: devix_protocol::manifest::SettingValue,
+    },
 }
 
 /// Send `handle` through `sender` if its lock is reachable. Silent
@@ -860,6 +870,132 @@ mod tests {
             let v: Value = host.lua().globals().get(name).unwrap();
             assert!(matches!(v, Value::Nil), "global `{name}` was not stripped");
         }
+    }
+
+    #[test]
+    fn devix_setting_reads_from_shared_store() {
+        use crate::settings_store::SettingsStore;
+        use devix_protocol::manifest::{
+            Contributes, Engines, Manifest, SettingSpec, SettingValue,
+        };
+        use devix_protocol::protocol::ProtocolVersion;
+        use std::collections::HashMap;
+
+        let p = write_temp(
+            "settings_read",
+            r#"
+                devix.register_action({
+                    id = "report",
+                    label = "Report",
+                    run = function()
+                        devix.status(tostring(devix.setting("editor.tab_size")))
+                    end,
+                })
+            "#,
+        );
+
+        let mut settings_map = HashMap::new();
+        settings_map.insert(
+            "editor.tab_size".to_string(),
+            SettingSpec::Number { default: 4.0, label: "Tab".into() },
+        );
+        let manifest = Manifest {
+            name: "settings_read".into(),
+            version: "0.1.0".into(),
+            engines: Engines {
+                protocol_version: ProtocolVersion::new(0, 1),
+                pulse_bus: ProtocolVersion::new(0, 1),
+                manifest: ProtocolVersion::new(0, 1),
+            },
+            entry: None,
+            contributes: Contributes {
+                settings: settings_map,
+                ..Default::default()
+            },
+            subscribe: Vec::new(),
+        };
+
+        let store = std::sync::Arc::new(std::sync::Mutex::new(SettingsStore::new()));
+        store.lock().unwrap().register_from_manifest(&manifest);
+        // Override the default so the test asserts we read live state.
+        let bus = crate::PulseBus::new();
+        store
+            .lock()
+            .unwrap()
+            .set("editor.tab_size", SettingValue::Number(8.0), &bus);
+
+        let host = PluginHost::new_with(Some(store)).unwrap();
+        let contributions = host.load_file(&p).unwrap();
+        host.invoke(contributions.commands[0].handle);
+        let msgs = host.drain_messages();
+        // Lua's tostring(8.0) renders as "8.0" (mlua's default).
+        assert!(
+            matches!(&msgs[..], [PluginMsg::Status(s)] if s == "8.0"),
+            "expected `8.0`, got {msgs:?}",
+        );
+    }
+
+    #[test]
+    fn on_setting_changed_dispatches_via_input_channel() {
+        use crate::settings_store::SettingsStore;
+        use devix_protocol::manifest::{
+            Contributes, Engines, Manifest, SettingSpec, SettingValue,
+        };
+        use devix_protocol::protocol::ProtocolVersion;
+        use std::collections::HashMap;
+
+        let p = write_temp(
+            "settings_observe",
+            r#"
+                devix.on_setting_changed(function(key, value)
+                    devix.status("changed:" .. key .. "=" .. tostring(value))
+                end)
+            "#,
+        );
+        let mut settings_map = HashMap::new();
+        settings_map.insert(
+            "ui.compact".to_string(),
+            SettingSpec::Boolean { default: false, label: "Compact".into() },
+        );
+        let manifest = Manifest {
+            name: "settings_observe".into(),
+            version: "0.1.0".into(),
+            engines: Engines {
+                protocol_version: ProtocolVersion::new(0, 1),
+                pulse_bus: ProtocolVersion::new(0, 1),
+                manifest: ProtocolVersion::new(0, 1),
+            },
+            entry: None,
+            contributes: Contributes {
+                settings: settings_map,
+                ..Default::default()
+            },
+            subscribe: Vec::new(),
+        };
+        let store = std::sync::Arc::new(std::sync::Mutex::new(SettingsStore::new()));
+        store.lock().unwrap().register_from_manifest(&manifest);
+
+        let host = PluginHost::new_with(Some(store)).unwrap();
+        host.load_file(&p).unwrap();
+
+        // Pull the registered handle so we can dispatch directly
+        // (mirrors what the runtime's bus subscriber would do).
+        let handles: Vec<u64> = host
+            .setting_callbacks()
+            .lock()
+            .map(|h| h.clone())
+            .unwrap_or_default();
+        assert_eq!(handles.len(), 1, "one on_setting_changed handler registered");
+        host.dispatch_input(PluginInput::SettingChanged {
+            handle: handles[0],
+            key: "ui.compact".into(),
+            value: SettingValue::Boolean(true),
+        });
+        let msgs = host.drain_messages();
+        assert!(
+            matches!(&msgs[..], [PluginMsg::Status(s)] if s == "changed:ui.compact=true"),
+            "expected changed status; got {msgs:?}",
+        );
     }
 
     #[test]

@@ -16,12 +16,15 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton};
 use mlua::{Function, Lua, LuaOptions, RegistryKey, StdLib, Table, Value};
 
 use crate::SidebarSlot;
+use crate::settings_store::SettingsStore;
 
 use super::pane_handle::{LuaPaneHandle, PaneCallbackKeys, PaneCallbackKind};
 use super::{
     CommandSpec, Contributions, PaneSpec, PluginInput, PluginMsg, key_code_to_string, next_handle,
     parse_chord, parse_lines_value,
 };
+
+pub(crate) type SharedSettingsStore = Arc<Mutex<SettingsStore>>;
 
 /// The plugin host: owns the Lua VM and the callback registry. Stays
 /// on one thread for its lifetime — never crosses thread boundaries
@@ -45,10 +48,28 @@ pub struct PluginHost {
     /// Contributions accumulated by registered Lua functions during
     /// `load_file`. Cleared on every fresh `load_file`.
     contributions: Arc<Mutex<Contributions>>,
+    /// Optional settings store for `devix.setting(key)` lookups +
+    /// `devix.on_setting_changed(cb)` registrations. None when
+    /// running in legacy/test contexts that don't share a store
+    /// with the editor — Lua reads return `nil`.
+    settings_store: Option<SharedSettingsStore>,
+    /// Registered `devix.on_setting_changed(callback)` handles.
+    /// Shared with the runtime's bus subscriber so it knows which
+    /// Lua callbacks to fire when `Pulse::SettingChanged` arrives.
+    setting_callbacks: Arc<Mutex<Vec<u64>>>,
 }
 
 impl PluginHost {
     pub fn new() -> Result<Self> {
+        Self::new_with(None)
+    }
+
+    /// Construct with a shared settings store. The Lua bridge's
+    /// `devix.setting(key)` reads through this store; an editor that
+    /// owns the same `Arc<Mutex<SettingsStore>>` mutates via
+    /// `SettingsStore::set` and the bus delivers `Pulse::SettingChanged`
+    /// to subscribers (including the plugin runtime's bridge).
+    pub fn new_with(settings_store: Option<SharedSettingsStore>) -> Result<Self> {
         let lua = Lua::new_with(StdLib::ALL_SAFE, LuaOptions::default())
             .context("creating safe Lua state")?;
         strip_dangerous_globals(&lua)?;
@@ -59,6 +80,8 @@ impl PluginHost {
         let next_handle = Arc::new(Mutex::new(1u64));
         let contributions = Arc::new(Mutex::new(Contributions::default()));
 
+        let setting_callbacks = Arc::new(Mutex::new(Vec::<u64>::new()));
+
         let host = Self {
             lua,
             callbacks,
@@ -66,9 +89,18 @@ impl PluginHost {
             outbox,
             next_handle,
             contributions,
+            settings_store,
+            setting_callbacks,
         };
         host.install_devix_table()?;
         Ok(host)
+    }
+
+    /// Crate-private accessor — the runtime's bus subscriber locks
+    /// this list to know which registered callbacks to fire when
+    /// `Pulse::SettingChanged` arrives.
+    pub(crate) fn setting_callbacks(&self) -> Arc<Mutex<Vec<u64>>> {
+        self.setting_callbacks.clone()
     }
 
     fn install_devix_table(&self) -> Result<()> {
@@ -237,6 +269,57 @@ impl PluginHost {
             )?;
         }
 
+        // devix.setting(key) -> value | nil
+        //
+        // Read the current value of a setting registered through any
+        // manifest's `contributes.settings`. The Lua return type
+        // mirrors the resolved `SettingValue` (boolean, number,
+        // string, or enum-string). Unknown keys return `nil`. T-113.
+        {
+            let store = self.settings_store.clone();
+            devix.set(
+                "setting",
+                lua.create_function(move |lua, key: String| {
+                    let Some(store) = store.as_ref() else {
+                        return Ok(mlua::Value::Nil);
+                    };
+                    let guard = store.lock().map_err(|e| {
+                        mlua::Error::external(anyhow!("settings store poisoned: {e}"))
+                    })?;
+                    match guard.get(&key) {
+                        Some(value) => setting_value_to_lua(lua, value),
+                        None => Ok(mlua::Value::Nil),
+                    }
+                })?,
+            )?;
+        }
+
+        // devix.on_setting_changed(callback)
+        //
+        // Register a Lua function called with `(key, value)` on every
+        // `Pulse::SettingChanged`. T-113.
+        {
+            let callbacks = self.callbacks.clone();
+            let setting_callbacks = self.setting_callbacks.clone();
+            let next_handle_arc = self.next_handle.clone();
+            devix.set(
+                "on_setting_changed",
+                lua.create_function(move |lua, cb: Function| {
+                    let key = lua.create_registry_value(cb)?;
+                    let handle = next_handle(&next_handle_arc)?;
+                    callbacks
+                        .lock()
+                        .map_err(|e| mlua::Error::external(anyhow!("{e}")))?
+                        .insert(handle, key);
+                    setting_callbacks
+                        .lock()
+                        .map_err(|e| mlua::Error::external(anyhow!("{e}")))?
+                        .push(handle);
+                    Ok(())
+                })?,
+            )?;
+        }
+
         lua.globals().set("devix", devix)?;
         Ok(())
     }
@@ -330,6 +413,16 @@ impl PluginHost {
                 };
                 self.invoke_with(handle, table);
             }
+            PluginInput::SettingChanged { handle, key, value } => {
+                let lua_value = match setting_value_to_lua(&self.lua, &value) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        self.push_status(format!("plugin: setting marshal error: {e}"));
+                        return;
+                    }
+                };
+                self.invoke_with(handle, (key, lua_value));
+            }
         }
     }
 
@@ -387,6 +480,24 @@ impl PluginHost {
     #[cfg(test)]
     pub(crate) fn lua(&self) -> &Lua {
         &self.lua
+    }
+}
+
+/// Marshal a [`SettingValue`] into a Lua value. Booleans become
+/// `Boolean`, numbers become `Number`, strings (and enum strings)
+/// become `String`. Used by both `devix.setting(key)` lookups and
+/// the `devix.on_setting_changed(cb)` dispatch path.
+fn setting_value_to_lua(
+    lua: &Lua,
+    value: &devix_protocol::manifest::SettingValue,
+) -> mlua::Result<mlua::Value> {
+    use devix_protocol::manifest::SettingValue;
+    match value {
+        SettingValue::Boolean(b) => Ok(mlua::Value::Boolean(*b)),
+        SettingValue::Number(n) => Ok(mlua::Value::Number(*n)),
+        SettingValue::String(s) | SettingValue::EnumString(s) => {
+            Ok(mlua::Value::String(lua.create_string(s)?))
+        }
     }
 }
 

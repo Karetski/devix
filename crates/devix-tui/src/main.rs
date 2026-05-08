@@ -37,7 +37,7 @@ fn main() -> Result<()> {
         std::path::Path::new("<builtin>"),
     ) {
         editor.theme_store.register_from_manifest(&builtin);
-        editor.settings_store.register_from_manifest(&builtin);
+        editor.settings_store.lock().unwrap().register_from_manifest(&builtin);
     }
     let _ = editor.set_theme("default");
     // Disk-watch events flow as Pulse::DiskChanged on the editor's
@@ -122,10 +122,11 @@ fn main() -> Result<()> {
                         continue;
                     }
                     let msg_sink = make_msg_sink(editor.bus.clone(), sink.clone());
-                    let mut runtime = match PluginRuntime::load_supervised(
+                    let mut runtime = match PluginRuntime::load_supervised_with_settings(
                         &entry,
                         msg_sink,
                         editor.bus.clone(),
+                        editor.settings_store.clone(),
                     ) {
                         Ok(r) => r,
                         Err(e) => {
@@ -163,9 +164,12 @@ fn main() -> Result<()> {
     // working at `/cmd/<id>` until callers migrate.
     if let Some(p) = default_plugin_path() {
         let msg_sink = make_msg_sink(editor.bus.clone(), sink.clone());
-        if let Ok(mut rt) =
-            PluginRuntime::load_supervised(&p, msg_sink, editor.bus.clone())
-        {
+        if let Ok(mut rt) = PluginRuntime::load_supervised_with_settings(
+            &p,
+            msg_sink,
+            editor.bus.clone(),
+            editor.settings_store.clone(),
+        ) {
             rt.install(&mut commands, &mut keymap, &mut editor);
             plugin_runtimes.push(rt);
         }
@@ -179,7 +183,7 @@ fn main() -> Result<()> {
             for manifest_path in manifests {
                 if let Ok(m) = load_manifest(&manifest_path) {
                     editor.theme_store.register_from_manifest(&m);
-                    editor.settings_store.register_from_manifest(&m);
+                    editor.settings_store.lock().unwrap().register_from_manifest(&m);
                 }
             }
         }
@@ -190,7 +194,7 @@ fn main() -> Result<()> {
     // mismatches and out-of-list enum values surface to stderr; the
     // rest of the file's keys still apply.
     if let Some(p) = settings_overrides_path() {
-        if let Err(e) = editor.settings_store.apply_overrides_from_file(&p) {
+        if let Err(e) = editor.settings_store.lock().unwrap().apply_overrides_from_file(&p) {
             eprintln!("devix: settings overrides ignored ({}): {e}", p.display());
         }
     }
