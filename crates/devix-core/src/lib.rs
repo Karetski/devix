@@ -15,6 +15,14 @@
 //! binary keeps importing the same names; later stages will rename /
 //! split as the spec implementations land.
 
+/// Built-in manifest, embedded at compile time. Loaded by
+/// `manifest_loader` to register every built-in command, keymap
+/// binding, and theme — replacing the hard-coded tables in
+/// `editor::commands::builtins` / `editor::commands::keymap` /
+/// `theme.rs` (T-74). Single source of truth for what palette,
+/// settings UI, and `:help` enumerate.
+pub const BUILTIN_MANIFEST: &str = include_str!("../manifests/builtin.json");
+
 pub mod action;
 pub mod bus;
 pub mod clipboard;

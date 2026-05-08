@@ -1,0 +1,116 @@
+{
+  "name": "devix-builtin",
+  "version": "0.1.0",
+  "engines": {
+    "devix": "0.1",
+    "pulse_bus": "0.1",
+    "manifest": "0.1"
+  },
+  "contributes": {
+    "commands": [
+      { "id": "palette.open",       "label": "Open Command Palette",        "category": "Palette" },
+      { "id": "palette.close",      "label": "Close Command Palette",       "category": "Palette" },
+      { "id": "palette.move_down",  "label": "Palette: Next Match",         "category": "Palette" },
+      { "id": "palette.move_up",    "label": "Palette: Previous Match",     "category": "Palette" },
+      { "id": "palette.accept",     "label": "Palette: Accept Selection",   "category": "Palette" },
+
+      { "id": "file.save",          "label": "Save File",                   "category": "File" },
+      { "id": "file.reload",        "label": "Reload from Disk",            "category": "File" },
+      { "id": "file.keep_buffer",   "label": "Keep Buffer (Ignore Disk Change)", "category": "File" },
+
+      { "id": "edit.undo",          "label": "Undo",                        "category": "Edit" },
+      { "id": "edit.redo",          "label": "Redo",                        "category": "Edit" },
+      { "id": "edit.select_all",    "label": "Select All",                  "category": "Edit" },
+      { "id": "edit.copy",          "label": "Copy",                        "category": "Edit" },
+      { "id": "edit.cut",           "label": "Cut",                         "category": "Edit" },
+      { "id": "edit.paste",         "label": "Paste",                       "category": "Edit" },
+      { "id": "edit.add_cursor_above",   "label": "Add Cursor Above",       "category": "Edit" },
+      { "id": "edit.add_cursor_below",   "label": "Add Cursor Below",       "category": "Edit" },
+      { "id": "edit.collapse_selection", "label": "Collapse Selection",     "category": "Edit" },
+
+      { "id": "tab.new",            "label": "New Tab",                     "category": "Tab" },
+      { "id": "tab.close",          "label": "Close Tab",                   "category": "Tab" },
+      { "id": "tab.force_close",    "label": "Close Tab (Discard Changes)", "category": "Tab" },
+      { "id": "tab.next",           "label": "Next Tab",                    "category": "Tab" },
+      { "id": "tab.prev",           "label": "Previous Tab",                "category": "Tab" },
+
+      { "id": "split.vertical",     "label": "Split Vertical",              "category": "Split" },
+      { "id": "split.horizontal",   "label": "Split Horizontal",            "category": "Split" },
+      { "id": "split.close",        "label": "Close Split",                 "category": "Split" },
+
+      { "id": "sidebar.toggle_left",  "label": "Toggle Left Sidebar",       "category": "View" },
+      { "id": "sidebar.toggle_right", "label": "Toggle Right Sidebar",      "category": "View" },
+
+      { "id": "app.quit",           "label": "Quit",                        "category": "App" }
+    ],
+    "keymaps": [
+      { "key": "ctrl-q",         "command": "app.quit" },
+      { "key": "ctrl-s",         "command": "file.save" },
+
+      { "key": "ctrl-z",         "command": "edit.undo" },
+      { "key": "ctrl-shift-z",   "command": "edit.redo" },
+      { "key": "ctrl-y",         "command": "edit.redo" },
+      { "key": "ctrl-a",         "command": "edit.select_all" },
+      { "key": "ctrl-c",         "command": "edit.copy" },
+      { "key": "ctrl-x",         "command": "edit.cut" },
+      { "key": "ctrl-v",         "command": "edit.paste" },
+
+      { "key": "ctrl-t",         "command": "tab.new" },
+      { "key": "ctrl-w",         "command": "tab.close" },
+      { "key": "ctrl-shift-w",   "command": "tab.force_close" },
+      { "key": "ctrl-pageup",    "command": "tab.prev" },
+      { "key": "ctrl-pagedown",  "command": "tab.next" },
+
+      { "key": "ctrl-\\",        "command": "split.vertical" },
+
+      { "key": "ctrl-b",         "command": "sidebar.toggle_left" },
+      { "key": "ctrl-alt-b",     "command": "sidebar.toggle_right" },
+
+      { "key": "ctrl-p",         "command": "palette.open" }
+    ],
+    "themes": [
+      {
+        "id": "default",
+        "label": "Default (One-Dark-adjacent)",
+        "scopes": {
+          "comment":               { "fg": "#5c6370", "italic": true },
+          "punctuation":           { "fg": "#abb2bf" },
+          "punctuation.delimiter": { "fg": "#abb2bf" },
+          "punctuation.bracket":   { "fg": "#abb2bf" },
+
+          "keyword":               { "fg": "#c678dd" },
+          "keyword.control":       { "fg": "#c678dd" },
+          "keyword.function":      { "fg": "#c678dd" },
+          "conditional":           { "fg": "#c678dd" },
+          "repeat":                { "fg": "#c678dd" },
+          "operator":              { "fg": "#56b6c2" },
+
+          "variable":              { "fg": "#abb2bf" },
+          "variable.parameter":    { "fg": "#e06c75" },
+          "property":              { "fg": "#e06c75" },
+          "type":                  { "fg": "#e5c07b" },
+          "type.builtin":          { "fg": "#e5c07b" },
+          "constructor":           { "fg": "#e5c07b" },
+
+          "function":              { "fg": "#61afef" },
+          "function.call":         { "fg": "#61afef" },
+          "function.builtin":      { "fg": "#61afef" },
+          "function.macro":        { "fg": "#61afef" },
+          "method":                { "fg": "#61afef" },
+
+          "string":                { "fg": "#98c379" },
+          "string.special":        { "fg": "#98c379" },
+          "character":             { "fg": "#98c379" },
+          "number":                { "fg": "#d19a66" },
+          "boolean":               { "fg": "#d19a66" },
+          "constant":              { "fg": "#d19a66" },
+          "constant.builtin":      { "fg": "#d19a66" },
+          "escape":                { "fg": "#56b6c2" },
+
+          "attribute":             { "fg": "#e5c07b" },
+          "label":                 { "fg": "#e06c75" }
+        }
+      }
+    ]
+  }
+}

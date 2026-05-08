@@ -1,6 +1,6 @@
 # Task T-70 — Author `manifests/builtin.json` and embed
 Stage: 7
-Status: pending
+Status: complete
 Depends on: T-33
 Blocks:     T-71, T-72, T-73, T-74
 
