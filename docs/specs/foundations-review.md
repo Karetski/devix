@@ -426,6 +426,25 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-07 — Stage 10 close (T-100 / T-101 / T-102 / T-103 / T-104
+  ship).** Editor god-struct decomposed into 8 typed owners:
+  `documents: DocStore`, `cursors: CursorStore`, `bus: PulseBus`,
+  `panes: PaneRegistry` (T-100 — owns the layout tree, exposes
+  `find_frame` / `at_path` / `pane_at(&Path)` / `replace_at` /
+  `remove_at` / `collapse_singletons` / `lift_into_horizontal_split`),
+  `modal: ModalSlot` (T-103 — at-most-one-modal invariant, paired with
+  `Editor::open_modal` / `dismiss_modal` helpers that emit
+  `ModalOpened` / `ModalDismissed`), `focus: FocusChain` (T-101 —
+  active path + transition diff; `Editor::set_focus` emits
+  `FocusChanged` exactly when the path changes), `doc_index:
+  HashMap<PathBuf, DocId>` (path-dedup cache), `render_cache:
+  RenderCache`. Ops (T-102) remain `impl Editor` methods rather than
+  free functions (kept the typed-owner-API spirit; free-fn signatures
+  would have pushed 4–5 owner refs per call with no behavioural gain).
+  Each layout op publishes its spec'd pulse (`FrameSplit` /
+  `FrameClosed` / `SidebarToggled`). Build clean, 260 tests pass;
+  manual TUI sanity deferred to local verification.
+
 - **2026-05-07 — Stage 9 partial close (T-90, T-93 ship;
   T-91 / T-92 / T-94 / T-95 deferred).** T-90 locks the
   synthetic-id strategy (see entry below). T-93 confirms
