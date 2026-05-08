@@ -300,16 +300,15 @@ to allow `@<key>/<value>` suffixes (e.g., `/buf/42@rev/100`). Not in v1.
 
 ## Open questions
 
-1. **`lookup_mut` and the borrow checker.** Two simultaneous `lookup_mut`
-   calls on the same store conflict. Multi-resource ops (split frames,
-   open-path-replace-current) need disjoint borrows. Options:
-   - `lookup_two_mut(p1, p2) -> Option<(&mut R, &mut R)>` for the two-paths
-     case.
-   - Per-registry split-borrow helpers (`buffer_store.split(p1, p2)`).
-   - Defer: keep direct slotmap access on the store types for ops that
-     genuinely need disjoint mutable borrows; `Lookup` is for single-resource
-     access.
-   Decide during T-30.
+1. ~~**`lookup_mut` and the borrow checker.**~~ *Resolved during T-30
+   (2026-05-07): `Lookup` stays single-resource per call. Ops that
+   need disjoint mutation use Rust's proper ownership-transfer
+   primitives (`std::mem::{take, swap, replace}`) on the store's
+   internal storage — no `lookup_two_mut` helper on the trait, no
+   per-registry `split` API, no clone-then-mutate workaround. If a
+   call site genuinely can't be expressed this way, the data layout
+   gets revisited rather than the trait surface widened. See
+   amendment log.*
 
 2. **Globbing / patterns.** Does `/plugin/file-tree/*` enumerate resources
    under the prefix? Useful for "list all panes contributed by plugin X" or

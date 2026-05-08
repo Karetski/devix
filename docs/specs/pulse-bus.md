@@ -410,9 +410,10 @@ fan-out copies of large data per subscriber. The bus stays small and fast.
 
 ## Open questions
 
-1. **Reentrancy depth limit.** Default 16 picked arbitrarily. Configurable
-   via `PulseBus::with_depth_limit(usize)`. Confirm the default and whether
-   we want a runtime-overrideable knob in tests.
+1. ~~**Reentrancy depth limit.**~~ *Resolved during T-31
+   (2026-05-07): default 16 confirmed. Configurable via
+   `PulseBus::with_depth_limit(usize)` for tests that want to provoke
+   shallower-overflow scenarios deterministically. See amendment log.*
 
 2. **Wall-clock timestamps on every pulse.** Useful for plugin-side
    debounce / throttle. Lean: no — keeps pulses small; plugins use their

@@ -468,14 +468,12 @@ The `Pulse` enum and `Manifest` schema have their own versions (per
    appears; v0 batches into one `Response::InvokeCommand(Ok(...))`. Add
    a `Stream` variant later if needed.
 
-2. **Plugin capability mismatches.** A plugin advertises
-   `ContributeSidebarPane` to a host that doesn't support it. Today's
-   rule: pane registration silently no-ops with a warning, and the
-   plugin can inspect the negotiated set on Welcome and choose to refuse
-   to run. Stronger alternative: refuse-to-load on the loader side
-   regardless of the plugin's preference. Lean: warn-and-degrade with
-   plugin opt-out — VS Code style — so plugins roll out features
-   gradually without breaking on older hosts.
+2. ~~**Plugin capability mismatches.**~~ *Resolved during T-32
+   (2026-05-07): warn-and-degrade with plugin opt-out (VS Code
+   style). Unsupported contributions silently no-op with a
+   `Pulse::PluginError` warning; the plugin inspects the negotiated
+   capability set on `Welcome` and decides for itself whether to
+   keep running. See amendment log.*
 
 3. **Internal lane formalization.** Today the "internal lane" is just
    "use the bus + direct calls." Should supervised actors (tree-sitter
@@ -498,9 +496,12 @@ The `Pulse` enum and `Manifest` schema have their own versions (per
    Folds in during T-21 when the bus and the protocol skeleton land
    together.
 
-6. **`PathKind` for `Request::ListPaths`.** What enum values?
-   `Buffer`, `Cursor`, `Frame`, `Sidebar`, `Command`, `Theme`, `Plugin`?
-   Generate from a per-registry token. Decide during T-22.
+6. ~~**`PathKind` for `Request::ListPaths`.**~~ *Resolved during T-32
+   (2026-05-07): seven variants matching every Stage-5 namespace
+   migration target — `Buffer`, `Cursor`, `Pane`, `Command`,
+   `Keymap`, `Theme`, `Plugin`. (Note: `Pane`, not `Frame`, per the
+   post-Stage-9 layout vocabulary; `Sidebar` is dropped because it's
+   a sub-path of `/pane`, not a registry root.) See amendment log.*
 
 ## Resolved during initial review
 

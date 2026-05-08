@@ -426,6 +426,23 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-07 — Stage-3-gating open questions resolved.**
+  Locked during the pre-Stage-3 interactive review:
+  - `namespace.md` Q1 (lookup_mut): `Lookup` stays single-resource;
+    disjoint-borrow ops use `std::mem::{take, swap, replace}`. No
+    helpers, no workarounds. Data layout that fights this is the
+    thing to fix, not the trait.
+  - `protocol.md` Q2 (capability mismatch): warn-and-degrade with
+    plugin opt-out (VS Code style).
+  - `protocol.md` Q6 (`PathKind` variants): `Buffer, Cursor, Pane,
+    Command, Keymap, Theme, Plugin` (seven, one per Stage-5
+    namespace-migration root).
+  - `pulse-bus.md` Q1 (reentrancy depth): default 16 confirmed.
+    `with_depth_limit` builder available.
+
+  Each spec doc's *Open questions* entry is updated with a
+  parenthetical pointer back to this log.
+
 - **2026-05-06 — `crates.md` Q5 resolved (workspace member naming).**
   Q5 closed in the affirmative: directory names match `[package]
   name` everywhere. `crates/text` and `crates/syntax` renamed to
