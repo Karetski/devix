@@ -1,6 +1,6 @@
 # Task T-22 — Drop dead modules + consolidate re-exports
 Stage: 2
-Status: pending
+Status: complete
 Depends on: T-13
 Blocks:     T-31 (PulseBus replaces EventSink), T-61 (Effect dissolves)
 

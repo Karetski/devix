@@ -1,5 +1,9 @@
 //! Pure ratatui widgets — design-system primitives with no awareness
-//! of editor state. Editor-coupled renderers live in `devix-editor`.
+//! of editor state. Editor-coupled renderers live in
+//! `crate::editor::buffer`. The eventual home is `devix-tui::widgets`
+//! per `docs/specs/crates.md`; the physical move is sequenced into
+//! Stage 9 (T-92 / T-95) per the foundations-review amendment log
+//! 2026-05-06.
 
 pub mod layout;
 pub mod palette;

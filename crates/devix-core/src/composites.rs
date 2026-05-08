@@ -1,7 +1,7 @@
 //! Composite `Pane` types — the per-frame render-tree primitives.
 //!
 //! Two composites are owned per render call (built on the stack inside
-//! the structural Panes' `render` impls in `devix-editor`'s `tree.rs`):
+//! the structural Panes' `render` impls in `crate::editor::tree`):
 //!
 //! - [`TabbedPane`]: a tab strip pinned to row 0 with one body Pane
 //!   beneath. Generic over the body so any focusable Pane (an editor
@@ -10,8 +10,8 @@
 //! - [`SidebarSlotPane`]: a sidebar bound to an edge slot with optional
 //!   content. The slot exists so plugins can drop a Pane in later.
 //!
-//! Splits don't appear here — `LayoutSplit` in `devix-editor` is the
-//! single split primitive; it owns its layout state and has been
+//! Splits don't appear here — `LayoutSplit` in `crate::editor::tree`
+//! is the single split primitive; it owns its layout state and has been
 //! taught to render itself directly. There is no parallel render-tree
 //! `SplitPane` anymore.
 //!

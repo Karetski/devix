@@ -38,7 +38,7 @@ pub enum LayoutNode {
 }
 
 /// Recursive split. Children laid out along `axis` by integer weights;
-/// rect math comes from `split_rects` in `devix-panes`.
+/// rect math comes from `split_rects` in `crate::layout_geom`.
 pub struct LayoutSplit {
     pub axis: Axis,
     pub children: Vec<(LayoutNode, u16)>,

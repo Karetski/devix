@@ -1,8 +1,8 @@
-//! `devix-plugin` — Lua plugin host.
+//! Plugin module — formerly `devix-plugin`. Lua plugin host.
 //!
 //! A small mlua-backed runtime that loads one Lua file at startup and
-//! collects three kinds of contributions against `devix-core` / the
-//! editor's existing surfaces:
+//! collects three kinds of contributions against the editor's
+//! existing surfaces:
 //!
 //! 1. **Actions** (`devix.register_action`): plugin-supplied commands
 //!    that flow through the regular `CommandRegistry` and `Keymap`.

@@ -1,17 +1,17 @@
-//! devix runtime — three named primitives plus the binary glue.
+//! `devix-tui` — the terminal client + binary glue.
 //!
 //! - [`Application`] owns the run loop, the terminal, and every long-lived
 //!   resource by direct field.
 //! - [`Effect`] is runtime-internal deferred work drained between
-//!   messages.
+//!   messages. Stage 6 (T-61 / T-63) folds `Effect` into typed pulses.
 //! - [`AppContext`] is the unified `&mut` surface threaded through every
 //!   delivery.
 //!
 //! `EventSink` is the cross-thread handle producers hold; cross-thread
 //! messages are boxed `FnOnce(&mut AppContext)` closures — there is no
 //! typed pulse trait, no `Service` trait, no god-set of message structs.
-//! See `RUNTIME-SPEC.md` and `LAYERING-NOTE.md` at the repo root for
-//! design rationale.
+//! Stage 6 (T-60 / T-63) replaces this with `PulseBus` (`devix-core::bus`)
+//! per `docs/specs/pulse-bus.md`.
 
 pub mod application;
 pub mod clipboard;

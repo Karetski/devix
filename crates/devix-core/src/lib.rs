@@ -2,14 +2,18 @@
 //!
 //! Owns every model state, every command handler, the plugin host, the
 //! pulse bus implementation (lands in T-31), the manifest loader (T-33),
-//! the theme registry. No `ratatui`, no `crossterm` (this is a soft target;
-//! the chrome widgets and ratatui-bound rendering live here transitionally
-//! during T-11 and migrate to `devix-tui` in T-12).
+//! the theme registry. The eventual no-`ratatui` / no-`crossterm` shape
+//! described in `docs/specs/crates.md` is reached at the end of Stage 9:
+//! T-11 absorbed the chrome widgets and ratatui-bound layout primitives
+//! to break a transient `devix-core ↔ devix-tui` cycle, and T-92 / T-95
+//! finish the move to `devix-tui` once `LayoutNode` collapses (per the
+//! foundations-review amendment log 2026-05-06).
 //!
-//! Stage 1 task T-11 absorbs the dissolved `devix-editor`, `devix-plugin`,
-//! and `devix-panes` crates into this crate. The pre-Stage-1 public surface
-//! is preserved at the crate root so the binary keeps importing the same
-//! names; later stages will rename / split as the spec implementations land.
+//! Stage 1 (T-10..T-13) absorbed the dissolved `devix-editor`,
+//! `devix-plugin`, and `devix-panes` crates into this crate. The
+//! pre-Stage-1 public surface is preserved at the crate root so the
+//! binary keeps importing the same names; later stages will rename /
+//! split as the spec implementations land.
 
 pub mod action;
 pub mod clipboard;
