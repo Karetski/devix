@@ -167,8 +167,25 @@ impl Pane for LayoutFrame {
 
 impl Pane for LayoutSidebar {
     fn render(&self, area: Rect, ctx: &mut crate::pane::RenderCtx<'_, '_>) {
-        if let Some(layout) = ctx.layout {
-            render_sidebar(self, area, ctx.frame, layout);
+        let title = match self.slot {
+            SidebarSlot::Left => "left",
+            SidebarSlot::Right => "right",
+        };
+        let focused = ctx
+            .layout
+            .and_then(|l| l.focused_leaf)
+            .map(|leaf| matches!(leaf, LeafRef::Sidebar(s) if s == self.slot))
+            .unwrap_or(false);
+        let chrome = SidebarChrome {
+            title: title.to_string(),
+            focused,
+        };
+        chrome.render(area, ctx);
+        if let Some(content) = self.content.as_ref() {
+            let inner = sidebar_inner_rect(area);
+            if inner.width > 0 && inner.height > 0 {
+                content.render(inner, ctx);
+            }
         }
     }
 
@@ -310,23 +327,6 @@ fn render_frame(f: &LayoutFrame, area: Rect, frame: &mut Frame<'_>, ctx: &Layout
     };
     let mut rctx = RenderCtx { frame, layout: None };
     tabbed.render(area, &mut rctx);
-}
-
-fn render_sidebar(s: &LayoutSidebar, area: Rect, frame: &mut Frame<'_>, ctx: &LayoutCtx<'_>) {
-    let title = match s.slot {
-        SidebarSlot::Left => "left",
-        SidebarSlot::Right => "right",
-    };
-    let focused = matches!(ctx.focused_leaf, Some(LeafRef::Sidebar(slot)) if slot == s.slot);
-    let chrome = SidebarChrome { title: title.to_string(), focused };
-    let mut rctx = RenderCtx { frame, layout: None };
-    chrome.render(area, &mut rctx);
-    if let Some(content) = s.content.as_ref() {
-        let inner = sidebar_inner_rect(area);
-        if inner.width > 0 && inner.height > 0 {
-            content.render(inner, &mut rctx);
-        }
-    }
 }
 
 fn visible_byte_range(

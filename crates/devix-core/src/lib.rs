@@ -47,7 +47,7 @@ pub use bus::PulseBus;
 // Trait surface (pre-Stage-1: was `devix-panes`'s public surface).
 pub use action::Action;
 pub use clipboard::{Clipboard, NoClipboard};
-pub use composites::{SidebarSlotPane, TabbedPane};
+pub use composites::TabbedPane;
 pub use event::Event;
 pub use geom::{Anchor, AnchorEdge, Rect};
 pub use layout_geom::{Axis, Direction, SidebarSlot, split_rects};

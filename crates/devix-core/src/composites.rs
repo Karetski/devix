@@ -1,29 +1,29 @@
 //! Composite `Pane` types — the per-frame render-tree primitives.
 //!
-//! Two composites are owned per render call (built on the stack inside
-//! the structural Panes' `render` impls in `crate::editor::tree`):
-//!
-//! - [`TabbedPane`]: a tab strip pinned to row 0 with one body Pane
-//!   beneath. Generic over the body so any focusable Pane (an editor
-//!   buffer today; a settings pane, a terminal pane tomorrow) can sit
-//!   inside the tab strip without `panes` knowing what it is.
-//! - [`SidebarSlotPane`]: a sidebar bound to an edge slot with optional
-//!   content. The slot exists so plugins can drop a Pane in later.
+//! [`TabbedPane`] is built on the stack inside `LayoutFrame::render`
+//! to compose a tab strip pinned to row 0 with the active body Pane
+//! beneath. Generic over the body so any focusable Pane (an editor
+//! buffer today; a settings pane, a terminal pane tomorrow) can sit
+//! inside the tab strip without `panes` knowing what it is.
 //!
 //! Splits don't appear here — `LayoutSplit` in `crate::editor::tree`
-//! is the single split primitive; it owns its layout state and has been
-//! taught to render itself directly. There is no parallel render-tree
+//! is the single split primitive; it owns its layout state and renders
+//! itself directly via `Pane::render`. There is no parallel render-tree
 //! `SplitPane` anymore.
 //!
-//! Both composites follow the same render shape: walk `children(area)`
-//! and recurse. The Lattner answer to "what does a composite do?" is
-//! "the same thing as the framework": ask each child for its rect,
-//! paint it.
+//! Sidebars don't appear here either: T-94 retired the standalone
+//! `SidebarSlotPane` once `LayoutSidebar` (in `editor::tree`) absorbed
+//! the chrome + optional-content render directly.
+//!
+//! `TabbedPane` follows the framework render shape: walk
+//! `children(area)` and recurse. The Lattner answer to "what does a
+//! composite do?" is "the same thing as the framework": ask each child
+//! for its rect, paint it.
 
 use crate::event::Event;
 use crate::geom::Rect;
 use crate::pane::{HandleCtx, Outcome, Pane, RenderCtx};
-use crate::widgets::{SidebarPane as SidebarChrome, TabStripPane};
+use crate::widgets::TabStripPane;
 
 /// One frame: tab strip pinned to row 0, active body below. Owns both
 /// children as fields so `children()` returns stable references — the
@@ -61,56 +61,3 @@ impl<B: Pane> Pane for TabbedPane<B> {
     }
 }
 
-/// A sidebar slot: chrome (bordered placeholder for now) plus an
-/// optional content `Pane` that fills the inner area. Today's sidebars
-/// have no content — the slot is the contract that lets a plugin (or
-/// future file-tree / settings Pane) drop something in without the
-/// framework needing to know about plugins.
-pub struct SidebarSlotPane<'a> {
-    pub chrome: SidebarChrome,
-    pub content: Option<Box<dyn Pane + 'a>>,
-}
-
-impl<'a> Pane for SidebarSlotPane<'a> {
-    fn render(&self, area: Rect, ctx: &mut RenderCtx<'_, '_>) {
-        self.chrome.render(area, ctx);
-        if let Some(content) = &self.content {
-            // Paint the inner area inside the 1-cell border. When
-            // borders shrink past viability, skip — render must not panic.
-            let inner = Rect {
-                x: area.x.saturating_add(1),
-                y: area.y.saturating_add(1),
-                width: area.width.saturating_sub(2),
-                height: area.height.saturating_sub(2),
-            };
-            if inner.width > 0 && inner.height > 0 {
-                content.render(inner, ctx);
-            }
-        }
-    }
-
-    fn handle(&mut self, _ev: &Event, _area: Rect, _ctx: &mut HandleCtx<'_>) -> Outcome {
-        Outcome::Ignored
-    }
-
-    fn children(&self, area: Rect) -> Vec<(Rect, &dyn Pane)> {
-        let mut out: Vec<(Rect, &dyn Pane)> = vec![(area, &self.chrome as &dyn Pane)];
-        if let Some(content) = &self.content {
-            let inner = Rect {
-                x: area.x.saturating_add(1),
-                y: area.y.saturating_add(1),
-                width: area.width.saturating_sub(2),
-                height: area.height.saturating_sub(2),
-            };
-            out.push((inner, content.as_ref()));
-        }
-        out
-    }
-
-    fn is_focusable(&self) -> bool {
-        // The slot is focusable in the same way today's sidebar leaf is.
-        // When content shows up, focus may pass through to it; that's a
-        // dispatcher decision, not a property of this trait.
-        true
-    }
-}

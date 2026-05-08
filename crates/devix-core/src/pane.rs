@@ -69,7 +69,7 @@ pub enum Outcome {
 /// borrows (documents, cursors, theme, render-cache, focused leaf)
 /// that the layout-tree leaves (`FramePane`, `SidebarLayoutPane`)
 /// need to actually paint content. Chrome panes and modal panes
-/// (`TabbedPane`, `SidebarSlotPane`, `PalettePane`, plugin panes)
+/// (`TabbedPane`, `LayoutSidebar` chrome, `PalettePane`, plugin panes)
 /// pass `None` and ignore it. Decision locked 2026-05-08 — see
 /// `foundations-review.md` § *Amendment log* for the alternatives
 /// considered (parallel render paths, sub-trait `LayoutPane`).

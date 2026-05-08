@@ -32,9 +32,9 @@ pub fn render_sidebar(info: &SidebarInfo<'_>, area: Rect, frame: &mut Frame<'_>)
     frame.render_widget(block, area);
 }
 
-/// `Pane` wrapper around [`render_sidebar`]. Owns its title `String` so a
-/// parent composite (`SidebarSlotPane`) can store it as a field without a
-/// self-referential borrow.
+/// `Pane` wrapper around [`render_sidebar`]. Owns its title `String` so
+/// callers can stack-build a chrome instance without a self-referential
+/// borrow. Used today by `LayoutSidebar::render`.
 pub struct SidebarPane {
     pub title: String,
     pub focused: bool,

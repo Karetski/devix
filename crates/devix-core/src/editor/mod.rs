@@ -6,7 +6,7 @@
 //! pre-Stage-1 public surface is re-exported here unchanged so consumers
 //! can keep importing `crate::editor::X`. Layout primitives that the
 //! editor's tree references (`Axis`, `Direction`, `SidebarSlot`,
-//! `SidebarSlotPane`, `TabbedPane`) live at the `devix-core` crate root.
+//! `TabbedPane`) live at the `devix-core` crate root.
 
 pub mod buffer;
 pub mod commands;
