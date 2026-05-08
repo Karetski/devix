@@ -268,11 +268,19 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// Color value. Stub serde at T-40 (default externally-tagged form);
-/// T-41 replaces with the canonical string form (`"default"` /
-/// `"#rrggbb"` / `"@<n>"` / `"<named>"`) per
-/// `docs/specs/frontend.md` § *Color serialization*.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Color value. Custom serde to/from the canonical string form per
+/// `docs/specs/frontend.md` § *Color serialization*:
+///
+/// | String form                          | Variant            |
+/// |--------------------------------------|--------------------|
+/// | `"default"`                          | `Color::Default`   |
+/// | `"#rrggbb"` (hex, lower or upper)    | `Color::Rgb(...)`  |
+/// | `"@<n>"` where `0 ≤ n ≤ 255`         | `Color::Indexed(n)`|
+/// | snake_case `NamedColor` (e.g. `"red"`, `"dark_gray"`) | `Color::Named(...)` |
+///
+/// Anything else is a deserialize error — there is no fallback to a
+/// default value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Color {
     Default,
     Rgb(u8, u8, u8),
@@ -280,7 +288,121 @@ pub enum Color {
     Named(NamedColor),
 }
 
-/// Named ANSI/VT100-equivalent colors.
+impl std::fmt::Display for Color {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Color::Default => f.write_str("default"),
+            Color::Rgb(r, g, b) => write!(f, "#{:02x}{:02x}{:02x}", r, g, b),
+            Color::Indexed(n) => write!(f, "@{}", n),
+            Color::Named(n) => f.write_str(named_color_str(*n)),
+        }
+    }
+}
+
+impl serde::Serialize for Color {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Color {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = Color;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a canonical color string (`default`, `#rrggbb`, `@<n>`, or a named color)")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Color, E> {
+                Color::parse(v).map_err(serde::de::Error::custom)
+            }
+        }
+        d.deserialize_str(V)
+    }
+}
+
+impl Color {
+    /// Parse a color from its canonical string form. Returns the
+    /// raw error string on failure.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        if s == "default" {
+            return Ok(Color::Default);
+        }
+        if let Some(rest) = s.strip_prefix('#') {
+            if rest.len() != 6 {
+                return Err(format!("hex color `{}` must be exactly 6 hex digits", s));
+            }
+            let r = u8::from_str_radix(&rest[0..2], 16)
+                .map_err(|_| format!("invalid hex byte in `{}`", s))?;
+            let g = u8::from_str_radix(&rest[2..4], 16)
+                .map_err(|_| format!("invalid hex byte in `{}`", s))?;
+            let b = u8::from_str_radix(&rest[4..6], 16)
+                .map_err(|_| format!("invalid hex byte in `{}`", s))?;
+            return Ok(Color::Rgb(r, g, b));
+        }
+        if let Some(rest) = s.strip_prefix('@') {
+            let n: u32 = rest
+                .parse()
+                .map_err(|_| format!("indexed color `{}` must be a non-negative integer", s))?;
+            if n > 255 {
+                return Err(format!("indexed color `{}` exceeds 255", s));
+            }
+            return Ok(Color::Indexed(n as u8));
+        }
+        named_color_from_str(s)
+            .map(Color::Named)
+            .ok_or_else(|| format!("unknown color `{}`", s))
+    }
+}
+
+fn named_color_str(n: NamedColor) -> &'static str {
+    match n {
+        NamedColor::Black => "black",
+        NamedColor::Red => "red",
+        NamedColor::Green => "green",
+        NamedColor::Yellow => "yellow",
+        NamedColor::Blue => "blue",
+        NamedColor::Magenta => "magenta",
+        NamedColor::Cyan => "cyan",
+        NamedColor::White => "white",
+        NamedColor::DarkGray => "dark_gray",
+        NamedColor::LightRed => "light_red",
+        NamedColor::LightGreen => "light_green",
+        NamedColor::LightYellow => "light_yellow",
+        NamedColor::LightBlue => "light_blue",
+        NamedColor::LightMagenta => "light_magenta",
+        NamedColor::LightCyan => "light_cyan",
+    }
+}
+
+fn named_color_from_str(s: &str) -> Option<NamedColor> {
+    Some(match s {
+        "black" => NamedColor::Black,
+        "red" => NamedColor::Red,
+        "green" => NamedColor::Green,
+        "yellow" => NamedColor::Yellow,
+        "blue" => NamedColor::Blue,
+        "magenta" => NamedColor::Magenta,
+        "cyan" => NamedColor::Cyan,
+        "white" => NamedColor::White,
+        "dark_gray" => NamedColor::DarkGray,
+        "light_red" => NamedColor::LightRed,
+        "light_green" => NamedColor::LightGreen,
+        "light_yellow" => NamedColor::LightYellow,
+        "light_blue" => NamedColor::LightBlue,
+        "light_magenta" => NamedColor::LightMagenta,
+        "light_cyan" => NamedColor::LightCyan,
+        _ => return None,
+    })
+}
+
+/// Named ANSI/VT100-equivalent colors. Serde shape is the
+/// snake_case string segment of `Color`'s wire form (e.g.
+/// `"dark_gray"`); the derive on this enum is unused at the wire
+/// level — `Color`'s custom serde routes through
+/// `named_color_str` / `named_color_from_str`. The derive remains
+/// so this enum can serde-round-trip on its own (e.g., as a manifest
+/// theme palette key) without forcing every consumer through `Color`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NamedColor {
@@ -429,6 +551,99 @@ mod tests {
             transition: None,
         };
         let _: View = serde_json::from_str(&serde_json::to_string(&v).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn color_default_round_trips_string_form() {
+        let c = Color::Default;
+        assert_eq!(serde_json::to_string(&c).unwrap(), "\"default\"");
+        let back: Color = serde_json::from_str("\"default\"").unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn color_rgb_round_trips_lower_hex() {
+        let c = Color::Rgb(0xaa, 0xbb, 0xcc);
+        assert_eq!(serde_json::to_string(&c).unwrap(), "\"#aabbcc\"");
+        let back: Color = serde_json::from_str("\"#aabbcc\"").unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn color_rgb_accepts_upper_hex_on_input() {
+        let back: Color = serde_json::from_str("\"#AABBCC\"").unwrap();
+        assert_eq!(back, Color::Rgb(0xaa, 0xbb, 0xcc));
+    }
+
+    #[test]
+    fn color_indexed_round_trips() {
+        for n in [0u8, 8, 42, 255] {
+            let c = Color::Indexed(n);
+            let s = serde_json::to_string(&c).unwrap();
+            assert_eq!(s, format!("\"@{}\"", n));
+            let back: Color = serde_json::from_str(&s).unwrap();
+            assert_eq!(back, c);
+        }
+    }
+
+    #[test]
+    fn color_named_round_trips_all_variants() {
+        let names = [
+            (NamedColor::Black, "black"),
+            (NamedColor::Red, "red"),
+            (NamedColor::Green, "green"),
+            (NamedColor::Yellow, "yellow"),
+            (NamedColor::Blue, "blue"),
+            (NamedColor::Magenta, "magenta"),
+            (NamedColor::Cyan, "cyan"),
+            (NamedColor::White, "white"),
+            (NamedColor::DarkGray, "dark_gray"),
+            (NamedColor::LightRed, "light_red"),
+            (NamedColor::LightGreen, "light_green"),
+            (NamedColor::LightYellow, "light_yellow"),
+            (NamedColor::LightBlue, "light_blue"),
+            (NamedColor::LightMagenta, "light_magenta"),
+            (NamedColor::LightCyan, "light_cyan"),
+        ];
+        for (n, s) in names {
+            let c = Color::Named(n);
+            let json = serde_json::to_string(&c).unwrap();
+            assert_eq!(json, format!("\"{}\"", s));
+            let back: Color = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, c);
+        }
+    }
+
+    #[test]
+    fn color_deserialize_rejects_malformed() {
+        // Wrong-length hex.
+        assert!(serde_json::from_str::<Color>("\"#abc\"").is_err());
+        // Hex with non-hex chars.
+        assert!(serde_json::from_str::<Color>("\"#xyzxyz\"").is_err());
+        // Indexed > 255.
+        assert!(serde_json::from_str::<Color>("\"@256\"").is_err());
+        // Indexed not a number.
+        assert!(serde_json::from_str::<Color>("\"@abc\"").is_err());
+        // Unknown named color.
+        assert!(serde_json::from_str::<Color>("\"chartreuse\"").is_err());
+        // Empty string.
+        assert!(serde_json::from_str::<Color>("\"\"").is_err());
+    }
+
+    #[test]
+    fn color_inside_style_round_trips() {
+        let s = Style {
+            fg: Some(Color::Rgb(0xaa, 0xaa, 0xaa)),
+            bg: Some(Color::Default),
+            bold: true,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        // Sanity: hex form appears, structured form doesn't.
+        assert!(json.contains("\"#aaaaaa\""));
+        assert!(!json.contains("\"Rgb\""));
+        let back: Style = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
     }
 
     #[test]

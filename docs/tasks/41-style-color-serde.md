@@ -1,6 +1,6 @@
 # Task T-41 — Style + Color (canonical-string serde)
 Stage: 4
-Status: pending
+Status: complete
 Depends on: T-40
 Blocks:     T-44, T-55, T-73, T-112
 
