@@ -426,6 +426,38 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-08 — Stage-9 close (T-92 + T-94 ship; T-95 deferred).**
+
+  **T-92 — full carve.** `Editor.render_cache` field retired. The
+  cache lifecycle moved to `devix-tui::Application.layout_cache`.
+  `Editor::layout(area, &mut RenderCache)` populates the cache
+  during pre-paint; `Editor::focus_dir`, `focus_at_screen`,
+  `tab_strip_hit`, `frame_at_strip`, `tab_strip_can_scroll`,
+  `scroll_tab_strip` take `&RenderCache` as a parameter.
+  `commands::Context` carries `layout_cache: &'a RenderCache` so
+  command implementations route the cache through. TUI's
+  `AppContext` carries the cache and threads it into
+  `EditorContext` on every `run()`. Type definitions
+  (`RenderCache`, `TabStripCache`, `TabHit`) stay in `devix-core`
+  to avoid a `devix-core ↔ devix-tui` cycle on the
+  command-side parameter typing; ownership / lifecycle is tui-side,
+  matching the migration table's "owning crate: devix-tui" intent.
+  Path-keying of the cache deferred to T-95 — the Path-keyed shape
+  lands when the View interpreter becomes the sole rect producer.
+
+  **T-94 — fold.** `SidebarSlotPane` retired. `LayoutSidebar::render`
+  paints chrome + optional content unconditionally; focused styling
+  reads `ctx.layout.focused_leaf` when present (default unfocused).
+  `TabbedPane` stays as the on-stack composite for `LayoutFrame`'s
+  tab-strip-over-body shape until T-95 absorbs it into the View IR.
+
+  **T-95 deferred.** The structural Stage-9 work is done; the
+  byte-parity rewrite of `paint_view` requires a load-bearing design
+  decision (producer materializes full buffer state vs. renderer
+  takes a `BufferProvider` hook) and manual TTY sanity. Both belong
+  to a focused T-95 sprint, not autonomous work. Notes captured in
+  `docs/tasks/95-stage-9-regression-gate.md`.
+
 - **2026-05-08 — T-91 phase-2 close: LayoutNode enum retired.**
 
   The closed `LayoutNode` enum is gone. `LayoutSplit.children`
