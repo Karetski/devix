@@ -191,11 +191,9 @@ impl Pane for PalettePane {
             Event::Key(KeyEvent {
                 code,
                 modifiers,
-                kind,
+                kind: KeyEventKind::Press | KeyEventKind::Repeat,
                 ..
-            }) if matches!(kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
-                self.handle_key(*code, *modifiers)
-            }
+            }) => self.handle_key(*code, *modifiers),
             _ => Outcome::Ignored,
         }
     }

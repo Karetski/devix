@@ -1,6 +1,6 @@
 # Task T-24 — Clippy baseline + lint cleanup
 Stage: 2
-Status: pending
+Status: complete
 Depends on: T-20, T-21, T-22, T-23
 Blocks:     all Stage 3+ (clean baseline)
 

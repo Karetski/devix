@@ -455,7 +455,7 @@ mod tests {
         // After removal the root may have collapsed or stayed a single-child
         // split-wrapper; both are valid outcomes (the architecture doesn't
         // require auto-collapse of toggle-removal).
-        assert!(ws.root.frames().len() >= 1);
+        assert!(!ws.root.frames().is_empty());
     }
 
     #[test]

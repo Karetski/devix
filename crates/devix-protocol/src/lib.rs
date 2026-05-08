@@ -13,17 +13,18 @@
 //! against the final shape.
 //!
 //! Module map (each maps to one Stage-0 spec under `docs/specs/`):
-//! * [`path`]     — `Path`, `PathError`, `Lookup` (T-30, namespace.md).
-//! * [`pulse`]    — `Pulse`, `PulseKind`, `PulseField`, `PulseFilter` types
-//!                  (T-31, pulse-bus.md). The `PulseBus` *implementation*
-//!                  lives in `devix-core::bus`.
-//! * [`protocol`] — `Envelope`, `ProtocolVersion`, `Capability`, lane enums,
-//!                  `Request`/`Response`, handle traits (T-32, protocol.md).
-//! * [`manifest`] — `Manifest`, `Contributes`, `*Spec` (T-33, manifest.md).
-//! * [`view`]     — `View`, `ViewNodeId`, `Style`, `Color`, `Axis`,
-//!                  `SidebarSlot`, etc. (T-40 / T-41, frontend.md).
-//! * [`input`]    — `InputEvent`, `Chord`, `KeyCode`, `Modifiers`
-//!                  (T-42, frontend.md).
+//! * [`path`] — `Path`, `PathError`, `Lookup` (T-30, namespace.md).
+//! * [`pulse`] — `Pulse`, `PulseKind`, `PulseField`, `PulseFilter` types
+//!   (T-31, pulse-bus.md). The `PulseBus` *implementation* lives in
+//!   `devix-core::bus`.
+//! * [`protocol`] — `Envelope`, `ProtocolVersion`, `Capability`, lane
+//!   enums, `Request`/`Response`, handle traits (T-32, protocol.md).
+//! * [`manifest`] — `Manifest`, `Contributes`, `*Spec` (T-33,
+//!   manifest.md).
+//! * [`view`] — `View`, `ViewNodeId`, `Style`, `Color`, `Axis`,
+//!   `SidebarSlot`, etc. (T-40 / T-41, frontend.md).
+//! * [`input`] — `InputEvent`, `Chord`, `KeyCode`, `Modifiers` (T-42,
+//!   frontend.md).
 
 pub mod input;
 pub mod manifest;

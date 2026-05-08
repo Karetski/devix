@@ -12,6 +12,7 @@ pub mod buffer;
 pub mod commands;
 pub mod cursor;
 pub mod document;
+#[allow(clippy::module_inception)] // editor.rs holds the `Editor` struct; submodules at editor/editor/* per the legacy editor crate's layout. Renamed in T-100+.
 pub mod editor;
 pub mod frame;
 pub mod tree;

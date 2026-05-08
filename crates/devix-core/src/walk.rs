@@ -15,12 +15,12 @@ use crate::pane::Pane;
 /// Find the deepest Pane whose assigned rect contains `(col, row)`.
 /// Returns `(rect, pane)` for that leaf, or `None` if no Pane covers the
 /// point. Children later in `children()` win on overlap (z-order).
-pub fn pane_at<'a>(
-    root: &'a dyn Pane,
+pub fn pane_at(
+    root: &dyn Pane,
     area: Rect,
     col: u16,
     row: u16,
-) -> Option<(Rect, &'a dyn Pane)> {
+) -> Option<(Rect, &dyn Pane)> {
     if !contains(area, col, row) {
         return None;
     }
@@ -38,12 +38,12 @@ pub fn pane_at<'a>(
 /// Find the deepest focusable Pane whose rect contains `(col, row)`.
 /// Same shape as `pane_at`, but skips Panes that report `is_focusable()
 /// == false`. Used to translate a click into a focus-target leaf.
-pub fn focusable_at<'a>(
-    root: &'a dyn Pane,
+pub fn focusable_at(
+    root: &dyn Pane,
     area: Rect,
     col: u16,
     row: u16,
-) -> Option<(Rect, &'a dyn Pane)> {
+) -> Option<(Rect, &dyn Pane)> {
     if !contains(area, col, row) {
         return None;
     }
@@ -83,10 +83,10 @@ pub fn pane_at_path<'a>(
 /// Collect every focusable leaf in tree order: `(path, rect, pane)`.
 /// Used by directional focus traversal to enumerate candidates and pick
 /// the geometrically closest one.
-pub fn focusable_leaves<'a>(
-    root: &'a dyn Pane,
+pub fn focusable_leaves(
+    root: &dyn Pane,
     area: Rect,
-) -> Vec<(Vec<usize>, Rect, &'a dyn Pane)> {
+) -> Vec<(Vec<usize>, Rect, &dyn Pane)> {
     let mut out = Vec::new();
     walk_focusable(root, area, &mut Vec::new(), &mut out);
     out
