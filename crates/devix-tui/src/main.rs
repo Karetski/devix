@@ -13,6 +13,9 @@ use anyhow::Result;
 use devix_tui::clipboard;
 use devix_tui::{Application, EventSink};
 use devix_core::{Editor, build_registry, default_keymap};
+use devix_core::manifest_loader::{
+    apply_keymap_overrides, keymap_overrides_path, parse_manifest_bytes, theme_from_manifest,
+};
 use devix_core::Theme;
 use devix_core::{MsgSink, PluginMsg, PluginRuntime, default_plugin_path};
 
@@ -29,6 +32,16 @@ fn main() -> Result<()> {
 
     let mut commands = build_registry();
     let mut keymap = default_keymap();
+
+    // Apply user keymap overrides from
+    // `$XDG_CONFIG_HOME/devix/keymap-overrides.json` (or the
+    // ~/.config/devix/... fallback). Missing file is silent. Errors
+    // surface to stderr so the editor still starts on a typo.
+    if let Some(p) = keymap_overrides_path() {
+        if let Err(e) = apply_keymap_overrides(&mut keymap, &commands, &p) {
+            eprintln!("devix: keymap-overrides ignored ({}): {e}", p.display());
+        }
+    }
 
     let mut plugin_runtime = match default_plugin_path() {
         Some(p) => {
@@ -65,7 +78,17 @@ fn main() -> Result<()> {
         rt.install(&mut commands, &mut keymap, &mut editor);
     }
 
-    let theme = Theme::default();
+    // Load the "default" theme from the embedded built-in manifest.
+    // Falls back to the in-source `Theme::default()` if the manifest
+    // doesn't carry the id (defence-in-depth — the embedded manifest
+    // does, and `builtin_manifest::*` tests gate on it).
+    let theme = parse_manifest_bytes(
+        devix_core::BUILTIN_MANIFEST.as_bytes(),
+        std::path::Path::new("<builtin>"),
+    )
+    .ok()
+    .and_then(|m| theme_from_manifest(&m, "default"))
+    .unwrap_or_else(Theme::default);
     let clipboard = clipboard::init();
 
     let mut app = Application::new(
