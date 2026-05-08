@@ -69,7 +69,7 @@ fn handle_key(ev: Event, code: KeyCode, mods: KeyModifiers, ctx: &mut AppContext
     }
 
     let chord = chord_from_key(code, mods);
-    if let Some(action) = ctx.keymap.lookup(chord, ctx.commands) {
+    if let Some(action) = ctx.keymap.resolve_chord(chord, ctx.commands) {
         run_arc(ctx, action);
         return;
     }

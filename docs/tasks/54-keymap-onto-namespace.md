@@ -1,6 +1,6 @@
 # Task T-54 — Migrate keymap onto namespace (`/keymap/<chord>`)
 Stage: 5
-Status: pending
+Status: complete
 Depends on: T-30, T-42, T-53
 Blocks:     T-57, T-72
 

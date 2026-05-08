@@ -93,7 +93,7 @@ fn hello_command_round_trips_through_registry_and_keymap() {
     keymap.bind_command(chord, cid);
 
     let action = keymap
-        .lookup(chord, &commands)
+        .resolve_chord(chord, &commands)
         .expect("plugin chord must resolve to a command");
 
     let mut editor = Editor::open(None).unwrap();

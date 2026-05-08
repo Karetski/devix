@@ -14,6 +14,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyModifiers};
+use devix_protocol::Lookup;
+use devix_protocol::path::Path;
 
 use crate::editor::commands::builtins as cmd_id;
 use crate::editor::commands::cmd::{self, EditorCommand};
@@ -43,11 +45,19 @@ pub struct Keymap {
     /// rebuilt on every `bind_command`. Kept as a small map (~30 entries) so
     /// the rebuild cost is irrelevant.
     chord_for: HashMap<CommandId, Chord>,
+    /// Path-keyed cache: `/keymap/<chord>` → `/cmd/<dotted-id>`. Only
+    /// `Binding::Command` entries appear here — `Binding::Action`
+    /// has no command-id path. Built lazily on `bind_command`.
+    bound_paths: HashMap<Path, Path>,
 }
 
 impl Keymap {
     pub fn new() -> Self {
-        Self { bindings: HashMap::new(), chord_for: HashMap::new() }
+        Self {
+            bindings: HashMap::new(),
+            chord_for: HashMap::new(),
+            bound_paths: HashMap::new(),
+        }
     }
 
     pub fn bind_command(&mut self, chord: Chord, id: CommandId) {
@@ -55,13 +65,24 @@ impl Keymap {
         // Only record the *first* chord we see for an id — palettes typically
         // show one canonical hint, not every alias (Ctrl+W vs Ctrl+F4).
         self.chord_for.entry(id).or_insert(chord);
+        // Maintain the path-keyed cache for `Lookup<Resource = Path>`.
+        if let Some(chord_path) = chord_to_keymap_path(chord) {
+            self.bound_paths.insert(chord_path, id.to_path());
+        }
     }
 
     pub fn bind_action(&mut self, chord: Chord, action: Arc<dyn EditorCommand>) {
         self.bindings.insert(chord, Binding::Action(action));
+        // Action bindings have no command-id path, so they don't
+        // populate `bound_paths` — they're invisible to the
+        // namespace lookup.
     }
 
-    pub fn lookup(
+    /// Resolve a chord to its bound action via this keymap's
+    /// bindings (and the registry, for `Binding::Command`). Renamed
+    /// from `lookup` so it doesn't clash with the
+    /// `Lookup::lookup(&Path)` trait impl.
+    pub fn resolve_chord(
         &self,
         chord: Chord,
         reg: &CommandRegistry,
@@ -80,6 +101,103 @@ impl Keymap {
 
 impl Default for Keymap {
     fn default() -> Self { Self::new() }
+}
+
+impl Lookup for Keymap {
+    type Resource = Path;
+
+    fn lookup(&self, path: &Path) -> Option<&Path> {
+        self.bound_paths.get(path)
+    }
+
+    /// Path-keyed mutation goes through `bind_command`, not
+    /// `lookup_mut` (consistent with the 2026-05-07 lookup_mut
+    /// resolution).
+    fn lookup_mut(&mut self, _path: &Path) -> Option<&mut Path> {
+        None
+    }
+
+    fn paths(&self) -> Box<dyn Iterator<Item = Path> + '_> {
+        Box::new(self.bound_paths.keys().cloned())
+    }
+}
+
+/// Encode a keymap `Chord` (crossterm-flavored) into the canonical
+/// `/keymap/<chord>` path. Returns `None` if the chord can't be
+/// represented in the canonical kebab-case form (e.g.
+/// non-printable / unknown KeyCode variants).
+fn chord_to_keymap_path(chord: Chord) -> Option<Path> {
+    let proto = crossterm_chord_to_protocol(chord)?;
+    let segment = format!("{}", proto);
+    Path::parse(&format!("/keymap/{}", segment)).ok()
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn binding_command_populates_bound_paths_cache() {
+        let mut k = Keymap::new();
+        let chord = Chord::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        k.bind_command(chord, CommandId("editor.save"));
+        let p = Path::parse("/keymap/ctrl-s").unwrap();
+        let dest = k.lookup(&p).unwrap();
+        assert_eq!(dest.as_str(), "/cmd/editor.save");
+    }
+
+    #[test]
+    fn binding_action_does_not_populate_paths() {
+        let mut k = Keymap::new();
+        let chord = Chord::new(KeyCode::Char('h'), KeyModifiers::NONE);
+        k.bind_action(chord, Arc::new(cmd::Quit));
+        let paths: Vec<Path> = k.paths().collect();
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn paths_enumerates_canonical_kebab_chords() {
+        let mut k = Keymap::new();
+        k.bind_command(
+            Chord::new(KeyCode::Char('p'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            CommandId("palette.open"),
+        );
+        let paths: Vec<String> = k.paths().map(|p| p.as_str().to_string()).collect();
+        assert_eq!(paths, vec!["/keymap/ctrl-shift-p"]);
+    }
+}
+
+fn crossterm_chord_to_protocol(chord: Chord) -> Option<devix_protocol::input::Chord> {
+    use crossterm::event::KeyCode as CtCode;
+    use devix_protocol::input::{Chord as PChord, KeyCode as PKey, Modifiers as PMods};
+
+    let key = match chord.code {
+        CtCode::Char(c) => PKey::Char(c.to_ascii_lowercase()),
+        CtCode::Enter => PKey::Enter,
+        CtCode::Tab => PKey::Tab,
+        CtCode::BackTab => PKey::BackTab,
+        CtCode::Esc => PKey::Esc,
+        CtCode::Backspace => PKey::Backspace,
+        CtCode::Delete => PKey::Delete,
+        CtCode::Insert => PKey::Insert,
+        CtCode::Left => PKey::Left,
+        CtCode::Right => PKey::Right,
+        CtCode::Up => PKey::Up,
+        CtCode::Down => PKey::Down,
+        CtCode::Home => PKey::Home,
+        CtCode::End => PKey::End,
+        CtCode::PageUp => PKey::PageUp,
+        CtCode::PageDown => PKey::PageDown,
+        CtCode::F(n) if (1..=12).contains(&n) => PKey::F(n),
+        _ => return None,
+    };
+    let modifiers = PMods {
+        ctrl: chord.mods.contains(KeyModifiers::CONTROL),
+        alt: chord.mods.contains(KeyModifiers::ALT),
+        shift: chord.mods.contains(KeyModifiers::SHIFT),
+        super_key: chord.mods.contains(KeyModifiers::SUPER),
+    };
+    Some(PChord { key, modifiers })
 }
 
 const C: KeyModifiers = KeyModifiers::CONTROL;
