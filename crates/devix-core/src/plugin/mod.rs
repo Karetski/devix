@@ -80,7 +80,7 @@ mod runtime;
 pub use bridge::{LuaAction, PluginCommandAction, make_command_action};
 pub use host::PluginHost;
 pub use pane_handle::{LuaPane, LuaPaneHandle, PluginPane};
-pub use runtime::{MsgSink, PluginRuntime};
+pub use runtime::{MsgSink, PluginRuntime, host_capabilities};
 
 /// Editor-held handle for the host's invoke channel. Wrapped in
 /// `Arc<Mutex<…>>` so the supervisor can swap a fresh sender into
@@ -932,6 +932,98 @@ mod tests {
         assert!(
             matches!(&msgs[..], [PluginMsg::Status(s)] if s == "8.0"),
             "expected `8.0`, got {msgs:?}",
+        );
+    }
+
+    #[test]
+    fn restricted_capability_skips_command_install_and_fires_plugin_error() {
+        use devix_protocol::manifest::{
+            CommandSpec as ManifestCommandSpec, Contributes, Engines, Manifest,
+        };
+        use devix_protocol::Lookup;
+        use devix_protocol::path::Path as DevixPath;
+        use devix_protocol::protocol::{Capability, ProtocolVersion};
+        use devix_protocol::pulse::{Pulse, PulseFilter, PulseKind};
+        use std::collections::HashSet;
+        use std::sync::{Arc as StdArc, Mutex as StdMutex};
+
+        let p = write_temp(
+            "cap_deny",
+            r#"
+                devix.register_action({
+                    id = "go",
+                    label = "Go",
+                    run = function() end,
+                })
+            "#,
+        );
+
+        let manifest = Manifest {
+            name: "capdeny".into(),
+            version: "0.1.0".into(),
+            engines: Engines {
+                protocol_version: ProtocolVersion::new(0, 1),
+                pulse_bus: ProtocolVersion::new(0, 1),
+                manifest: ProtocolVersion::new(0, 1),
+            },
+            entry: None,
+            contributes: Contributes {
+                commands: vec![ManifestCommandSpec {
+                    id: "go".into(),
+                    label: "Go".into(),
+                    category: None,
+                    lua_handle: None,
+                }],
+                ..Default::default()
+            },
+            subscribe: Vec::new(),
+        };
+
+        // Restricted capability set: ContributeCommands removed.
+        let mut caps: HashSet<Capability> = host_capabilities();
+        caps.remove(&Capability::ContributeCommands);
+
+        let bus = crate::PulseBus::new();
+        let captured: StdArc<StdMutex<Vec<Pulse>>> =
+            StdArc::new(StdMutex::new(Vec::new()));
+        let cap = captured.clone();
+        bus.subscribe(PulseFilter::kind(PulseKind::PluginError), move |p| {
+            cap.lock().unwrap().push(p.clone());
+        });
+
+        let sink: MsgSink = StdArc::new(|_| {});
+        let mut runtime = PluginRuntime::load_supervised_with_caps(
+            &p,
+            sink,
+            bus.clone(),
+            None,
+            caps,
+        )
+        .unwrap();
+
+        let mut commands = CommandRegistry::new();
+        let mut keymap = Keymap::new();
+        let mut editor = Editor::open(None).unwrap();
+        let count = runtime.install_with_manifest(
+            &mut commands,
+            &mut keymap,
+            &mut editor,
+            &manifest,
+            &bus,
+        );
+        assert_eq!(count, 0, "no commands installed under restricted capability");
+        assert!(
+            commands.lookup(&DevixPath::parse("/plugin/capdeny/cmd/go").unwrap()).is_none(),
+            "command should not resolve through registry",
+        );
+        // The Lookup trait isn't in scope here; we know lookup is part of CommandRegistry.
+
+        let pulses = captured.lock().unwrap();
+        assert!(
+            pulses.iter().any(|p| matches!(p,
+                Pulse::PluginError { message, .. }
+                if message.contains("ContributeCommands") && message.contains("commands"))),
+            "expected PluginError for ContributeCommands, got {pulses:?}",
         );
     }
 

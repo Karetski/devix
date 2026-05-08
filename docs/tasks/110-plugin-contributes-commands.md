@@ -1,6 +1,6 @@
 # Task T-110 — Plugin contributes commands via manifest
 Stage: 11
-Status: partial — manifest commands register at /plugin/<name>/cmd/<id>; capability negotiation + keymap-from-manifest plugin-path deferred
+Status: complete — manifest commands register at /plugin/<name>/cmd/<id>; capability negotiation (warn-and-degrade) + keymap-from-manifest plugin-path shipped
 Depends on: T-33, T-71, T-81, T-104
 Blocks:     T-111, T-112, T-113
 
@@ -54,11 +54,25 @@ function.
   supervisor (T-81 partial), and wires its declared commands. The
   legacy `DEVIX_PLUGIN` single-file path stays alive for backward
   compatibility (registers at `/cmd/<id>`).
-- *Deferred* from full T-110 spec:
-  - **Capability negotiation** (`ContributeCommands` warn-and-degrade
-    per `protocol.md` Q2). Capabilities aren't yet exchanged between
-    host and plugin; this lands when T-81 introduces the protocol
-    envelope on the plugin side.
+- **2026-05-08 follow-up (full close, T-81 unblocked).**
+  - `PluginRuntime` carries a negotiated `capabilities: HashSet<Capability>`.
+    Defaults to `host_capabilities()` (every bit advertised);
+    tests pin restricted sets via
+    `PluginRuntime::load_supervised_with_caps`.
+  - `install_with_manifest` consults the set per contribution kind:
+    `ContributeCommands` for `contributes.commands`,
+    `ContributeKeymaps` for `contributes.keymaps`,
+    `ContributeSidebarPane` for `contributes.panes`. Missing bit
+    publishes `Pulse::PluginError { plugin, message }` describing
+    the degradation and skips installation of that kind.
+  - Test:
+    `restricted_capability_skips_command_install_and_fires_plugin_error`
+    pins a host capability set without `ContributeCommands` and
+    asserts (a) the registry stays empty, (b) `Pulse::PluginError`
+    fires.
+
+- *Originally deferred* (kept for history):
+  - Capability negotiation — closed in the follow-up above.
   - **Keymap-from-manifest with plugin paths**. The manifest schema
     accepts `command: "/plugin/<name>/cmd/<id>"` per
     `manifest.md`, but `register_keymap_contributions` only

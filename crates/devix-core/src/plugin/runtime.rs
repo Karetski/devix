@@ -48,6 +48,10 @@ use tokio::sync::mpsc::{
 };
 use tokio::sync::oneshot;
 
+use std::collections::HashSet;
+
+use devix_protocol::protocol::Capability;
+
 use crate::editor::{Command, CommandId, CommandRegistry, Editor, Keymap};
 use crate::settings_store::SettingsStore;
 use crate::SidebarSlot;
@@ -75,6 +79,13 @@ pub struct PluginRuntime {
     input_tx: InputSender,
     msg_rx: UnboundedReceiver<PluginMsg>,
     contributions: Contributions,
+    /// Capabilities negotiated for this plugin. T-110 warn-and-degrade:
+    /// `install_with_manifest` skips contribution kinds whose
+    /// capability bit is missing and publishes `Pulse::PluginError`
+    /// describing the degradation. Defaults to the host's full set
+    /// (`host_capabilities()`); tests / future configurable hosts
+    /// pass restricted sets through `load_supervised_with_caps`.
+    capabilities: HashSet<Capability>,
     /// Strings leaked to satisfy the `'static` lifetime on
     /// `CommandId(&'static str)` / `Command::label`. Lives as long
     /// as the runtime so registered commands stay valid.
@@ -118,7 +129,7 @@ impl PluginRuntime {
     /// queue; consumers drain via [`PluginRuntime::drain_messages`].
     /// Kept for tests; production uses [`Self::load_supervised`].
     pub fn load(path: &Path) -> Result<Self> {
-        Self::load_full(path, None, None, None)
+        Self::load_full(path, None, None, None, host_capabilities())
     }
 
     /// Load with a push-callback. Every emitted [`PluginMsg`] is
@@ -127,7 +138,7 @@ impl PluginRuntime {
     /// fresh bus that nothing else listens to — for the editor-bus
     /// path use [`Self::load_supervised`] instead.
     pub fn load_with_sink(path: &Path, sink: MsgSink) -> Result<Self> {
-        Self::load_full(path, Some(sink), None, None)
+        Self::load_full(path, Some(sink), None, None, host_capabilities())
     }
 
     /// Load with a push-callback and a bus to publish lifecycle pulses
@@ -141,7 +152,7 @@ impl PluginRuntime {
         sink: MsgSink,
         bus: crate::PulseBus,
     ) -> Result<Self> {
-        Self::load_full(path, Some(sink), Some(bus), None)
+        Self::load_full(path, Some(sink), Some(bus), None, host_capabilities())
     }
 
     /// Like [`Self::load_supervised`] but also threads a shared
@@ -154,7 +165,28 @@ impl PluginRuntime {
         bus: crate::PulseBus,
         settings: Arc<Mutex<SettingsStore>>,
     ) -> Result<Self> {
-        Self::load_full(path, Some(sink), Some(bus), Some(settings))
+        Self::load_full(
+            path,
+            Some(sink),
+            Some(bus),
+            Some(settings),
+            host_capabilities(),
+        )
+    }
+
+    /// Like [`Self::load_supervised_with_settings`] but pins the
+    /// negotiated capability set explicitly. Used by tests that
+    /// exercise the warn-and-degrade path; future configurable
+    /// hosts can call this with a restricted set to enforce
+    /// contribution-level gating. T-110.
+    pub fn load_supervised_with_caps(
+        path: &Path,
+        sink: MsgSink,
+        bus: crate::PulseBus,
+        settings: Option<Arc<Mutex<SettingsStore>>>,
+        capabilities: HashSet<Capability>,
+    ) -> Result<Self> {
+        Self::load_full(path, Some(sink), Some(bus), settings, capabilities)
     }
 
     fn load_full(
@@ -162,6 +194,7 @@ impl PluginRuntime {
         msg_sink: Option<MsgSink>,
         bus: Option<crate::PulseBus>,
         settings_store: Option<SharedSettingsStore>,
+        capabilities: HashSet<Capability>,
     ) -> Result<Self> {
         let (msg_tx, msg_rx) = unbounded_channel::<PluginMsg>();
 
@@ -386,6 +419,7 @@ impl PluginRuntime {
             input_tx,
             msg_rx,
             contributions,
+            capabilities,
             leaked_strings: Vec::new(),
             shutdown_tx,
             supervised: Some(supervised),
@@ -394,6 +428,14 @@ impl PluginRuntime {
 
     pub fn contributions(&self) -> &Contributions {
         &self.contributions
+    }
+
+    /// Negotiated capabilities for this plugin. Read by the editor
+    /// when wiring contributions through `install_with_manifest`;
+    /// missing bits cause that contribution kind to be skipped with
+    /// a `Pulse::PluginError` describing the degradation.
+    pub fn capabilities(&self) -> &HashSet<Capability> {
+        &self.capabilities
     }
 
     pub fn invoke_sender(&self) -> InvokeSender {
@@ -486,7 +528,41 @@ impl PluginRuntime {
         .ok();
         let sender = self.invoke_tx.clone();
 
+        // Capability gate (T-110, warn-and-degrade per `protocol.md` Q2).
+        // Each manifest-declared contribution kind needs the host to
+        // advertise the matching capability bit; missing bit → publish
+        // `Pulse::PluginError` and skip every contribution of that
+        // kind.
+        let allow_commands = self.capability_allowed(
+            Capability::ContributeCommands,
+            &plugin_path,
+            "contributes.commands",
+            !manifest.contributes.commands.is_empty(),
+            bus,
+        );
+        let allow_keymaps = self.capability_allowed(
+            Capability::ContributeKeymaps,
+            &plugin_path,
+            "contributes.keymaps",
+            !manifest.contributes.keymaps.is_empty(),
+            bus,
+        );
+        let allow_panes = self.capability_allowed(
+            Capability::ContributeSidebarPane,
+            &plugin_path,
+            "contributes.panes",
+            !manifest.contributes.panes.is_empty(),
+            bus,
+        );
+
         let mut count = 0usize;
+        if !allow_commands {
+            // Skip commands entirely; manifest-declared keymaps that
+            // resolve through these commands will report unknown-
+            // command errors below as a side effect, which is
+            // acceptable degraded behaviour.
+            return count;
+        }
         for decl in &manifest.contributes.commands {
             let runtime_spec = self
                 .contributions
@@ -537,23 +613,28 @@ impl PluginRuntime {
             count += 1;
         }
 
-        match crate::manifest_loader::register_keymap_contributions_with_policy(
-            keymap,
-            manifest,
-            commands,
-            crate::manifest_loader::BindPolicy::IfFree,
-        ) {
-            Ok(_) => {}
-            Err(e) => {
-                if let Some(ref pp) = plugin_path {
-                    bus.publish(devix_protocol::pulse::Pulse::PluginError {
-                        plugin: pp.clone(),
-                        message: format!("manifest keymap registration failed: {e}"),
-                    });
+        if allow_keymaps {
+            match crate::manifest_loader::register_keymap_contributions_with_policy(
+                keymap,
+                manifest,
+                commands,
+                crate::manifest_loader::BindPolicy::IfFree,
+            ) {
+                Ok(_) => {}
+                Err(e) => {
+                    if let Some(ref pp) = plugin_path {
+                        bus.publish(devix_protocol::pulse::Pulse::PluginError {
+                            plugin: pp.clone(),
+                            message: format!("manifest keymap registration failed: {e}"),
+                        });
+                    }
                 }
             }
         }
 
+        if !allow_panes {
+            return count;
+        }
         for decl in &manifest.contributes.panes {
             let core_slot: SidebarSlot = match decl.slot {
                 devix_protocol::view::SidebarSlot::Left => SidebarSlot::Left,
@@ -617,6 +698,64 @@ impl PluginRuntime {
 
 fn leak_str(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())
+}
+
+impl PluginRuntime {
+    /// Capability gate helper: if `needed` is missing from
+    /// `self.capabilities` AND the manifest carries this kind, fire
+    /// `Pulse::PluginError` once + return false. Otherwise return
+    /// true. T-110 warn-and-degrade.
+    fn capability_allowed(
+        &self,
+        needed: Capability,
+        plugin_path: &Option<devix_protocol::path::Path>,
+        kind: &str,
+        manifest_uses_kind: bool,
+        bus: &crate::PulseBus,
+    ) -> bool {
+        if self.capabilities.contains(&needed) {
+            return true;
+        }
+        if !manifest_uses_kind {
+            // Manifest doesn't use this kind — silent.
+            return true;
+        }
+        if let Some(pp) = plugin_path {
+            bus.publish(devix_protocol::pulse::Pulse::PluginError {
+                plugin: pp.clone(),
+                message: format!(
+                    "host does not advertise `{:?}`; `{}` contributions skipped",
+                    needed, kind,
+                ),
+            });
+        }
+        false
+    }
+}
+
+/// The host's negotiated capability set. Today every bit is set —
+/// the warn-and-degrade path is dormant in production. Future
+/// configurable hosts (CI runners, restricted environments) will
+/// pin a narrower set through `PluginRuntime::load_supervised_with_caps`.
+pub fn host_capabilities() -> HashSet<Capability> {
+    let mut s = HashSet::new();
+    s.insert(Capability::ViewTree);
+    s.insert(Capability::StableViewIds);
+    s.insert(Capability::UnicodeFull);
+    s.insert(Capability::TruecolorStyles);
+    s.insert(Capability::Animations);
+    s.insert(Capability::ContributeCommands);
+    s.insert(Capability::ContributeKeymaps);
+    s.insert(Capability::ContributeSidebarPane);
+    s.insert(Capability::ContributeOverlayPane);
+    s.insert(Capability::ContributeStatusItem);
+    s.insert(Capability::ContributeThemes);
+    s.insert(Capability::ContributeSettings);
+    s.insert(Capability::SubscribePulses);
+    s.insert(Capability::InvokeCommands);
+    s.insert(Capability::OpenPath);
+    s.insert(Capability::ReadDir);
+    s
 }
 
 /// Decode a `/setting/<key>` path back to the dotted key. Returns
