@@ -231,7 +231,7 @@ fn dispatch_to_focused_leaf(ctx: &mut AppContext<'_>, ev: &Event) -> Outcome {
         return Outcome::Ignored;
     };
     let mut hctx = HandleCtx::default();
-    leaf.handle_at(ev, area, &mut hctx)
+    leaf.handle(ev, area, &mut hctx)
 }
 
 /// Walk the leaf at screen position (`col`, `row`) and dispatch to it.
@@ -260,7 +260,7 @@ fn dispatch_to_leaf_at(
         return Outcome::Ignored;
     };
     let mut hctx = HandleCtx::default();
-    leaf.handle_at(ev, leaf_area, &mut hctx)
+    leaf.handle(ev, leaf_area, &mut hctx)
 }
 
 /// Reconstruct the editor's root rect from cached leaf rects: the root

@@ -221,7 +221,7 @@ impl<B: Backend> Application<B> {
             let area = frame.area();
             editor.layout(area);
 
-            let focused_leaf = editor.panes.at_path(&editor.focus).and_then(|n| n.leaf_id());
+            let focused_leaf = editor.panes.at_path(&editor.focus).and_then(|n| devix_core::editor::registry::pane_leaf_id(n));
             let layout_ctx = LayoutCtx {
                 documents: &editor.documents,
                 cursors: &editor.cursors,

@@ -65,7 +65,7 @@ impl Editor {
     pub fn focus_at_screen(&mut self, col: u16, row: u16) {
         let area = self.outer_editor_area();
         let Some((_, node)) = self.panes.pane_at_xy(area, col, row) else { return };
-        let Some(leaf) = node.leaf_id() else { return };
+        let Some(leaf) = crate::editor::registry::pane_leaf_id(node) else { return };
         if let Some(path) = path_to_leaf(self.panes.root(), area, leaf) {
             self.set_focus(path);
         }

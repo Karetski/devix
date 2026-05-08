@@ -80,16 +80,16 @@ impl PaneRegistry {
         out
     }
 
-    pub fn at_path(&self, path: &[usize]) -> Option<&LayoutNode> {
-        self.as_layout().at_path(path)
+    pub fn at_path(&self, path: &[usize]) -> Option<&dyn Pane> {
+        pane_at_path(self.root.as_ref(), path)
     }
 
-    pub fn at_path_mut(&mut self, path: &[usize]) -> Option<&mut LayoutNode> {
-        self.as_layout_mut().at_path_mut(path)
+    pub fn at_path_mut(&mut self, path: &[usize]) -> Option<&mut dyn Pane> {
+        pane_at_path_mut(self.root.as_mut(), path)
     }
 
-    pub fn at_path_with_rect(&self, area: Rect, path: &[usize]) -> Option<(Rect, &LayoutNode)> {
-        self.as_layout().at_path_with_rect(area, path)
+    pub fn at_path_with_rect(&self, area: Rect, path: &[usize]) -> Option<(Rect, &dyn Pane)> {
+        pane_at_path_with_rect(self.root.as_ref(), area, path)
     }
 
     pub fn leaves_with_rects(&self, area: Rect) -> Vec<(LeafRef, Rect)> {
@@ -107,28 +107,28 @@ impl PaneRegistry {
         }
     }
 
-    pub fn pane_at_xy(&self, area: Rect, col: u16, row: u16) -> Option<(Rect, &LayoutNode)> {
-        self.as_layout().pane_at(area, col, row)
+    pub fn pane_at_xy(&self, area: Rect, col: u16, row: u16) -> Option<(Rect, &dyn Pane)> {
+        pane_hit_test(self.root.as_ref(), area, col, row)
     }
 
     pub fn render(&self, area: Rect, frame: &mut Frame<'_>, ctx: &LayoutCtx<'_>) {
         self.as_layout().render(area, frame, ctx);
     }
 
-    /// Resolve a `/pane(/<i>)*` path to the corresponding `LayoutNode`.
+    /// Resolve a `/pane(/<i>)*` path to the corresponding `&dyn Pane`.
     /// Path segments after `pane` are 0-based `Split.children` indices.
     /// Per `docs/specs/namespace.md` § *Migration table* and T-52.
-    pub fn pane_at(&self, path: &devix_protocol::path::Path) -> Option<&LayoutNode> {
+    pub fn pane_at(&self, path: &devix_protocol::path::Path) -> Option<&dyn Pane> {
         let indices = pane_path_indices(path)?;
-        self.as_layout().at_path(&indices)
+        pane_at_path(self.root.as_ref(), &indices)
     }
 
     pub fn pane_at_mut(
         &mut self,
         path: &devix_protocol::path::Path,
-    ) -> Option<&mut LayoutNode> {
+    ) -> Option<&mut dyn Pane> {
         let indices = pane_path_indices(path)?;
-        self.as_layout_mut().at_path_mut(&indices)
+        pane_at_path_mut(self.root.as_mut(), &indices)
     }
 
     /// Pre-order enumeration of every reachable pane path. `/pane` is
@@ -347,11 +347,81 @@ fn pane_sidebar_present(node: &dyn Pane, slot: SidebarSlot) -> bool {
         .any(|(_, child)| pane_sidebar_present(child, slot))
 }
 
+/// Walk `path` (a list of `Pane::children` indices) from `node`,
+/// returning the resolved Pane. Generic over the concrete composite
+/// shape — works on the LayoutNode-wrapped tree today and on the
+/// post-T-91 carved Pane tree later.
+fn pane_at_path<'a>(node: &'a dyn Pane, path: &[usize]) -> Option<&'a dyn Pane> {
+    let mut cur: &dyn Pane = node;
+    let zero = Rect::default();
+    for &idx in path {
+        let kids = cur.children(zero);
+        let (_, child) = kids.into_iter().nth(idx)?;
+        cur = child;
+    }
+    Some(cur)
+}
+
+fn pane_at_path_mut<'a>(
+    node: &'a mut dyn Pane,
+    path: &[usize],
+) -> Option<&'a mut dyn Pane> {
+    let mut cur: &mut dyn Pane = node;
+    let zero = Rect::default();
+    for &idx in path {
+        let kids = cur.children_mut(zero);
+        let (_, child) = kids.into_iter().nth(idx)?;
+        cur = child;
+    }
+    Some(cur)
+}
+
+fn pane_at_path_with_rect<'a>(
+    node: &'a dyn Pane,
+    area: Rect,
+    path: &[usize],
+) -> Option<(Rect, &'a dyn Pane)> {
+    let mut cur: &dyn Pane = node;
+    let mut cur_area = area;
+    for &idx in path {
+        let kids = cur.children(cur_area);
+        let (rect, child) = kids.into_iter().nth(idx)?;
+        cur = child;
+        cur_area = rect;
+    }
+    Some((cur_area, cur))
+}
+
+fn pane_hit_test<'a>(
+    node: &'a dyn Pane,
+    area: Rect,
+    col: u16,
+    row: u16,
+) -> Option<(Rect, &'a dyn Pane)> {
+    if !rect_contains(area, col, row) {
+        return None;
+    }
+    let kids = node.children(area);
+    for (child_rect, child) in kids.iter().rev() {
+        if let Some(found) = pane_hit_test(*child, *child_rect, col, row) {
+            return Some(found);
+        }
+    }
+    Some((area, node))
+}
+
+fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
+    col >= rect.x
+        && col < rect.x.saturating_add(rect.width)
+        && row >= rect.y
+        && row < rect.y.saturating_add(rect.height)
+}
+
 /// Extract a `LeafRef` from `node` if it represents a layout leaf
 /// (LayoutFrame or LayoutSidebar — directly or via the transitional
 /// `LayoutNode` enum wrapper). Returns `None` for splits or
 /// non-layout panes.
-fn pane_leaf_id(node: &dyn Pane) -> Option<LeafRef> {
+pub fn pane_leaf_id(node: &dyn Pane) -> Option<LeafRef> {
     let any = node.as_any()?;
     if let Some(f) = any.downcast_ref::<LayoutFrame>() {
         return Some(LeafRef::Frame(f.frame));

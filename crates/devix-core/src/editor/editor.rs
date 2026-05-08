@@ -160,7 +160,8 @@ impl Editor {
     }
 
     pub fn active_frame(&self) -> Option<FrameId> {
-        match self.panes.at_path(self.focus.active())?.leaf_id()? {
+        let pane = self.panes.at_path(self.focus.active())?;
+        match crate::editor::registry::pane_leaf_id(pane)? {
             LeafRef::Frame(id) => Some(id),
             LeafRef::Sidebar(_) => None,
         }
@@ -526,7 +527,7 @@ mod tests {
         ws.toggle_sidebar(SidebarSlot::Left);
         ws.focus_dir(Direction::Left);
         let node = ws.panes.at_path(&ws.focus).expect("focus resolves");
-        assert_eq!(node.leaf_id(), Some(LeafRef::Sidebar(SidebarSlot::Left)));
+        assert_eq!(crate::editor::registry::pane_leaf_id(node), Some(LeafRef::Sidebar(SidebarSlot::Left)));
     }
 
     #[test]
@@ -557,11 +558,11 @@ mod tests {
         ws.toggle_sidebar(SidebarSlot::Left);
         ws.focus_dir(Direction::Left);
         let node = ws.panes.at_path(&ws.focus).expect("focus resolves");
-        assert_eq!(node.leaf_id(), Some(LeafRef::Sidebar(SidebarSlot::Left)));
+        assert_eq!(crate::editor::registry::pane_leaf_id(node), Some(LeafRef::Sidebar(SidebarSlot::Left)));
         ws.toggle_sidebar(SidebarSlot::Left);
         let node = ws.panes.at_path(&ws.focus).expect("focus resolves");
         assert!(
-            matches!(node.leaf_id(), Some(LeafRef::Frame(_))),
+            matches!(crate::editor::registry::pane_leaf_id(node), Some(LeafRef::Frame(_))),
             "after sidebar removal, focus should resolve to a Frame leaf",
         );
     }
@@ -581,7 +582,7 @@ mod tests {
             "two frames should be in a Split, not a flat Frame leaf",
         );
         let node = ws.panes.at_path(&ws.focus).expect("focus resolves");
-        assert!(matches!(node.leaf_id(), Some(LeafRef::Frame(_))));
+        assert!(matches!(crate::editor::registry::pane_leaf_id(node), Some(LeafRef::Frame(_))));
     }
 
     #[test]
