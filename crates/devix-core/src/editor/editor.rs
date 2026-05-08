@@ -98,10 +98,15 @@ pub struct Editor {
     pub disk_sink: Option<DiskSink>,
 }
 
-/// Push-callback type for disk-change events. Held as `Arc` so notify
-/// callback closures (one per watched document) can each capture a clone
-/// without forcing the runtime to thread its sink everywhere.
-pub type DiskSink = Arc<dyn Fn(DocId) + Send + Sync + 'static>;
+/// Push-callback type for disk-change events. Per T-57, the payload
+/// matches the eventual `Pulse::DiskChanged { path: Path, fs_path:
+/// PathBuf }` shape — `path` is the devix `/buf/<id>` path
+/// (resource identity) and `fs_path` is the filesystem path the
+/// watcher is observing. Stage 6's pulse-bus migration replaces the
+/// callback shape with a typed `Pulse::DiskChanged` published into
+/// `PulseBus`; this type is the bridge until then.
+pub type DiskSink =
+    Arc<dyn Fn(devix_protocol::path::Path, PathBuf) + Send + Sync + 'static>;
 
 impl Editor {
     /// Create a editor with a single frame, single tab, single cursor.
@@ -404,8 +409,14 @@ pub(crate) fn install_watcher_for_doc(
     sink: &DiskSink,
 ) {
     let Some(doc) = documents.get_mut(id) else { return };
+    let Some(fs_path) = doc.buffer.path().map(std::path::Path::to_path_buf) else {
+        // Watchers only attach to documents with a backing fs path;
+        // no fs_path means there's nothing to watch.
+        return;
+    };
+    let path = id.to_path();
     let sink = sink.clone();
-    doc.install_disk_watcher(Box::new(move || sink(id)));
+    doc.install_disk_watcher(Box::new(move || sink(path.clone(), fs_path.clone())));
 }
 
 #[cfg(test)]

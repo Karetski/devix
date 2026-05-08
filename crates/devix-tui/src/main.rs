@@ -13,6 +13,7 @@ use anyhow::Result;
 use devix_tui::clipboard;
 use devix_tui::{AppContext, Application, EventSink};
 use devix_core::{DocId, Editor, build_registry, cmd, default_keymap};
+use devix_protocol::path::Path as DevixPath;
 use devix_core::Theme;
 use devix_core::{MsgSink, PluginMsg, PluginRuntime, default_plugin_path};
 
@@ -25,8 +26,10 @@ fn main() -> Result<()> {
     let mut editor = Editor::open(path)?;
     {
         let sink = sink.clone();
-        editor.attach_disk_sink(Arc::new(move |doc: DocId| {
-            let _ = sink.pulse(move |ctx: &mut AppContext<'_>| handle_disk_changed(ctx, doc));
+        editor.attach_disk_sink(Arc::new(move |path: DevixPath, fs_path: PathBuf| {
+            let _ = sink.pulse(move |ctx: &mut AppContext<'_>| {
+                handle_disk_changed(ctx, &path, &fs_path);
+            });
         }));
     }
 
@@ -69,7 +72,12 @@ fn main() -> Result<()> {
 /// Disk watcher reported a change for `doc`. Three-way handling:
 /// dirty buffer → mark pending and prompt; active+clean → reload via
 /// the command path; background+clean → silent reload + cursor clamp.
-fn handle_disk_changed(ctx: &mut AppContext<'_>, doc: DocId) {
+fn handle_disk_changed(
+    ctx: &mut AppContext<'_>,
+    path: &DevixPath,
+    _fs_path: &std::path::Path,
+) {
+    let Some(doc) = DocId::id_from_path(path) else { return };
     let active_doc_id = ctx.editor.active_cursor().map(|c| c.doc);
     let dirty = ctx
         .editor

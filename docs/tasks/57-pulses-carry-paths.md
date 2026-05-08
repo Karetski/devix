@@ -1,6 +1,6 @@
 # Task T-57 — Pulses carry `Path`; sweep call sites
 Stage: 5
-Status: pending
+Status: complete
 Depends on: T-31, T-50, T-51, T-52, T-53, T-54, T-55, T-56
 Blocks:     T-60
 
