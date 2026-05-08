@@ -34,6 +34,7 @@ pub mod layout_geom;
 pub mod manifest_loader;
 pub mod pane;
 pub mod plugin;
+pub mod settings_store;
 pub mod supervise;
 pub mod theme;
 pub mod theme_store;
