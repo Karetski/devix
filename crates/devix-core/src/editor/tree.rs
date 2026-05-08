@@ -19,7 +19,7 @@
 use ratatui::Frame;
 
 use crate::{
-    Axis, Event, HandleCtx, Outcome, Pane, Rect, RenderCtx, SidebarPane as SidebarChrome,
+    Axis, Event, Outcome, Pane, Rect, RenderCtx, SidebarPane as SidebarChrome,
     SidebarSlot, TabInfo, TabStripPane, TabbedPane, Theme, split_rects,
 };
 
@@ -480,6 +480,7 @@ fn collect_leaves(node: &LayoutNode, area: Rect, out: &mut Vec<(LeafRef, Rect)>)
     }
 }
 
+#[allow(dead_code)] // T-91 phase 2: retained for symmetry with `collect_leaves`; will go with the rest of LayoutNode in the enum-removal sprint.
 fn collect_frames(node: &LayoutNode, out: &mut Vec<FrameId>) {
     match node {
         LayoutNode::Frame(f) => out.push(f.frame),
