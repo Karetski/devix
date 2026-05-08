@@ -1060,9 +1060,36 @@ impl PluginRuntime {
             count += 1;
         }
 
-        // Panes: install onto the editor's structural tree (same as
-        // `install`). T-111 will key these by manifest declaration
-        // too; for now all Lua-registered panes flow through.
+        // Panes (T-111): cross-check manifest declarations against
+        // Lua-side `register_pane` registrations. Orphan declarations
+        // (manifest declares a pane on slot X but no Lua pane was
+        // registered for X) publish `PluginError`. The declared `id`
+        // becomes the pane's path label
+        // (`/plugin/<name>/pane/<id>`); v0 doesn't route panes by that
+        // path yet (they install onto the editor's structural tree by
+        // slot), but the path is documented for the Stage-9 / T-91
+        // `/pane`-tree unification.
+        for decl in &manifest.contributes.panes {
+            let core_slot: SidebarSlot = match decl.slot {
+                devix_protocol::view::SidebarSlot::Left => SidebarSlot::Left,
+                devix_protocol::view::SidebarSlot::Right => SidebarSlot::Right,
+            };
+            let registered =
+                self.contributions.panes.iter().any(|p| p.slot == core_slot);
+            if !registered {
+                if let Some(ref pp) = plugin_path {
+                    bus.publish(devix_protocol::pulse::Pulse::PluginError {
+                        plugin: pp.clone(),
+                        message: format!(
+                            "manifest declares pane `{}` on slot `{:?}` but the \
+                             plugin's Lua entry never called `register_pane` \
+                             for that slot",
+                            decl.id, decl.slot,
+                        ),
+                    });
+                }
+            }
+        }
         let pane_specs: Vec<(SidebarSlot, PaneSpec)> = self
             .contributions
             .panes
@@ -1555,6 +1582,132 @@ mod tests {
         assert!(
             commands.lookup(&plugin_cmd).is_some(),
             "command lookups against /plugin/<name>/cmd/<id> resolve",
+        );
+    }
+
+    #[test]
+    fn manifest_declares_pane_without_matching_lua_pane_publishes_plugin_error() {
+        use devix_protocol::manifest::{
+            Contributes, Engines, Manifest, PaneSpec as ManifestPaneSpec,
+        };
+        use devix_protocol::pulse::{Pulse, PulseFilter, PulseKind};
+        use devix_protocol::view::SidebarSlot as ProtoSlot;
+
+        // Plugin registers nothing on the right sidebar.
+        let p = write_temp(
+            "pane_orphan",
+            r#"
+                devix.register_pane({ slot = "left", lines = { "ok" } })
+            "#,
+        );
+
+        let manifest = Manifest {
+            name: "panes".to_string(),
+            version: "0.1.0".to_string(),
+            engines: Engines {
+                protocol_version: devix_protocol::protocol::ProtocolVersion::new(0, 1),
+                pulse_bus: devix_protocol::protocol::ProtocolVersion::new(0, 1),
+                manifest: devix_protocol::protocol::ProtocolVersion::new(0, 1),
+            },
+            entry: None,
+            contributes: Contributes {
+                panes: vec![ManifestPaneSpec {
+                    id: "missing-side".to_string(),
+                    slot: ProtoSlot::Right,
+                    lua_handle: None,
+                }],
+                ..Default::default()
+            },
+            subscribe: Vec::new(),
+        };
+
+        let bus = crate::PulseBus::new();
+        let captured =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::<Pulse>::new()));
+        let cap = captured.clone();
+        bus.subscribe(PulseFilter::kind(PulseKind::PluginError), move |p| {
+            cap.lock().unwrap().push(p.clone());
+        });
+
+        let mut runtime = PluginRuntime::load(&p).unwrap();
+        let mut commands = CommandRegistry::new();
+        let mut keymap = Keymap::new();
+        let mut editor = Editor::open(None).unwrap();
+        runtime.install_with_manifest(
+            &mut commands,
+            &mut keymap,
+            &mut editor,
+            &manifest,
+            &bus,
+        );
+
+        let pulses = captured.lock().unwrap();
+        assert_eq!(pulses.len(), 1, "PluginError fired for the orphan pane decl");
+        if let Pulse::PluginError { plugin, message } = &pulses[0] {
+            assert_eq!(plugin.as_str(), "/plugin/panes");
+            assert!(message.contains("missing-side"));
+            assert!(message.contains("Right"));
+        }
+    }
+
+    #[test]
+    fn manifest_declares_pane_with_matching_lua_pane_does_not_warn() {
+        use devix_protocol::manifest::{
+            Contributes, Engines, Manifest, PaneSpec as ManifestPaneSpec,
+        };
+        use devix_protocol::pulse::{PulseFilter, PulseKind};
+        use devix_protocol::view::SidebarSlot as ProtoSlot;
+
+        let p = write_temp(
+            "pane_match",
+            r#"
+                devix.register_pane({ slot = "left", lines = { "ok" } })
+            "#,
+        );
+
+        let manifest = Manifest {
+            name: "panes2".to_string(),
+            version: "0.1.0".to_string(),
+            engines: Engines {
+                protocol_version: devix_protocol::protocol::ProtocolVersion::new(0, 1),
+                pulse_bus: devix_protocol::protocol::ProtocolVersion::new(0, 1),
+                manifest: devix_protocol::protocol::ProtocolVersion::new(0, 1),
+            },
+            entry: None,
+            contributes: Contributes {
+                panes: vec![ManifestPaneSpec {
+                    id: "tree".to_string(),
+                    slot: ProtoSlot::Left,
+                    lua_handle: None,
+                }],
+                ..Default::default()
+            },
+            subscribe: Vec::new(),
+        };
+
+        let bus = crate::PulseBus::new();
+        let plugin_errors = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let pe = plugin_errors.clone();
+        bus.subscribe(PulseFilter::kind(PulseKind::PluginError), move |_| {
+            pe.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        });
+
+        let mut runtime = PluginRuntime::load(&p).unwrap();
+        let mut commands = CommandRegistry::new();
+        let mut keymap = Keymap::new();
+        let mut editor = Editor::open(None).unwrap();
+        runtime.install_with_manifest(
+            &mut commands,
+            &mut keymap,
+            &mut editor,
+            &manifest,
+            &bus,
+        );
+
+        assert_eq!(
+            plugin_errors.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "matching declaration is silent",
         );
     }
 
