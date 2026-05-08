@@ -136,6 +136,17 @@ pub enum Pulse {
         value: crate::manifest::SettingValue,
     },
 
+    // ---- Highlighter (T-80) ----
+    /// Tree-sitter highlighter finished re-parsing a buffer; spans
+    /// keyed against `doc` (`/buf/<id>`) are ready for view producers
+    /// to consume. Producer is the supervised highlighter actor;
+    /// consumers cache the spans and look them up at render. Added
+    /// under T-80 per foundations-review amendment log.
+    HighlightsReady {
+        doc: Path,
+        highlights: Vec<crate::HighlightSpan>,
+    },
+
     // ---- Render coordination ----
     RenderDirty {
         reason: DirtyReason,
@@ -204,6 +215,7 @@ pub enum PulseKind {
     PluginError,
     ThemeChanged,
     SettingChanged,
+    HighlightsReady,
     RenderDirty,
     StartupFinished,
     ShutdownRequested,
@@ -241,6 +253,7 @@ impl Pulse {
             Pulse::PluginError { .. } => PulseKind::PluginError,
             Pulse::ThemeChanged { .. } => PulseKind::ThemeChanged,
             Pulse::SettingChanged { .. } => PulseKind::SettingChanged,
+            Pulse::HighlightsReady { .. } => PulseKind::HighlightsReady,
             Pulse::RenderDirty { .. } => PulseKind::RenderDirty,
             Pulse::StartupFinished => PulseKind::StartupFinished,
             Pulse::ShutdownRequested => PulseKind::ShutdownRequested,

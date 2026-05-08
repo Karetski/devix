@@ -31,6 +31,7 @@ pub mod composites;
 pub mod editor;
 pub mod event;
 pub mod geom;
+pub mod highlight_actor;
 pub mod layout_geom;
 pub mod manifest_loader;
 pub mod pane;

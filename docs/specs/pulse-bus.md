@@ -79,6 +79,9 @@ pub enum Pulse {
     // ---- Settings ----
     SettingChanged   { setting: Path, value: SettingValue },
 
+    // ---- Highlighter (T-80) ----
+    HighlightsReady  { doc: Path, highlights: Vec<HighlightSpan> },
+
     // ---- Render coordination ----
     RenderDirty      { reason: DirtyReason },
 
