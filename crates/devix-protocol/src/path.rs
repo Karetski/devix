@@ -181,6 +181,27 @@ impl<'de> Deserialize<'de> for Path {
     }
 }
 
+impl schemars::JsonSchema for Path {
+    fn schema_name() -> String {
+        "Path".to_string()
+    }
+    fn json_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        use schemars::schema::{InstanceType, Metadata, SchemaObject};
+        SchemaObject {
+            instance_type: Some(InstanceType::String.into()),
+            metadata: Some(Box::new(Metadata {
+                description: Some(
+                    "Canonical path: '/<root>/<segment>...' per docs/specs/namespace.md."
+                        .into(),
+                ),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .into()
+    }
+}
+
 /// One interface every per-resource registry implements. Local — there
 /// is no global multi-resource lookup that crosses kinds. A
 /// `BufferStore` is `Lookup<Resource = Document>`; a `CommandRegistry`

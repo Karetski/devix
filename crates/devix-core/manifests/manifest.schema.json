@@ -1,0 +1,524 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Chord": {
+      "description": "Keyboard chord in kebab-case: 'ctrl-shift-p', 'alt-left', 'f12'.",
+      "type": "string"
+    },
+    "Color": {
+      "description": "Color: 'default', '#rrggbb', '@<n>' (0-255), or a named color (e.g. 'red').",
+      "type": "string"
+    },
+    "CommandSpec": {
+      "properties": {
+        "category": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "lua_handle": {
+          "description": "`None` for built-ins; required for plugins.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "type": "object"
+    },
+    "Contributes": {
+      "additionalProperties": false,
+      "description": "Declarative contribution set.",
+      "properties": {
+        "commands": {
+          "items": {
+            "$ref": "#/definitions/CommandSpec"
+          },
+          "type": "array"
+        },
+        "keymaps": {
+          "items": {
+            "$ref": "#/definitions/KeymapSpec"
+          },
+          "type": "array"
+        },
+        "panes": {
+          "items": {
+            "$ref": "#/definitions/PaneSpec"
+          },
+          "type": "array"
+        },
+        "settings": {
+          "additionalProperties": {
+            "$ref": "#/definitions/SettingSpec"
+          },
+          "type": "object"
+        },
+        "themes": {
+          "items": {
+            "$ref": "#/definitions/ThemeSpec"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Engines": {
+      "additionalProperties": false,
+      "description": "Required versions of the subsystems the manifest targets. `engines.devix` is the user-facing alias for `protocol_version` (matches the project name in user-edited config).",
+      "properties": {
+        "devix": {
+          "$ref": "#/definitions/ProtocolVersion"
+        },
+        "manifest": {
+          "$ref": "#/definitions/ProtocolVersion"
+        },
+        "pulse_bus": {
+          "$ref": "#/definitions/ProtocolVersion"
+        }
+      },
+      "required": [
+        "devix",
+        "manifest",
+        "pulse_bus"
+      ],
+      "type": "object"
+    },
+    "KeymapSpec": {
+      "properties": {
+        "command": {
+          "description": "Bare command id (`refresh`) or absolute `Path` (`/cmd/edit.copy`, `/plugin/file-tree/cmd/refresh`).",
+          "type": "string"
+        },
+        "key": {
+          "$ref": "#/definitions/Chord"
+        },
+        "when": {
+          "description": "Reserved for v1 conditional bindings; v0 must be `null`."
+        }
+      },
+      "required": [
+        "command",
+        "key"
+      ],
+      "type": "object"
+    },
+    "PaneSpec": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "lua_handle": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "slot": {
+          "$ref": "#/definitions/SidebarSlot"
+        }
+      },
+      "required": [
+        "id",
+        "slot"
+      ],
+      "type": "object"
+    },
+    "Path": {
+      "description": "Canonical path: '/<root>/<segment>...' per docs/specs/namespace.md.",
+      "type": "string"
+    },
+    "ProtocolVersion": {
+      "description": "Semver-like '<major>.<minor>' (e.g. '0.1', '1.42').",
+      "type": "string"
+    },
+    "PulseField": {
+      "description": "Identifies the *role* a `Path` field plays on a pulse payload — not the literal field name. The same role can map to differently named fields across variants (e.g., `Frame` covers both `frame: Path` and `FrameSplit.source: Path`).",
+      "oneOf": [
+        {
+          "description": "Default — `BufferOpened.path`, `BufferChanged.path`, `BufferClosed.path`, `DiskChanged.path`, `BufferReloaded.path`, `BufferSaved.path`.",
+          "enum": [
+            "path"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`CursorMoved.cursor`, `SelectionChanged.cursor`.",
+          "enum": [
+            "cursor"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`CursorMoved.doc`, `SelectionChanged.doc`, `TabOpened.doc`, `TabActivated.doc`, `TabClosed.doc`.",
+          "enum": [
+            "doc"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`TabOpened.frame`, `TabActivated.frame`, `TabClosed.frame`, `FrameSplit.source`, `FrameClosed.frame`, `ModalOpened.frame`, `ViewportChanged.frame`.",
+          "enum": [
+            "frame"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`FrameSplit.new`.",
+          "enum": [
+            "new_frame"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`SidebarToggled.slot`.",
+          "enum": [
+            "slot"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`FocusChanged.from`.",
+          "enum": [
+            "focus_from"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`FocusChanged.to`.",
+          "enum": [
+            "focus_to"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`CommandInvoked.command`.",
+          "enum": [
+            "command"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`PluginLoaded.plugin`, `PluginUnloaded.plugin`, `PluginError.plugin`. Always shaped `/plugin/<name>`.",
+          "enum": [
+            "plugin"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`ThemeChanged.theme`. Always shaped `/theme/<id>`.",
+          "enum": [
+            "theme"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`ClientConnected.client`, `ClientDisconnected.client`.",
+          "enum": [
+            "client"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "PulseKind": {
+      "description": "Discriminant enum exposed so filters can match without instantiating a payload. Hand-maintained at v0 size; switch to derive macro once the catalog doubles (per pulse-bus.md Q4).",
+      "enum": [
+        "buffer_opened",
+        "buffer_changed",
+        "buffer_saved",
+        "buffer_reloaded",
+        "buffer_closed",
+        "disk_changed",
+        "cursor_moved",
+        "selection_changed",
+        "tab_opened",
+        "tab_activated",
+        "tab_closed",
+        "frame_split",
+        "frame_closed",
+        "sidebar_toggled",
+        "focus_changed",
+        "modal_opened",
+        "modal_dismissed",
+        "command_invoked",
+        "plugin_loaded",
+        "plugin_unloaded",
+        "plugin_error",
+        "theme_changed",
+        "setting_changed",
+        "highlights_ready",
+        "render_dirty",
+        "startup_finished",
+        "shutdown_requested",
+        "open_path_requested",
+        "client_connected",
+        "client_disconnected",
+        "viewport_changed",
+        "input_received"
+      ],
+      "type": "string"
+    },
+    "SettingSpec": {
+      "oneOf": [
+        {
+          "properties": {
+            "default": {
+              "type": "boolean"
+            },
+            "label": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "boolean"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "default",
+            "label",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "default": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "string"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "default",
+            "label",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "default": {
+              "format": "double",
+              "type": "number"
+            },
+            "label": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "number"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "default",
+            "label",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "default": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "enum"
+              ],
+              "type": "string"
+            },
+            "values": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "default",
+            "label",
+            "type",
+            "values"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "SidebarSlot": {
+      "description": "Sidebar slot identifier.",
+      "enum": [
+        "left",
+        "right"
+      ],
+      "type": "string"
+    },
+    "Style": {
+      "description": "Resolved style. T-41 replaces `Color` with the canonical string-form serde; the field shape is stable.",
+      "properties": {
+        "bg": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Color"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bold": {
+          "type": "boolean"
+        },
+        "dim": {
+          "type": "boolean"
+        },
+        "fg": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Color"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "italic": {
+          "type": "boolean"
+        },
+        "reverse": {
+          "type": "boolean"
+        },
+        "underline": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "SubscriptionSpec": {
+      "description": "Filter shape passed to `PulseBus::subscribe`. Plugin manifests deserialize their `subscribe` entries directly into this.",
+      "properties": {
+        "field": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PulseField"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Which `Path`-typed role on the payload to test against `path_prefix`. Defaults to `PulseField::Path` when absent."
+        },
+        "kinds": {
+          "description": "If set, the pulse's `kind()` must be in this list.",
+          "items": {
+            "$ref": "#/definitions/PulseKind"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "lua_handle": {
+          "type": "string"
+        },
+        "path_prefix": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Path"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "If set, the pulse payload's `field` value must start with this prefix (segment-aware via `Path::starts_with`)."
+        }
+      },
+      "required": [
+        "lua_handle"
+      ],
+      "type": "object"
+    },
+    "ThemeSpec": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "scopes": {
+          "additionalProperties": {
+            "$ref": "#/definitions/Style"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "scopes"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Top-level manifest. `serde(deny_unknown_fields)` enforces strict schema match — typos and forward-looking fields are rejected.",
+  "properties": {
+    "contributes": {
+      "$ref": "#/definitions/Contributes"
+    },
+    "engines": {
+      "$ref": "#/definitions/Engines"
+    },
+    "entry": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "name": {
+      "type": "string"
+    },
+    "subscribe": {
+      "items": {
+        "$ref": "#/definitions/SubscriptionSpec"
+      },
+      "type": "array"
+    },
+    "version": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "engines",
+    "name",
+    "version"
+  ],
+  "title": "Manifest",
+  "type": "object"
+}

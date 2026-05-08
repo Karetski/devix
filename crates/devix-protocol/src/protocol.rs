@@ -59,6 +59,26 @@ impl std::fmt::Display for ProtocolVersion {
     }
 }
 
+impl schemars::JsonSchema for ProtocolVersion {
+    fn schema_name() -> String {
+        "ProtocolVersion".to_string()
+    }
+    fn json_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        use schemars::schema::{InstanceType, Metadata, SchemaObject};
+        SchemaObject {
+            instance_type: Some(InstanceType::String.into()),
+            metadata: Some(Box::new(Metadata {
+                description: Some(
+                    "Semver-like '<major>.<minor>' (e.g. '0.1', '1.42').".into(),
+                ),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .into()
+    }
+}
+
 impl Serialize for ProtocolVersion {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.collect_str(self)

@@ -36,7 +36,7 @@ pub mod view;
 pub use input::{Chord, InputEvent, KeyCode, Modifiers, MouseButton, MouseKind};
 pub use manifest::{
     CommandSpec, Contributes, Engines, KeymapSpec, Manifest, ManifestValidationError, PaneSpec,
-    SettingSpec, SettingValue, SubscriptionSpec, ThemeSpec,
+    SettingSpec, SettingValue, SubscriptionSpec, ThemeSpec, manifest_json_schema,
 };
 pub use path::{Lookup, Path, PathError};
 pub use protocol::{

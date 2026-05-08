@@ -163,7 +163,9 @@ pub enum Axis {
 }
 
 /// Sidebar slot identifier.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum SidebarSlot {
     Left,
@@ -246,7 +248,9 @@ pub enum TransitionKind {
 
 /// Resolved style. T-41 replaces `Color` with the canonical
 /// string-form serde; the field shape is stable.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub struct Style {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fg: Option<Color>,
@@ -318,6 +322,27 @@ impl<'de> serde::Deserialize<'de> for Color {
             }
         }
         d.deserialize_str(V)
+    }
+}
+
+impl schemars::JsonSchema for Color {
+    fn schema_name() -> String {
+        "Color".to_string()
+    }
+    fn json_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        use schemars::schema::{InstanceType, Metadata, SchemaObject};
+        SchemaObject {
+            instance_type: Some(InstanceType::String.into()),
+            metadata: Some(Box::new(Metadata {
+                description: Some(
+                    "Color: 'default', '#rrggbb', '@<n>' (0-255), or a named color (e.g. 'red')."
+                        .into(),
+                ),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .into()
     }
 }
 

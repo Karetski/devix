@@ -1,6 +1,6 @@
 # Task T-33 — Manifest skeleton + reader + JSON Schema
 Stage: 3
-Status: complete (schema gen deferred — see In scope note)
+Status: complete — schema gen full close (manifest_json_schema + custom JsonSchema impls + emitted JSON Schema doc)
 Depends on: T-30, T-31, T-32
 Blocks:     T-70, T-110
 
@@ -48,10 +48,34 @@ sites are stubs; concrete wiring lands in Stages 7 / 11.
 - `crates/devix-core/src/lib.rs`: re-exports
 
 ## Acceptance criteria
-- [ ] Every validation row in `manifest.md` is exercised by a test.
-- [ ] Generated schema validates the example top-level manifest.
-- [ ] `cargo build --workspace` passes.
-- [ ] `cargo test --workspace` passes.
+- [x] Every validation row in `manifest.md` is exercised by a test.
+- [x] Generated schema validates the example top-level manifest.
+- [x] `cargo build --workspace` passes.
+- [x] `cargo test --workspace` passes.
+
+## Notes (2026-05-08) — schema gen full close
+
+- `schemars` v0.8 dependency added to `devix-protocol`.
+- Custom `JsonSchema` impls land next to each canonical-string
+  type's serde impl: `Path` (path.rs), `Chord` (input.rs), `Color`
+  (view.rs), `ProtocolVersion` (protocol.rs). Each renders as a
+  `{ "type": "string" }` schema with a description string.
+- `JsonSchema` derive added to `Manifest`, `Engines`,
+  `Contributes`, `CommandSpec`, `KeymapSpec`, `PaneSpec`,
+  `ThemeSpec`, `SettingSpec`, `SettingValue`, `SubscriptionSpec`,
+  `Style`, `SidebarSlot`, `PulseFilter`, `PulseKind`, `PulseField`.
+- `pub fn manifest_json_schema() -> serde_json::Value` returns the
+  generated schema; re-exported from the crate root.
+- New example `crates/devix-protocol/examples/dump_manifest_schema.rs`
+  emits the schema to stdout. The committed copy lives at
+  `crates/devix-core/manifests/manifest.schema.json` (524 lines).
+- Test: `manifest_json_schema_round_trips_serde_value` asserts the
+  schema has the expected `definitions` (Path, Chord, Color,
+  ProtocolVersion, every manifest type, the transitive view +
+  pulse types). `PulseFilter` is omitted from the assertion list
+  because `#[serde(flatten)]` in `SubscriptionSpec` causes
+  schemars to inline its fields rather than emit a separate
+  definition.
 
 ## Spec references
 - `docs/specs/manifest.md` — *Rust types*, *Top-level schema*,

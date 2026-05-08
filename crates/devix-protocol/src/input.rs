@@ -253,6 +253,27 @@ impl KeyCode {
 
 // -- Serde impls ------------------------------------------------------------
 
+impl schemars::JsonSchema for Chord {
+    fn schema_name() -> String {
+        "Chord".to_string()
+    }
+    fn json_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        use schemars::schema::{InstanceType, Metadata, SchemaObject};
+        SchemaObject {
+            instance_type: Some(InstanceType::String.into()),
+            metadata: Some(Box::new(Metadata {
+                description: Some(
+                    "Keyboard chord in kebab-case: 'ctrl-shift-p', 'alt-left', 'f12'."
+                        .into(),
+                ),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+        .into()
+    }
+}
+
 impl Serialize for Chord {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.collect_str(self)

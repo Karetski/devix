@@ -5,15 +5,15 @@
 //! T-70). The reader/validator that consumes these types lives in
 //! `devix-core::manifest_loader`.
 //!
-//! T-33 partial: schemars JSON Schema generation (manifest.md Q5) is
-//! deferred to a follow-up — emitting a clean schema requires custom
-//! `JsonSchema` impls for `Path`, `Chord`, `Color`, `ProtocolVersion`,
-//! which are best landed alongside their canonical-string serde
-//! (T-41 / T-42). Schema generation is "polish, not blocking" per the
-//! Q5 lean.
+//! T-33 full close: `manifest_json_schema()` returns the
+//! `schemars`-generated JSON Schema for [`Manifest`]. Custom
+//! `JsonSchema` impls for the canonical-string types (`Path`,
+//! `Chord`, `Color`, `ProtocolVersion`) live next to their serde
+//! impls in their owning modules.
 
 use std::collections::HashMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::input::Chord;
@@ -24,7 +24,7 @@ use crate::view::{SidebarSlot, Style};
 
 /// Top-level manifest. `serde(deny_unknown_fields)` enforces strict
 /// schema match — typos and forward-looking fields are rejected.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub name: String,
@@ -41,7 +41,7 @@ pub struct Manifest {
 /// Required versions of the subsystems the manifest targets.
 /// `engines.devix` is the user-facing alias for `protocol_version`
 /// (matches the project name in user-edited config).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Engines {
     #[serde(rename = "devix")]
@@ -51,7 +51,7 @@ pub struct Engines {
 }
 
 /// Declarative contribution set.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Contributes {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -76,7 +76,7 @@ impl Contributes {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct CommandSpec {
     pub id: String,
     pub label: String,
@@ -87,7 +87,7 @@ pub struct CommandSpec {
     pub lua_handle: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct KeymapSpec {
     pub key: Chord,
     /// Bare command id (`refresh`) or absolute `Path`
@@ -98,7 +98,7 @@ pub struct KeymapSpec {
     pub when: Option<serde_json::Value>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct PaneSpec {
     pub id: String,
     pub slot: SidebarSlot,
@@ -106,14 +106,14 @@ pub struct PaneSpec {
     pub lua_handle: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct ThemeSpec {
     pub id: String,
     pub label: String,
     pub scopes: HashMap<String, Style>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SettingSpec {
     Boolean { default: bool, label: String },
@@ -131,7 +131,7 @@ pub enum SettingSpec {
 /// `manifest.md` Q2 lock. Lives in `devix-protocol` so the wire
 /// shape on `Pulse::SettingChanged` matches the in-memory value
 /// `devix-core::SettingsStore` keeps.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", content = "value")]
 pub enum SettingValue {
     Boolean(bool),
@@ -143,7 +143,7 @@ pub enum SettingValue {
     EnumString(String),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct SubscriptionSpec {
     #[serde(flatten)]
     pub filter: PulseFilter,
@@ -170,6 +170,14 @@ pub enum ManifestValidationError {
     InvalidSettingKey(String),
     #[error("keymap command `{0}` must be a bare segment or absolute Path")]
     InvalidKeymapCommand(String),
+}
+
+/// Generate the JSON Schema document for [`Manifest`]. Uses
+/// `schemars` v0.8 with custom impls for the canonical-string types
+/// (`Path`, `Chord`, `Color`, `ProtocolVersion`). T-33 full close.
+pub fn manifest_json_schema() -> serde_json::Value {
+    let schema = schemars::schema_for!(Manifest);
+    serde_json::to_value(schema).expect("schema serializes to JSON value")
 }
 
 impl Manifest {
@@ -272,6 +280,42 @@ fn is_valid_keymap_command(cmd: &str) -> bool {
 mod tests {
     use super::*;
     use crate::input::{Chord, KeyCode, Modifiers};
+
+    #[test]
+    fn manifest_json_schema_round_trips_serde_value() {
+        let schema = manifest_json_schema();
+        // Top-level schema is a JSON object with `$schema` + `title`.
+        assert!(schema.is_object());
+        let title = schema.get("title").and_then(|v| v.as_str());
+        assert_eq!(title, Some("Manifest"));
+        // Definitions exist for the transitive types: Path, Chord,
+        // Color, ProtocolVersion are present.
+        let defs = schema.get("definitions").expect("schema has definitions");
+        // PulseFilter uses #[serde(flatten)] in SubscriptionSpec, so
+        // schemars inlines its fields rather than emitting a separate
+        // definition. PulseKind is reachable via the inlined flatten.
+        for needed in [
+            "Path",
+            "Chord",
+            "Color",
+            "ProtocolVersion",
+            "Engines",
+            "Contributes",
+            "CommandSpec",
+            "KeymapSpec",
+            "PaneSpec",
+            "ThemeSpec",
+            "SettingSpec",
+            "SidebarSlot",
+            "Style",
+            "PulseKind",
+        ] {
+            assert!(
+                defs.get(needed).is_some(),
+                "schema definitions missing `{needed}`",
+            );
+        }
+    }
 
     fn good_manifest() -> Manifest {
         Manifest {

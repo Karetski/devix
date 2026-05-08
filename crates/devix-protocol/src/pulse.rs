@@ -189,7 +189,9 @@ pub enum Pulse {
 /// Discriminant enum exposed so filters can match without
 /// instantiating a payload. Hand-maintained at v0 size; switch to
 /// derive macro once the catalog doubles (per pulse-bus.md Q4).
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
+#[derive(
+    Copy, Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PulseKind {
     BufferOpened,
@@ -308,7 +310,9 @@ pub struct ThemePalette {
 /// not the literal field name. The same role can map to differently
 /// named fields across variants (e.g., `Frame` covers both
 /// `frame: Path` and `FrameSplit.source: Path`).
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
+#[derive(
+    Copy, Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum PulseField {
     /// Default — `BufferOpened.path`, `BufferChanged.path`,
@@ -411,7 +415,9 @@ impl Pulse {
 
 /// Filter shape passed to `PulseBus::subscribe`. Plugin manifests
 /// deserialize their `subscribe` entries directly into this.
-#[derive(Clone, Default, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(
+    Clone, Default, Debug, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema,
+)]
 pub struct PulseFilter {
     /// If set, the pulse's `kind()` must be in this list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
