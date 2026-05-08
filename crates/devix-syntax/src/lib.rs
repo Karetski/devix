@@ -16,6 +16,7 @@ use std::path::Path;
 
 use anyhow::{Result, anyhow};
 use ropey::Rope;
+use serde::{Deserialize, Serialize};
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{
     InputEdit, Language as TsLanguage, Node, Parser, Point, Query, QueryCursor, TextProvider, Tree,
@@ -61,7 +62,7 @@ impl Language {
 /// to emit overlapping captures (a node and one of its descendants both
 /// matching different patterns); the renderer applies them in source order so
 /// the most-specific capture wins via last-write paint.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HighlightSpan {
     pub start_byte: usize,
     pub end_byte: usize,

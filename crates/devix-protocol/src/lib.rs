@@ -48,7 +48,11 @@ pub use pulse::{
     DirtyReason, InvocationSource, ModalKind, Pulse, PulseField, PulseFilter, PulseKind,
     SubscriptionId, ThemePalette,
 };
-pub use view::{Axis, Color, NamedColor, SidebarSlot, Style, View, ViewNodeId};
+pub use view::{
+    Anchor, AnchorEdge, Axis, Color, CursorMark, GutterMode, NamedColor, PopupChrome,
+    SelectionMark, SidebarSlot, Style, TabItem, TextSpan, TransitionHint, TransitionKind, View,
+    ViewNodeId, WrapMode,
+};
 
 /// `HighlightSpan` is defined in `devix-syntax`; re-exported here so
 /// consumers of the View IR (`view::View::Buffer.highlights`) reach for one

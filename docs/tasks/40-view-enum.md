@@ -1,6 +1,6 @@
 # Task T-40 — View IR enum + supporting types
 Stage: 4
-Status: pending
+Status: complete
 Depends on: T-30, T-32
 Blocks:     T-41, T-43, T-44, T-91
 
