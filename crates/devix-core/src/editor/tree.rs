@@ -1,20 +1,20 @@
-//! Structural layout tree — the editor's private layout vocabulary.
+//! Structural layout panes — the editor's structural skeleton.
 //!
-//! Splits, frames, sidebars are a *closed* set of node kinds: third
-//! parties don't contribute new layout shapes — they extend through
-//! content (a modal pane, a sidebar pane, an editor command). So the
-//! structural tree is a closed enum, walked by exhaustive match. There
-//! is no `Box<dyn Pane>` for the structural skeleton, no `as_any`
-//! downcasts on the walk, no thread-local services smuggled into a
-//! framework-neutral render trait.
+//! Splits, frames, and sidebars are each their own `Pane` impl. The
+//! editor's `Editor.panes.root: Box<dyn Pane>` is the only source of
+//! layout truth. There is no `LayoutNode` enum: the closed wrapper
+//! retired in T-91 phase-2 close, when `LayoutSplit.children` shifted
+//! to `Vec<(Box<dyn Pane>, u16)>` and the structural tree lifted onto
+//! one open primitive (Lattner's MLIR principle).
 //!
-//! `panes::Pane` keeps its job at the *content boundary*: the modal
-//! slot (`Editor.modal: Option<Box<dyn Pane>>`), plugin-contributed
-//! sidebar content (`LayoutSidebar.content: Option<Box<dyn Pane>>`),
-//! and the chrome widgets (tab strip, sidebar border, palette popup,
-//! editor body) the structural nodes paint into their own rects.
+//! Render takes editor borrows as a real `&LayoutCtx<'_>` argument
+//! threaded through `RenderCtx::layout` (chrome / modal / plugin
+//! panes pass `None` and ignore it).
 //!
-//! Render takes editor borrows as a real `&LayoutCtx<'_>` argument.
+//! The structural cousins (frame, sidebar, split) implement `Pane`
+//! directly. Plugin-contributed panes drop into `LayoutSidebar.content`
+//! exactly the same way as before — the content boundary that
+//! survived the structural collapse.
 
 use ratatui::Frame;
 
@@ -29,18 +29,17 @@ use crate::editor::document::Document;
 use crate::editor::{LeafRef, RenderCache};
 use crate::editor::frame::FrameId;
 
-/// Closed enum of structural layout kinds.
-pub enum LayoutNode {
-    Split(LayoutSplit),
-    Frame(LayoutFrame),
-    Sidebar(LayoutSidebar),
-}
-
 /// Recursive split. Children laid out along `axis` by integer weights;
 /// rect math comes from `split_rects` in `crate::layout_geom`.
 pub struct LayoutSplit {
     pub axis: Axis,
-    pub children: Vec<(LayoutNode, u16)>,
+    pub children: Vec<(Box<dyn Pane>, u16)>,
+}
+
+impl LayoutSplit {
+    pub fn new(axis: Axis, children: Vec<(Box<dyn Pane>, u16)>) -> Self {
+        Self { axis, children }
+    }
 }
 
 /// Editor-frame leaf: tabs over a single document body, plus per-frame
@@ -109,7 +108,7 @@ impl LayoutSidebar {
 /// Read-only borrows the structural tree needs at render time.
 /// Replaces the previous TLS-smuggled `RenderServices`. The renderer
 /// constructs one inside `Application::render` and threads it through
-/// every recursive `LayoutNode::render` call.
+/// the structural Pane impls via `RenderCtx::layout`.
 pub struct LayoutCtx<'a> {
     pub documents: &'a crate::editor::document::DocStore,
     pub cursors: &'a crate::editor::cursor::CursorStore,
@@ -118,175 +117,25 @@ pub struct LayoutCtx<'a> {
     pub focused_leaf: Option<LeafRef>,
 }
 
-impl LayoutNode {
-    pub fn frame(frame: FrameId, cursor: CursorId) -> Self {
-        LayoutNode::Frame(LayoutFrame::with_cursor(frame, cursor))
-    }
-
-    pub fn sidebar(slot: SidebarSlot) -> Self {
-        LayoutNode::Sidebar(LayoutSidebar::empty(slot))
-    }
-
-    /// Identity of this node as a leaf, or `None` if it's a split.
-    pub fn leaf_id(&self) -> Option<LeafRef> {
-        match self {
-            LayoutNode::Frame(f) => Some(LeafRef::Frame(f.frame)),
-            LayoutNode::Sidebar(s) => Some(LeafRef::Sidebar(s.slot)),
-            LayoutNode::Split(_) => None,
-        }
-    }
-
-    /// Frames and sidebars accept focus; splits don't.
-    pub fn is_focusable(&self) -> bool {
-        matches!(self, LayoutNode::Frame(_) | LayoutNode::Sidebar(_))
-    }
-
-    /// Direct children of this node laid out within `area`. Splits
-    /// distribute by weight; leaves return empty.
-    pub fn children_at(&self, area: Rect) -> Vec<(Rect, &LayoutNode)> {
-        match self {
-            LayoutNode::Split(s) => {
-                if s.children.is_empty() {
-                    return Vec::new();
-                }
-                let weights: Vec<u16> = s.children.iter().map(|(_, w)| *w).collect();
-                let rects = split_rects(area, s.axis, &weights);
-                s.children
-                    .iter()
-                    .zip(rects)
-                    .map(|((child, _), rect)| (rect, child))
-                    .collect()
-            }
-            LayoutNode::Frame(_) | LayoutNode::Sidebar(_) => Vec::new(),
-        }
-    }
-
-    /// Mutable counterpart of [`Self::children_at`].
-    pub fn children_at_mut(&mut self, area: Rect) -> Vec<(Rect, &mut LayoutNode)> {
-        match self {
-            LayoutNode::Split(s) => {
-                if s.children.is_empty() {
-                    return Vec::new();
-                }
-                let weights: Vec<u16> = s.children.iter().map(|(_, w)| *w).collect();
-                let rects = split_rects(area, s.axis, &weights);
-                s.children
-                    .iter_mut()
-                    .zip(rects)
-                    .map(|((child, _), rect)| (rect, child))
-                    .collect()
-            }
-            LayoutNode::Frame(_) | LayoutNode::Sidebar(_) => Vec::new(),
-        }
-    }
-
-    /// Resolve a path of `Split.children` indices to the target node.
-    pub fn at_path(&self, path: &[usize]) -> Option<&LayoutNode> {
-        let mut cur = self;
-        for &idx in path {
-            match cur {
-                LayoutNode::Split(s) => {
-                    let (child, _) = s.children.get(idx)?;
-                    cur = child;
-                }
-                _ => return None,
-            }
-        }
-        Some(cur)
-    }
-
-    /// Mutable counterpart of [`Self::at_path`].
-    pub fn at_path_mut(&mut self, path: &[usize]) -> Option<&mut LayoutNode> {
-        let mut cur: &mut LayoutNode = self;
-        for &idx in path {
-            match cur {
-                LayoutNode::Split(s) => {
-                    if idx >= s.children.len() {
-                        return None;
-                    }
-                    cur = &mut s.children[idx].0;
-                }
-                _ => return None,
-            }
-        }
-        Some(cur)
-    }
-
-    /// Resolve a path and the rect that node occupies inside `area`.
-    pub fn at_path_with_rect(&self, area: Rect, path: &[usize]) -> Option<(Rect, &LayoutNode)> {
-        let mut cur_node = self;
-        let mut cur_area = area;
-        for &idx in path {
-            let kids = cur_node.children_at(cur_area);
-            let (rect, child) = kids.into_iter().nth(idx)?;
-            cur_node = child;
-            cur_area = rect;
-        }
-        Some((cur_area, cur_node))
-    }
-
-    /// Deepest node containing `(col, row)`. Recurses through splits in
-    /// reverse so later children win on overlap (z-order).
-    pub fn pane_at(&self, area: Rect, col: u16, row: u16) -> Option<(Rect, &LayoutNode)> {
-        if !rect_contains(area, col, row) {
-            return None;
-        }
-        let kids = self.children_at(area);
-        for (child_rect, child) in kids.iter().rev() {
-            if let Some(found) = child.pane_at(*child_rect, col, row) {
-                return Some(found);
-            }
-        }
-        Some((area, self))
-    }
-
-    /// Walk the tree, collecting every leaf with the rect it occupies.
-    pub fn leaves_with_rects(&self, area: Rect) -> Vec<(LeafRef, Rect)> {
-        let mut out = Vec::new();
-        collect_leaves(self, area, &mut out);
-        out
-    }
-
-    // T-91 phase 2: `frames`, `sidebar_present`, `find_frame`,
-    // `find_frame_mut`, `find_sidebar_mut` retired — `PaneRegistry`
-    // walks via `Pane::children` + downcast through helpers
-    // (`pane_collect_frames`, `pane_sidebar_present`,
-    // `pane_find_frame`, etc.) instead.
-
-    /// Path of `Split.children` indices that leads to `target`, or
-    /// `None` if no such leaf exists.
-    pub fn path_to_leaf(&self, target: LeafRef) -> Option<Vec<usize>> {
-        fn go(node: &LayoutNode, target: LeafRef, out: &mut Vec<usize>) -> bool {
-            if node.leaf_id() == Some(target) {
-                return true;
-            }
-            if let LayoutNode::Split(s) = node {
-                for (i, (child, _)) in s.children.iter().enumerate() {
-                    out.push(i);
-                    if go(child, target, out) {
-                        return true;
-                    }
-                    out.pop();
-                }
-            }
-            false
-        }
-        let mut p = Vec::new();
-        if go(self, target, &mut p) { Some(p) } else { None }
-    }
-
-    // T-91 phase 2: the inherent `render` and `handle_at` methods
-    // retired — both go through `Pane::render` / `Pane::handle` now,
-    // delegating to the per-variant Pane impls.
+/// Build a fresh frame leaf as a boxed Pane. Convenience for callers
+/// that compose layout subtrees (ops, registry, tests).
+pub fn frame_pane(fid: FrameId, cursor: CursorId) -> Box<dyn Pane> {
+    Box::new(LayoutFrame::with_cursor(fid, cursor))
 }
 
-// ---- Per-variant Pane impls (T-91 phase 2 prep) -------------------
-//
-// Each variant struct implements `Pane` directly. `LayoutNode`'s own
-// `Pane` impl delegates to the variant. This lets walks treat any
-// node — variant struct or wrapping enum — as a Pane uniformly.
-// Phase 2 carve will retire the enum and store one of these structs
-// directly in `Box<dyn Pane>`.
+/// Build a fresh empty-content sidebar leaf as a boxed Pane.
+pub fn sidebar_pane(slot: SidebarSlot) -> Box<dyn Pane> {
+    Box::new(LayoutSidebar::empty(slot))
+}
+
+/// Build a horizontal split with the given child weights as a boxed
+/// Pane. Children are themselves boxed Panes — the structural tree
+/// nests through `Box<dyn Pane>` everywhere.
+pub fn split_pane(axis: Axis, children: Vec<(Box<dyn Pane>, u16)>) -> Box<dyn Pane> {
+    Box::new(LayoutSplit::new(axis, children))
+}
+
+// ---- Per-variant Pane impls ---------------------------------------
 
 impl Pane for LayoutFrame {
     fn render(&self, area: Rect, ctx: &mut crate::pane::RenderCtx<'_, '_>) {
@@ -355,7 +204,7 @@ impl Pane for LayoutSplit {
         let weights: Vec<u16> = self.children.iter().map(|(_, w)| *w).collect();
         let rects = split_rects(area, self.axis, &weights);
         for ((child, _), rect) in self.children.iter().zip(rects) {
-            Pane::render(child, rect, ctx);
+            child.render(rect, ctx);
         }
     }
 
@@ -377,7 +226,7 @@ impl Pane for LayoutSplit {
         self.children
             .iter()
             .zip(rects)
-            .map(|((child, _), rect)| (rect, child as &dyn Pane))
+            .map(|((child, _), rect)| (rect, &**child as &dyn Pane))
             .collect()
     }
 
@@ -390,7 +239,7 @@ impl Pane for LayoutSplit {
         self.children
             .iter_mut()
             .zip(rects)
-            .map(|((child, _), rect)| (rect, child as &mut dyn Pane))
+            .map(|((child, _), rect)| (rect, &mut **child as &mut dyn Pane))
             .collect()
     }
 
@@ -401,95 +250,9 @@ impl Pane for LayoutSplit {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
-    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        Some(self)
-    }
-}
-
-/// `Pane` impl for `LayoutNode` (T-91 phase 1). Delegates to the
-/// per-variant `Pane` impls above; phase 2 will retire this wrapper
-/// once `PaneRegistry`'s root and `LayoutSplit.children` accept
-/// arbitrary `Box<dyn Pane>` directly rather than going through the
-/// enum.
-impl Pane for LayoutNode {
-    fn render(&self, area: Rect, ctx: &mut crate::pane::RenderCtx<'_, '_>) {
-        match self {
-            LayoutNode::Split(s) => Pane::render(s, area, ctx),
-            LayoutNode::Frame(f) => Pane::render(f, area, ctx),
-            LayoutNode::Sidebar(s) => Pane::render(s, area, ctx),
-        }
-    }
-
-    fn handle(
-        &mut self,
-        ev: &Event,
-        area: Rect,
-        hctx: &mut crate::pane::HandleCtx<'_>,
-    ) -> Outcome {
-        match self {
-            LayoutNode::Split(s) => Pane::handle(s, ev, area, hctx),
-            LayoutNode::Frame(f) => Pane::handle(f, ev, area, hctx),
-            LayoutNode::Sidebar(s) => Pane::handle(s, ev, area, hctx),
-        }
-    }
-
-    fn children(&self, area: Rect) -> Vec<(Rect, &dyn Pane)> {
-        match self {
-            LayoutNode::Split(s) => Pane::children(s, area),
-            LayoutNode::Frame(f) => Pane::children(f, area),
-            LayoutNode::Sidebar(s) => Pane::children(s, area),
-        }
-    }
-
-    fn children_mut(&mut self, area: Rect) -> Vec<(Rect, &mut dyn Pane)> {
-        match self {
-            LayoutNode::Split(s) => Pane::children_mut(s, area),
-            LayoutNode::Frame(f) => Pane::children_mut(f, area),
-            LayoutNode::Sidebar(s) => Pane::children_mut(s, area),
-        }
-    }
-
-    fn is_focusable(&self) -> bool {
-        // Structural Split nodes don't accept focus; Frame and Sidebar leaves do.
-        matches!(self, LayoutNode::Frame(_) | LayoutNode::Sidebar(_))
-    }
-
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
-    }
-}
-
-fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
-    col >= rect.x
-        && col < rect.x.saturating_add(rect.width)
-        && row >= rect.y
-        && row < rect.y.saturating_add(rect.height)
-}
-
-fn collect_leaves(node: &LayoutNode, area: Rect, out: &mut Vec<(LeafRef, Rect)>) {
-    if let Some(id) = node.leaf_id() {
-        out.push((id, area));
-        return;
-    }
-    for (rect, child) in node.children_at(area) {
-        collect_leaves(child, rect, out);
-    }
-}
-
-#[allow(dead_code)] // T-91 phase 2: retained for symmetry with `collect_leaves`; will go with the rest of LayoutNode in the enum-removal sprint.
-fn collect_frames(node: &LayoutNode, out: &mut Vec<FrameId>) {
-    match node {
-        LayoutNode::Frame(f) => out.push(f.frame),
-        LayoutNode::Sidebar(_) => {}
-        LayoutNode::Split(s) => {
-            for (c, _) in &s.children {
-                collect_frames(c, out);
-            }
-        }
     }
 }
 
@@ -584,25 +347,36 @@ fn visible_byte_range(
     (start, end)
 }
 
-/// Tree-mutation helpers — same shape as before, but typed against
-/// `LayoutNode` instead of `Box<dyn Pane>`.
+/// Tree-mutation helpers — operate directly on `Box<dyn Pane>` and
+/// downcast to `LayoutSplit` to access the structural children list.
+/// The `path` in each helper is a list of `LayoutSplit.children`
+/// indices; non-split mid-walk nodes return `false`.
 pub mod mutate {
-    use super::{Axis, LayoutNode, LayoutSplit};
+    use super::{Axis, LayoutSplit};
+    use crate::Pane;
+
+    fn downcast_split(node: &mut dyn Pane) -> Option<&mut LayoutSplit> {
+        node.as_any_mut()?.downcast_mut::<LayoutSplit>()
+    }
 
     /// Replace the node at `path` with `new`. Empty path replaces the
     /// root. Returns `false` if the path goes out of range or hits a
     /// non-Split mid-walk.
-    pub fn replace_at(root: &mut LayoutNode, path: &[usize], new: LayoutNode) -> bool {
+    pub fn replace_at(
+        root: &mut Box<dyn Pane>,
+        path: &[usize],
+        new: Box<dyn Pane>,
+    ) -> bool {
         if path.is_empty() {
             *root = new;
             return true;
         }
-        let mut cur: &mut LayoutNode = root;
+        let mut cur: &mut Box<dyn Pane> = root;
         for (i, &idx) in path.iter().enumerate() {
             let last = i + 1 == path.len();
-            let split = match cur {
-                LayoutNode::Split(s) => s,
-                _ => return false,
+            let split = match downcast_split(cur.as_mut()) {
+                Some(s) => s,
+                None => return false,
             };
             if idx >= split.children.len() {
                 return false;
@@ -618,26 +392,26 @@ pub mod mutate {
 
     /// Remove the child at `path` from its parent split. The path must
     /// have at least one element.
-    pub fn remove_at(root: &mut LayoutNode, path: &[usize]) -> bool {
+    pub fn remove_at(root: &mut Box<dyn Pane>, path: &[usize]) -> bool {
         if path.is_empty() {
             return false;
         }
         let (parent_path, last) = path.split_at(path.len() - 1);
         let leaf_idx = last[0];
-        let mut cur: &mut LayoutNode = root;
+        let mut cur: &mut Box<dyn Pane> = root;
         for &idx in parent_path {
-            let split = match cur {
-                LayoutNode::Split(s) => s,
-                _ => return false,
+            let split = match downcast_split(cur.as_mut()) {
+                Some(s) => s,
+                None => return false,
             };
             if idx >= split.children.len() {
                 return false;
             }
             cur = &mut split.children[idx].0;
         }
-        let split = match cur {
-            LayoutNode::Split(s) => s,
-            _ => return false,
+        let split = match downcast_split(cur.as_mut()) {
+            Some(s) => s,
+            None => return false,
         };
         if leaf_idx >= split.children.len() {
             return false;
@@ -649,31 +423,29 @@ pub mod mutate {
     /// Recursively replace any `LayoutSplit` with one child by that
     /// child. Post-order so a chain of single-child splits collapses
     /// fully in one pass.
-    pub fn collapse_singletons(root: &mut LayoutNode) {
-        if let LayoutNode::Split(s) = root {
-            for (child, _) in s.children.iter_mut() {
+    pub fn collapse_singletons(root: &mut Box<dyn Pane>) {
+        if let Some(split) = downcast_split(root.as_mut()) {
+            for (child, _) in split.children.iter_mut() {
                 collapse_singletons(child);
             }
-            if s.children.len() == 1 {
-                let (only, _) = s.children.remove(0);
+            if split.children.len() == 1 {
+                let (only, _) = split.children.remove(0);
                 *root = only;
             }
         }
     }
 
     /// Replace the root with a horizontal Split holding the previous
-    /// root as its sole child (weight 80). Used by `toggle_sidebar` when
-    /// the first sidebar opens against a non-split root.
-    pub fn lift_into_horizontal_split(root: &mut LayoutNode) {
-        let placeholder = LayoutNode::Split(LayoutSplit {
+    /// root as its sole child (weight 80). Used by `toggle_sidebar`
+    /// when the first sidebar opens against a non-split root.
+    pub fn lift_into_horizontal_split(root: &mut Box<dyn Pane>) {
+        let placeholder: Box<dyn Pane> = Box::new(LayoutSplit {
             axis: Axis::Horizontal,
             children: Vec::new(),
         });
         let inner = std::mem::replace(root, placeholder);
-        let split = match root {
-            LayoutNode::Split(s) => s,
-            _ => unreachable!("just installed a Split"),
-        };
+        let split = downcast_split(root.as_mut())
+            .expect("just installed a Split");
         split.children.push((inner, 80));
     }
 }
@@ -690,8 +462,8 @@ mod tests {
         crate::editor::frame::mint_id()
     }
 
-    fn frame_node(fid: FrameId) -> LayoutNode {
-        LayoutNode::Frame(LayoutFrame {
+    fn empty_frame_pane(fid: FrameId) -> Box<dyn Pane> {
+        Box::new(LayoutFrame {
             frame: fid,
             tabs: Vec::new(),
             active_tab: 0,
@@ -700,23 +472,13 @@ mod tests {
         })
     }
 
-    fn sidebar_node(slot: SidebarSlot) -> LayoutNode {
-        LayoutNode::Sidebar(LayoutSidebar::empty(slot))
-    }
-
-    fn split_node(axis: Axis, children: Vec<(LayoutNode, u16)>) -> LayoutNode {
-        LayoutNode::Split(LayoutSplit { axis, children })
-    }
-
     #[test]
     fn split_pane_trait_returns_children_with_weighted_rects() {
-        // T-91 phase 2: the LayoutSplit Pane impl exposes children
-        // through `Pane::children` independently of the enum.
         let f1 = fake_frame_id();
         let f2 = fake_frame_id();
         let split = LayoutSplit {
             axis: Axis::Horizontal,
-            children: vec![(frame_node(f1), 1), (frame_node(f2), 3)],
+            children: vec![(empty_frame_pane(f1), 1), (empty_frame_pane(f2), 3)],
         };
         let kids = Pane::children(&split, full());
         assert_eq!(kids.len(), 2);
@@ -742,82 +504,50 @@ mod tests {
     fn sidebar_pane_trait_handles_empty_slot() {
         let s = LayoutSidebar::empty(SidebarSlot::Left);
         assert!(s.is_focusable());
-        // No content → Pane::children empty, leaf in the layout tree.
         assert!(Pane::children(&s, full()).is_empty());
-    }
-
-    #[test]
-    fn frame_leaf_pane_at_returns_full_rect() {
-        let fid = fake_frame_id();
-        let tree = frame_node(fid);
-        let (rect, leaf) = tree.pane_at(full(), 50, 25).unwrap();
-        assert_eq!(rect, full());
-        assert_eq!(leaf.leaf_id(), Some(LeafRef::Frame(fid)));
-    }
-
-    #[test]
-    fn split_distributes_children_by_weight() {
-        let f1 = fake_frame_id();
-        let f2 = fake_frame_id();
-        let tree = split_node(Axis::Horizontal, vec![(frame_node(f1), 1), (frame_node(f2), 3)]);
-        let (rect, leaf) = tree.pane_at(full(), 10, 25).unwrap();
-        assert_eq!(rect.x, 0);
-        assert_eq!(rect.width, 25);
-        assert_eq!(leaf.leaf_id(), Some(LeafRef::Frame(f1)));
-        let (_, leaf) = tree.pane_at(full(), 80, 25).unwrap();
-        assert_eq!(leaf.leaf_id(), Some(LeafRef::Frame(f2)));
-    }
-
-    #[test]
-    fn leaves_with_rects_visits_every_leaf_in_tree_order() {
-        let f1 = fake_frame_id();
-        let f2 = fake_frame_id();
-        let f3 = fake_frame_id();
-        let inner = split_node(Axis::Vertical, vec![(frame_node(f2), 1), (frame_node(f3), 1)]);
-        let outer = split_node(Axis::Horizontal, vec![(frame_node(f1), 1), (inner, 1)]);
-        let leaves = outer.leaves_with_rects(full());
-        let ids: Vec<FrameId> = leaves
-            .iter()
-            .filter_map(|(leaf, _)| match leaf {
-                LeafRef::Frame(id) => Some(*id),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(ids, vec![f1, f2, f3]);
-    }
-
-    #[test]
-    fn sidebar_leaf_id_round_trips() {
-        let tree = sidebar_node(SidebarSlot::Left);
-        let (_, leaf) = tree.pane_at(full(), 10, 10).unwrap();
-        assert_eq!(leaf.leaf_id(), Some(LeafRef::Sidebar(SidebarSlot::Left)));
     }
 
     #[test]
     fn replace_at_root_swaps_root() {
         let f1 = fake_frame_id();
         let f2 = fake_frame_id();
-        let mut tree = frame_node(f1);
-        assert!(mutate::replace_at(&mut tree, &[], frame_node(f2)));
-        assert_eq!(tree.leaf_id(), Some(LeafRef::Frame(f2)));
+        let mut tree: Box<dyn Pane> = empty_frame_pane(f1);
+        assert!(mutate::replace_at(&mut tree, &[], empty_frame_pane(f2)));
+        let frame = tree
+            .as_any()
+            .and_then(|a| a.downcast_ref::<LayoutFrame>())
+            .unwrap();
+        assert_eq!(frame.frame, f2);
     }
 
     #[test]
     fn remove_at_drops_one_child_and_collapse_flattens() {
         let f1 = fake_frame_id();
         let f2 = fake_frame_id();
-        let mut tree = split_node(Axis::Horizontal, vec![(frame_node(f1), 1), (frame_node(f2), 1)]);
+        let mut tree: Box<dyn Pane> = split_pane(
+            Axis::Horizontal,
+            vec![(empty_frame_pane(f1), 1), (empty_frame_pane(f2), 1)],
+        );
         assert!(mutate::remove_at(&mut tree, &[1]));
         mutate::collapse_singletons(&mut tree);
-        assert_eq!(tree.leaf_id(), Some(LeafRef::Frame(f1)));
+        let frame = tree
+            .as_any()
+            .and_then(|a| a.downcast_ref::<LayoutFrame>())
+            .unwrap();
+        assert_eq!(frame.frame, f1);
     }
 
     #[test]
-    fn path_to_leaf_finds_frame_in_split() {
+    fn lift_into_horizontal_split_wraps_root_with_weight_eighty() {
         let f1 = fake_frame_id();
-        let f2 = fake_frame_id();
-        let tree = split_node(Axis::Horizontal, vec![(frame_node(f1), 1), (frame_node(f2), 1)]);
-        assert_eq!(tree.path_to_leaf(LeafRef::Frame(f1)), Some(vec![0]));
-        assert_eq!(tree.path_to_leaf(LeafRef::Frame(f2)), Some(vec![1]));
+        let mut tree: Box<dyn Pane> = empty_frame_pane(f1);
+        mutate::lift_into_horizontal_split(&mut tree);
+        let split = tree
+            .as_any()
+            .and_then(|a| a.downcast_ref::<LayoutSplit>())
+            .expect("root is now a Split");
+        assert_eq!(split.axis, Axis::Horizontal);
+        assert_eq!(split.children.len(), 1);
+        assert_eq!(split.children[0].1, 80);
     }
 }

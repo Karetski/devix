@@ -1,16 +1,16 @@
 //! View IR producer — `Editor::view(root: Path) -> Result<View, RequestError>`.
 //!
-//! Walks the live `LayoutNode` tree and emits the closed `View` IR
-//! per `docs/specs/frontend.md`. Every resource-bound node carries
-//! its canonical `Path` (`/buf/<id>`, `/pane/<i>(/<j>)*`,
+//! Walks the structural Pane tree and emits the closed `View` IR per
+//! `docs/specs/frontend.md`. Every resource-bound node carries its
+//! canonical `Path` (`/buf/<id>`, `/pane/<i>(/<j>)*`,
 //! `/pane/.../tabstrip`, `/pane/.../sidebar/<slot>`); synthetic
 //! wrapper nodes use the **deterministic-derivation** form locked
 //! during T-90 (see foundations-review log 2026-05-07):
-//! `/synthetic/<kind>/<encoded-parent-path>[/<suffix>]`. Same
-//! logical node across two renders ⇒ same id, by construction —
-//! no state, no per-parent cache. The alternative mint-and-cache
-//! shape was considered and rejected at T-90: same answer for
-//! "child at structural position i" without the cache state.
+//! `/synthetic/<kind>/<encoded-parent-path>[/<suffix>]`. Same logical
+//! node across two renders ⇒ same id, by construction — no state, no
+//! per-parent cache. The alternative mint-and-cache shape was
+//! considered and rejected at T-90: same answer for "child at
+//! structural position i" without the cache state.
 //!
 //! Scope:
 //! * `transition` is `None` everywhere — `Capability::Animations`
@@ -18,9 +18,9 @@
 //! * Highlights are not populated by this producer at T-43 — the
 //!   tree-sitter actor (Stage 8) will publish them; the View carries
 //!   an empty `highlights` list for now.
-//! * Pane-tree mutations to the layout (the Stage-9 unification)
-//!   leave this walk unchanged: it's keyed off `LayoutNode` variants
-//!   and updates trivially when those collapse.
+//! * Walks the unified Pane tree (post-T-91): downcasts at each step
+//!   to the concrete structural pane (`LayoutFrame`, `LayoutSidebar`,
+//!   `LayoutSplit`) for typed access.
 
 use devix_protocol::path::{Path, PathError};
 use devix_protocol::protocol::RequestError;
@@ -29,10 +29,11 @@ use devix_protocol::view::{
     ViewNodeId,
 };
 
+use crate::Pane;
 use crate::editor::cursor::CursorId;
 use crate::editor::document::Document;
 use crate::editor::editor::Editor;
-use crate::editor::tree::{LayoutFrame, LayoutNode, LayoutSidebar, LayoutSplit};
+use crate::editor::tree::{LayoutFrame, LayoutSidebar, LayoutSplit};
 use crate::layout_geom::{Axis as CoreAxis, SidebarSlot as CoreSidebarSlot};
 
 impl Editor {
@@ -47,16 +48,25 @@ impl Editor {
     }
 }
 
-/// Walk a `LayoutNode`, emitting `View`. `path_indices` is the
+/// Walk a structural Pane, emitting `View`. `path_indices` is the
 /// 0-based child position list from the layout root (e.g. `[0, 1]`
 /// for `/pane/0/1`).
-fn walk_layout(node: &LayoutNode, path_indices: &[usize], editor: &Editor) -> View {
+fn walk_layout(node: &dyn Pane, path_indices: &[usize], editor: &Editor) -> View {
     let pane_path = pane_path(path_indices);
-    match node {
-        LayoutNode::Split(s) => walk_split(s, path_indices, editor, &pane_path),
-        LayoutNode::Frame(f) => walk_frame(f, &pane_path, editor),
-        LayoutNode::Sidebar(s) => walk_sidebar(s, path_indices, editor, &pane_path),
+    let any = match node.as_any() {
+        Some(any) => any,
+        None => return View::Empty,
+    };
+    if let Some(split) = any.downcast_ref::<LayoutSplit>() {
+        return walk_split(split, path_indices, editor, &pane_path);
     }
+    if let Some(frame) = any.downcast_ref::<LayoutFrame>() {
+        return walk_frame(frame, &pane_path, editor);
+    }
+    if let Some(sidebar) = any.downcast_ref::<LayoutSidebar>() {
+        return walk_sidebar(sidebar, path_indices, editor, &pane_path);
+    }
+    View::Empty
 }
 
 fn walk_split(
@@ -71,7 +81,7 @@ fn walk_split(
         let mut child_indices = path_indices.to_vec();
         child_indices.push(i);
         weights.push(*weight);
-        children.push(walk_layout(child_node, &child_indices, editor));
+        children.push(walk_layout(child_node.as_ref(), &child_indices, editor));
     }
     View::Split {
         id: ViewNodeId(pane_path.clone()),
@@ -158,11 +168,10 @@ fn walk_sidebar(
     _editor: &Editor,
     pane_path: &Path,
 ) -> View {
-    // Sidebar's content is a `Pane` (not a LayoutNode), so we can't
-    // recurse via `walk_layout`. The full content rendering is the
-    // tui interpreter's concern (T-44); the View IR carries the
-    // sidebar shell + an Empty placeholder until the Pane→View
-    // collapse in Stage 9.
+    // The sidebar's `content` is a generic `Pane` whose mapping into
+    // the View IR is the tui interpreter's concern (T-44); the View
+    // here carries the sidebar shell + an Empty placeholder until
+    // the Pane→View collapse work post-Stage-9 reaches it.
     let _ = path_indices;
     let slot = map_sidebar_slot(sidebar.slot);
     let slot_segment = match sidebar.slot {

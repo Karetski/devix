@@ -30,10 +30,12 @@ pub use commands::{
 pub use cursor::{Cursor, CursorId, ScrollMode};
 pub use document::{DocId, Document};
 pub use editor::{
-    Editor, LeafRef, RenderCache, TabHit, TabStripCache, TabStripHit, path_to_leaf,
+    Editor, LeafRef, RenderCache, TabHit, TabStripCache, TabStripHit,
 };
 pub use focus_chain::{FocusChain, FocusTransition};
 pub use frame::FrameId;
 pub use modal_slot::ModalSlot;
 pub use registry::PaneRegistry;
-pub use tree::{LayoutCtx, LayoutFrame, LayoutNode, LayoutSidebar, LayoutSplit};
+pub use tree::{
+    LayoutCtx, LayoutFrame, LayoutSidebar, LayoutSplit, frame_pane, sidebar_pane, split_pane,
+};

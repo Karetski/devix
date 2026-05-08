@@ -15,7 +15,10 @@ use devix_protocol::pulse::Pulse;
 use crate::editor::document::{DocId, Document};
 use crate::editor::frame::mint_id;
 use crate::{Axis, SidebarSlot};
-use crate::editor::tree::{LayoutFrame, LayoutNode, LayoutSidebar, LayoutSplit};
+use crate::editor::registry::pane_leaf_id;
+use crate::editor::tree::{
+    LayoutFrame, LayoutSidebar, frame_pane, sidebar_pane, split_pane,
+};
 use crate::editor::cursor::{Cursor, CursorId, ScrollMode};
 
 use super::{Editor, LeafRef, canonicalize_or_keep};
@@ -194,20 +197,20 @@ impl Editor {
         let new_cursor_id = self.cursors.insert(cloned_cursor);
         let new_frame_id = mint_id();
 
-        let original_replaced = LayoutFrame {
+        let original_replaced: Box<dyn Pane> = Box::new(LayoutFrame {
             frame: active_fid,
             tabs: original_tabs,
             active_tab: original_active_tab,
             tab_strip_scroll: original_scroll,
             recenter_active: true,
-        };
-        let new_split = LayoutNode::Split(LayoutSplit {
-            axis,
-            children: vec![
-                (LayoutNode::Frame(original_replaced), 1),
-                (LayoutNode::Frame(LayoutFrame::with_cursor(new_frame_id, new_cursor_id)), 1),
-            ],
         });
+        let new_split = split_pane(
+            axis,
+            vec![
+                (original_replaced, 1),
+                (frame_pane(new_frame_id, new_cursor_id), 1),
+            ],
+        );
         let source_path = pane_path(&focus_path);
         if !self.panes.replace_at(&focus_path, new_split) {
             return;
@@ -250,10 +253,12 @@ impl Editor {
             .root_split_mut()
             .expect("root is a horizontal LayoutSplit after lift");
 
-        let existing = split
-            .children
-            .iter()
-            .position(|(c, _)| matches!(c, LayoutNode::Sidebar(s) if s.slot == slot));
+        let existing = split.children.iter().position(|(c, _)| {
+            c.as_ref()
+                .as_any()
+                .and_then(|a| a.downcast_ref::<LayoutSidebar>())
+                .is_some_and(|sb| sb.slot == slot)
+        });
         let (slot_path, opened) = if let Some(i) = existing {
             let path = pane_path(&[i]);
             split.children.remove(i);
@@ -268,10 +273,7 @@ impl Editor {
                 SidebarSlot::Left => 0,
                 SidebarSlot::Right => split.children.len(),
             };
-            split.children.insert(
-                insert_at,
-                (LayoutNode::Sidebar(LayoutSidebar::empty(slot)), 20),
-            );
+            split.children.insert(insert_at, (sidebar_pane(slot), 20));
             self.focus.transform(|p| {
                 if let Some(top) = p.first_mut() {
                     if *top >= insert_at { *top += 1; }
@@ -302,17 +304,17 @@ impl Editor {
 /// Path to the first focusable Frame leaf in tree order. Sidebars are
 /// skipped — picking a sidebar as the default focus would surprise the
 /// user after closing a split.
-fn first_frame_path(root: &LayoutNode) -> Vec<usize> {
-    fn go(node: &LayoutNode, path: &mut Vec<usize>) -> bool {
-        if matches!(node.leaf_id(), Some(LeafRef::Frame(_))) {
+fn first_frame_path(root: &dyn Pane) -> Vec<usize> {
+    fn go(node: &dyn Pane, path: &mut Vec<usize>) -> bool {
+        if matches!(pane_leaf_id(node), Some(LeafRef::Frame(_))) {
             return true;
         }
-        if let LayoutNode::Split(s) = node {
-            for (i, (child, _)) in s.children.iter().enumerate() {
-                path.push(i);
-                if go(child, path) { return true; }
-                path.pop();
+        for (i, (_, child)) in node.children(crate::Rect::default()).into_iter().enumerate() {
+            path.push(i);
+            if go(child, path) {
+                return true;
             }
+            path.pop();
         }
         false
     }

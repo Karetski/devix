@@ -2,17 +2,19 @@
 //! geometry-aware "step into the closest sibling" picker that makes
 //! Ctrl+Alt+Arrow feel right when leaves are unevenly sized.
 //!
-//! Walks `Editor.root` as a `LayoutNode` enum — every step is an
-//! exhaustive match on Split / Frame / Sidebar; no `as_any` downcasts.
-//! Geometry still comes from the cached frame / sidebar rects, since
-//! the cache is the only thing that knows how splits laid out at the
-//! last render.
+//! Walks `Editor.panes` through the `Pane` trait — `Pane::children`
+//! for structural recursion, downcasts to `LayoutSplit` for axis /
+//! child-count access. Geometry still comes from the cached frame /
+//! sidebar rects, since the cache is the only thing that knows how
+//! splits laid out at the last render.
 
+use crate::Pane;
 use crate::Rect;
 
 use crate::editor::frame::FrameId;
+use crate::editor::registry::{PaneRegistry, pane_leaf_id};
+use crate::editor::tree::LayoutSplit;
 use crate::{Axis, Direction, SidebarSlot};
-use crate::editor::tree::LayoutNode;
 
 use super::{Editor, LeafRef, RenderCache};
 
@@ -20,7 +22,7 @@ impl Editor {
     pub fn focus_dir(&mut self, dir: Direction) {
         let area = root_area(&self.render_cache);
         if let Some(target_path) = compute_focus_target(
-            self.panes.root(),
+            &self.panes,
             area,
             self.focus.active(),
             dir,
@@ -73,8 +75,13 @@ fn root_area(cache: &RenderCache) -> Rect {
     Rect { x, y, width: x_end - x, height: y_end - y }
 }
 
+fn split_axis_and_children(node: &dyn Pane) -> Option<(Axis, usize)> {
+    let split = node.as_any().and_then(|a| a.downcast_ref::<LayoutSplit>())?;
+    Some((split.axis, split.children.len()))
+}
+
 fn compute_focus_target(
-    root: &LayoutNode,
+    panes: &PaneRegistry,
     area: Rect,
     focus: &[usize],
     dir: Direction,
@@ -95,14 +102,14 @@ fn compute_focus_target(
     while !path.is_empty() {
         let parent_path: Vec<usize> = path[..path.len() - 1].to_vec();
         let child_idx = *path.last().unwrap();
-        let parent = root.at_path(&parent_path)?;
-        if let LayoutNode::Split(split) = parent {
-            if split.axis == needed_axis {
+        let parent = panes.at_path(&parent_path)?;
+        if let Some((axis, n_children)) = split_axis_and_children(parent) {
+            if axis == needed_axis {
                 let next = child_idx as isize + step;
-                if next >= 0 && (next as usize) < split.children.len() {
+                if next >= 0 && (next as usize) < n_children {
                     let mut new_path = parent_path;
                     new_path.push(next as usize);
-                    return Some(walk_into(root, area, new_path, dir, focus, cache));
+                    return Some(walk_into(panes, area, new_path, dir, focus, cache));
                 }
             }
         }
@@ -112,7 +119,7 @@ fn compute_focus_target(
 }
 
 fn walk_into(
-    root: &LayoutNode,
+    panes: &PaneRegistry,
     root_area: Rect,
     mut path: Vec<usize>,
     dir: Direction,
@@ -120,18 +127,18 @@ fn walk_into(
     cache: &RenderCache,
 ) -> Vec<usize> {
     loop {
-        let Some(node) = root.at_path(&path) else {
+        let Some(node) = panes.at_path(&path) else {
             return path;
         };
-        let LayoutNode::Split(split) = node else {
+        let Some((axis, n_children)) = split_axis_and_children(node) else {
             return path;
         };
         let pick = pick_closest_child(
-            root,
+            panes,
             root_area,
             &path,
-            split.axis,
-            split.children.len(),
+            axis,
+            n_children,
             dir,
             source_path,
             cache,
@@ -142,7 +149,7 @@ fn walk_into(
 
 #[allow(clippy::too_many_arguments)]
 fn pick_closest_child(
-    root: &LayoutNode,
+    panes: &PaneRegistry,
     root_area: Rect,
     parent_path: &[usize],
     axis: Axis,
@@ -154,7 +161,7 @@ fn pick_closest_child(
     if n_children == 0 {
         return 0;
     }
-    let source_rect = leaf_rect_for(root, source_path, cache);
+    let source_rect = leaf_rect_for(panes, source_path, cache);
     let Some(src) = source_rect else {
         // Fallback when no rect cached yet: pick the side adjacent to the move.
         return match (axis, dir) {
@@ -172,7 +179,7 @@ fn pick_closest_child(
     for i in 0..n_children {
         let mut child_path = parent_path.to_vec();
         child_path.push(i);
-        let Some(rect) = first_leaf_rect(root, root_area, &child_path, cache) else { continue };
+        let Some(rect) = first_leaf_rect(panes, root_area, &child_path, cache) else { continue };
         let d = match axis {
             Axis::Horizontal => (rect.y as i32 + rect.height as i32 / 2 - centre_y as i32).abs(),
             Axis::Vertical => (rect.x as i32 + rect.width as i32 / 2 - centre_x as i32).abs(),
@@ -185,27 +192,26 @@ fn pick_closest_child(
     best
 }
 
-fn leaf_rect_for(root: &LayoutNode, path: &[usize], cache: &RenderCache) -> Option<Rect> {
-    let leaf = root.at_path(path)?.leaf_id()?;
+fn leaf_rect_for(panes: &PaneRegistry, path: &[usize], cache: &RenderCache) -> Option<Rect> {
+    let leaf = pane_leaf_id(panes.at_path(path)?)?;
     leaf_rect(leaf, cache)
 }
 
 fn first_leaf_rect(
-    root: &LayoutNode,
-    root_area: Rect,
+    panes: &PaneRegistry,
+    _root_area: Rect,
     path: &[usize],
     cache: &RenderCache,
 ) -> Option<Rect> {
     // Walk into the deepest leaf along the leftmost child at each split.
     let mut p = path.to_vec();
     loop {
-        let node = root.at_path(&p)?;
-        if matches!(node, LayoutNode::Split(_)) {
+        let node = panes.at_path(&p)?;
+        if split_axis_and_children(node).is_some() {
             p.push(0);
             continue;
         }
-        let _ = root_area;
-        return leaf_rect_for(root, &p, cache);
+        return leaf_rect_for(panes, &p, cache);
     }
 }
 
@@ -214,12 +220,4 @@ fn leaf_rect(leaf: LeafRef, cache: &RenderCache) -> Option<Rect> {
         LeafRef::Frame(id) => cache.frame_rects.get(&id).copied(),
         LeafRef::Sidebar(slot) => cache.sidebar_rects.get(&slot).copied(),
     }
-}
-
-/// Find the path to a `LeafRef` by walking the layout tree. Mirrors
-/// `LayoutNode::path_to_leaf`; kept under `editor::focus` for the
-/// pre-existing `path_to_leaf(root, area, target)` re-export the binary
-/// imports.
-pub fn path_to_leaf(root: &LayoutNode, _area: Rect, target: LeafRef) -> Option<Vec<usize>> {
-    root.path_to_leaf(target)
 }

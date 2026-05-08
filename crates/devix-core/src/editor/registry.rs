@@ -1,64 +1,45 @@
 //! Pane registry — owner of the structural layout tree.
 //!
-//! Carved out of the god-`Editor` per T-100. The Editor now holds a
-//! `PaneRegistry` instead of a bare `LayoutNode`; every walk / lookup /
-//! mutation of the layout tree goes through the registry's API. Future
-//! Stage-9 / T-91 work folds the closed `LayoutNode` enum into a unified
-//! Pane tree, but the registry's public surface is the seam that lets
-//! the focus chain (T-101), ops (T-102), and modal slot (T-103) take
-//! their pieces independently.
+//! Carved out of the god-`Editor` per T-100. The Editor holds a
+//! `PaneRegistry` instead of a bare layout tree; every walk / lookup /
+//! mutation of the layout tree goes through the registry's API.
+//!
+//! Post-T-91 the structural skeleton is a `Box<dyn Pane>` rooted tree.
+//! Splits, frames, and sidebars each implement `Pane` directly; there
+//! is no closed `LayoutNode` enum. Walks delegate to `Pane::children`
+//! / `children_mut` and downcast to the concrete struct
+//! (`LayoutFrame`, `LayoutSidebar`, `LayoutSplit`) when typed access is
+//! required.
 
 use ratatui::Frame;
 
 use crate::editor::frame::FrameId;
-use crate::editor::tree::{
-    LayoutCtx, LayoutFrame, LayoutNode, LayoutSidebar, LayoutSplit, mutate,
-};
+use crate::editor::tree::{LayoutCtx, LayoutFrame, LayoutSidebar, LayoutSplit, mutate};
 use crate::editor::LeafRef;
 use crate::pane::Pane;
 use crate::{Axis, Rect, SidebarSlot};
 
 pub struct PaneRegistry {
-    /// `Box<dyn Pane>` per T-91 acceptance criterion. The concrete
-    /// type is currently `LayoutNode` (which now `impl Pane`);
-    /// later T-91 phases carve the variants into standalone Pane
-    /// structs and retire the enum. Helper accessors `as_layout` /
-    /// `as_layout_mut` recover the typed view for the existing
-    /// per-variant operations until the carve completes.
+    /// `Box<dyn Pane>` per T-91 acceptance criterion. Concrete root
+    /// types are the structural Pane impls (`LayoutFrame`,
+    /// `LayoutSidebar`, `LayoutSplit`). Walks go through the trait;
+    /// typed access uses `Pane::as_any` / `as_any_mut`.
     root: Box<dyn Pane>,
 }
 
 impl PaneRegistry {
-    pub fn new(root: LayoutNode) -> Self {
-        Self { root: Box::new(root) }
+    pub fn new(root: Box<dyn Pane>) -> Self {
+        Self { root }
     }
 
-    fn as_layout(&self) -> &LayoutNode {
-        self.root
-            .as_any()
-            .and_then(|a| a.downcast_ref::<LayoutNode>())
-            .expect("PaneRegistry root is currently always a LayoutNode (T-91 phase 1)")
-    }
-
-    fn as_layout_mut(&mut self) -> &mut LayoutNode {
-        self.root
-            .as_any_mut()
-            .and_then(|a| a.downcast_mut::<LayoutNode>())
-            .expect("PaneRegistry root is currently always a LayoutNode (T-91 phase 1)")
-    }
-
-    /// Read-only access to the underlying layout tree. Wraps the
-    /// downcast through `Pane::as_any`; pattern-matching on the
-    /// LayoutNode variant stays available until the variants are
-    /// carved into standalone Pane structs (T-91 phase 2).
-    pub fn root(&self) -> &LayoutNode {
-        self.as_layout()
+    /// Read-only access to the root pane. Typed access (e.g.
+    /// pattern-matching for tests) goes through `Pane::as_any` and
+    /// downcasts to `LayoutFrame` / `LayoutSidebar` / `LayoutSplit`.
+    pub fn root(&self) -> &dyn Pane {
+        self.root.as_ref()
     }
 
     pub fn find_frame(&self, fid: FrameId) -> Option<&LayoutFrame> {
-        // T-91 phase 2: walk via the Pane trait. Works whether the
-        // tree is built from LayoutNode wrappers (today) or carved
-        // into standalone Pane impls (post phase-2 completion).
         pane_find_frame(self.root.as_ref(), fid)
     }
 
@@ -112,10 +93,6 @@ impl PaneRegistry {
     }
 
     pub fn render(&self, area: Rect, frame: &mut Frame<'_>, ctx: &LayoutCtx<'_>) {
-        // T-91 phase 2: structural render goes through `Pane::render`
-        // with `ctx.layout = Some(ctx)`. The per-variant `Pane` impls
-        // (`LayoutSplit`, `LayoutFrame`, `LayoutSidebar`) recurse via
-        // the trait without consulting the enum kind.
         let mut rctx = crate::pane::RenderCtx {
             frame,
             layout: Some(ctx),
@@ -124,8 +101,9 @@ impl PaneRegistry {
     }
 
     /// Resolve a `/pane(/<i>)*` path to the corresponding `&dyn Pane`.
-    /// Path segments after `pane` are 0-based `Split.children` indices.
-    /// Per `docs/specs/namespace.md` § *Migration table* and T-52.
+    /// Path segments after `pane` are 0-based indices into
+    /// `Pane::children`. Per `docs/specs/namespace.md` § *Migration
+    /// table* and T-52.
     pub fn pane_at(&self, path: &devix_protocol::path::Path) -> Option<&dyn Pane> {
         let indices = pane_path_indices(path)?;
         pane_at_path(self.root.as_ref(), &indices)
@@ -140,58 +118,57 @@ impl PaneRegistry {
     }
 
     /// Pre-order enumeration of every reachable pane path. `/pane` is
-    /// the root; each composite (today: `LayoutSplit`; future: any
-    /// `Pane` with non-empty `children`) adds child indices.
-    /// Walks via `Pane::children` so the helper stays generic over
-    /// the pane kind — phase 2 of T-91 will introduce additional
-    /// composite Pane impls and they'll plug in here without code
-    /// changes.
+    /// the root; each composite pane (today: `LayoutSplit`; tomorrow:
+    /// any `Pane` with non-empty `children`) adds child indices. Walks
+    /// via `Pane::children` so the helper stays generic over the pane
+    /// kind.
     pub fn pane_paths(&self) -> Vec<devix_protocol::path::Path> {
         let mut out = Vec::new();
         let root_path =
             devix_protocol::path::Path::parse("/pane").expect("/pane is canonical");
-        // The pane-path encoding doesn't depend on rect math; pass
-        // a zero rect — the walk only consults the children indices.
+        // The pane-path encoding doesn't depend on rect math; pass a
+        // zero rect — the walk only consults the children indices.
         let zero = Rect::default();
         walk_pane_paths_via_trait(self.root.as_ref(), zero, root_path, &mut out);
         out
     }
 
     /// Replace the node at `path`. Empty path replaces the root.
-    pub fn replace_at(&mut self, path: &[usize], new: LayoutNode) -> bool {
-        mutate::replace_at(self.as_layout_mut(), path, new)
+    pub fn replace_at(&mut self, path: &[usize], new: Box<dyn Pane>) -> bool {
+        mutate::replace_at(&mut self.root, path, new)
     }
 
     /// Remove the child at `path` from its parent split.
     pub fn remove_at(&mut self, path: &[usize]) -> bool {
-        mutate::remove_at(self.as_layout_mut(), path)
+        mutate::remove_at(&mut self.root, path)
     }
 
     /// Collapse single-child splits anywhere in the tree.
     pub fn collapse_singletons(&mut self) {
-        mutate::collapse_singletons(self.as_layout_mut());
+        mutate::collapse_singletons(&mut self.root);
     }
 
-    /// Lift the root into a horizontal split so a sidebar can be inserted
-    /// alongside it.
+    /// Lift the root into a horizontal split so a sidebar can be
+    /// inserted alongside it.
     pub fn lift_into_horizontal_split(&mut self) {
-        mutate::lift_into_horizontal_split(self.as_layout_mut());
+        mutate::lift_into_horizontal_split(&mut self.root);
     }
 
     /// Mutable access to the root split for the (currently in-tree) op
-    /// patterns that destructure the root after `lift_into_horizontal_split`.
-    /// Crate-internal so external callers stay on the typed API.
+    /// patterns that destructure the root after
+    /// `lift_into_horizontal_split`. Crate-internal so external callers
+    /// stay on the typed API.
     pub(crate) fn root_split_mut(&mut self) -> Option<&mut LayoutSplit> {
-        match self.as_layout_mut() {
-            LayoutNode::Split(s) => Some(s),
-            _ => None,
-        }
+        self.root.as_any_mut()?.downcast_mut::<LayoutSplit>()
     }
 
-    /// Whether the root is a horizontal split. Used by `toggle_sidebar`
-    /// to decide whether to lift first.
+    /// Whether the root is a horizontal split. Used by
+    /// `toggle_sidebar` to decide whether to lift first.
     pub fn root_is_horizontal_split(&self) -> bool {
-        matches!(self.as_layout(), LayoutNode::Split(s) if s.axis == Axis::Horizontal)
+        self.root
+            .as_any()
+            .and_then(|a| a.downcast_ref::<LayoutSplit>())
+            .is_some_and(|s| s.axis == Axis::Horizontal)
     }
 }
 
@@ -204,9 +181,9 @@ fn pane_path_indices(path: &devix_protocol::path::Path) -> Option<Vec<usize>> {
         .collect::<Option<Vec<_>>>()
 }
 
-/// Pane-trait-driven version of the pane-path walker (T-91 phase 2
-/// prep). Generic over the concrete `Pane` impl — any composite that
-/// returns children via `Pane::children` plugs in.
+/// Pane-trait-driven walker for `/pane(/<i>)*`. Generic over the
+/// concrete `Pane` impl — any composite that returns children via
+/// `Pane::children` plugs in.
 fn walk_pane_paths_via_trait(
     node: &dyn Pane,
     area: Rect,
@@ -221,23 +198,10 @@ fn walk_pane_paths_via_trait(
     }
 }
 
-/// Pane-trait-driven walks (T-91 phase 2). Each helper walks the
-/// tree via `Pane::children` / `children_mut`, downcasting at each
-/// node to either the direct variant struct or the `LayoutNode`
-/// enum's matching variant (the current transitional state). Once
-/// the enum is retired, only the direct downcasts remain.
 fn pane_find_frame<'a>(node: &'a dyn Pane, fid: FrameId) -> Option<&'a LayoutFrame> {
-    if let Some(any) = node.as_any() {
-        if let Some(frame) = any.downcast_ref::<LayoutFrame>() {
-            if frame.frame == fid {
-                return Some(frame);
-            }
-        } else if let Some(LayoutNode::Frame(frame)) =
-            any.downcast_ref::<LayoutNode>()
-        {
-            if frame.frame == fid {
-                return Some(frame);
-            }
+    if let Some(frame) = node.as_any().and_then(|a| a.downcast_ref::<LayoutFrame>()) {
+        if frame.frame == fid {
+            return Some(frame);
         }
     }
     let zero = Rect::default();
@@ -249,43 +213,16 @@ fn pane_find_frame<'a>(node: &'a dyn Pane, fid: FrameId) -> Option<&'a LayoutFra
     None
 }
 
-enum SelfMatchVariant {
-    Direct,
-    Wrapped,
-    None,
-}
-
 fn pane_find_frame_mut<'a>(
     node: &'a mut dyn Pane,
     fid: FrameId,
 ) -> Option<&'a mut LayoutFrame> {
-    let kind = {
-        if let Some(any) = node.as_any() {
-            if any.downcast_ref::<LayoutFrame>().is_some_and(|f| f.frame == fid) {
-                SelfMatchVariant::Direct
-            } else if matches!(
-                any.downcast_ref::<LayoutNode>(),
-                Some(LayoutNode::Frame(f)) if f.frame == fid
-            ) {
-                SelfMatchVariant::Wrapped
-            } else {
-                SelfMatchVariant::None
-            }
-        } else {
-            SelfMatchVariant::None
-        }
-    };
-    match kind {
-        SelfMatchVariant::Direct => {
-            return node.as_any_mut()?.downcast_mut::<LayoutFrame>();
-        }
-        SelfMatchVariant::Wrapped => {
-            return match node.as_any_mut()?.downcast_mut::<LayoutNode>()? {
-                LayoutNode::Frame(f) => Some(f),
-                _ => None,
-            };
-        }
-        SelfMatchVariant::None => {}
+    let direct_match = node
+        .as_any()
+        .and_then(|a| a.downcast_ref::<LayoutFrame>())
+        .is_some_and(|f| f.frame == fid);
+    if direct_match {
+        return node.as_any_mut()?.downcast_mut::<LayoutFrame>();
     }
     for (_, child) in node.children_mut(Rect::default()) {
         if let Some(found) = pane_find_frame_mut(child, fid) {
@@ -299,33 +236,12 @@ fn pane_find_sidebar_mut<'a>(
     node: &'a mut dyn Pane,
     slot: SidebarSlot,
 ) -> Option<&'a mut LayoutSidebar> {
-    let kind = {
-        if let Some(any) = node.as_any() {
-            if any.downcast_ref::<LayoutSidebar>().is_some_and(|s| s.slot == slot) {
-                SelfMatchVariant::Direct
-            } else if matches!(
-                any.downcast_ref::<LayoutNode>(),
-                Some(LayoutNode::Sidebar(s)) if s.slot == slot
-            ) {
-                SelfMatchVariant::Wrapped
-            } else {
-                SelfMatchVariant::None
-            }
-        } else {
-            SelfMatchVariant::None
-        }
-    };
-    match kind {
-        SelfMatchVariant::Direct => {
-            return node.as_any_mut()?.downcast_mut::<LayoutSidebar>();
-        }
-        SelfMatchVariant::Wrapped => {
-            return match node.as_any_mut()?.downcast_mut::<LayoutNode>()? {
-                LayoutNode::Sidebar(s) => Some(s),
-                _ => None,
-            };
-        }
-        SelfMatchVariant::None => {}
+    let direct_match = node
+        .as_any()
+        .and_then(|a| a.downcast_ref::<LayoutSidebar>())
+        .is_some_and(|s| s.slot == slot);
+    if direct_match {
+        return node.as_any_mut()?.downcast_mut::<LayoutSidebar>();
     }
     for (_, child) in node.children_mut(Rect::default()) {
         if let Some(found) = pane_find_sidebar_mut(child, slot) {
@@ -336,17 +252,9 @@ fn pane_find_sidebar_mut<'a>(
 }
 
 fn pane_sidebar_present(node: &dyn Pane, slot: SidebarSlot) -> bool {
-    if let Some(any) = node.as_any() {
-        if let Some(sb) = any.downcast_ref::<LayoutSidebar>() {
-            if sb.slot == slot {
-                return true;
-            }
-        } else if let Some(LayoutNode::Sidebar(sb)) =
-            any.downcast_ref::<LayoutNode>()
-        {
-            if sb.slot == slot {
-                return true;
-            }
+    if let Some(sb) = node.as_any().and_then(|a| a.downcast_ref::<LayoutSidebar>()) {
+        if sb.slot == slot {
+            return true;
         }
     }
     let zero = Rect::default();
@@ -356,9 +264,7 @@ fn pane_sidebar_present(node: &dyn Pane, slot: SidebarSlot) -> bool {
 }
 
 /// Walk `path` (a list of `Pane::children` indices) from `node`,
-/// returning the resolved Pane. Generic over the concrete composite
-/// shape — works on the LayoutNode-wrapped tree today and on the
-/// post-T-91 carved Pane tree later.
+/// returning the resolved Pane.
 fn pane_at_path<'a>(node: &'a dyn Pane, path: &[usize]) -> Option<&'a dyn Pane> {
     let mut cur: &dyn Pane = node;
     let zero = Rect::default();
@@ -426,8 +332,7 @@ fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
 }
 
 /// Extract a `LeafRef` from `node` if it represents a layout leaf
-/// (LayoutFrame or LayoutSidebar — directly or via the transitional
-/// `LayoutNode` enum wrapper). Returns `None` for splits or
+/// (`LayoutFrame` or `LayoutSidebar`). Returns `None` for splits or
 /// non-layout panes.
 pub fn pane_leaf_id(node: &dyn Pane) -> Option<LeafRef> {
     let any = node.as_any()?;
@@ -436,9 +341,6 @@ pub fn pane_leaf_id(node: &dyn Pane) -> Option<LeafRef> {
     }
     if let Some(s) = any.downcast_ref::<LayoutSidebar>() {
         return Some(LeafRef::Sidebar(s.slot));
-    }
-    if let Some(n) = any.downcast_ref::<LayoutNode>() {
-        return n.leaf_id();
     }
     None
 }
@@ -469,14 +371,8 @@ fn pane_path_to_leaf(node: &dyn Pane, target: LeafRef, out: &mut Vec<usize>) -> 
 }
 
 fn pane_collect_frames(node: &dyn Pane, out: &mut Vec<FrameId>) {
-    if let Some(any) = node.as_any() {
-        if let Some(frame) = any.downcast_ref::<LayoutFrame>() {
-            out.push(frame.frame);
-        } else if let Some(LayoutNode::Frame(frame)) =
-            any.downcast_ref::<LayoutNode>()
-        {
-            out.push(frame.frame);
-        }
+    if let Some(frame) = node.as_any().and_then(|a| a.downcast_ref::<LayoutFrame>()) {
+        out.push(frame.frame);
     }
     let zero = Rect::default();
     for (_, child) in node.children(zero) {

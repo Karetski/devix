@@ -26,13 +26,13 @@ use crate::editor::frame::{FrameId, mint_id};
 use crate::editor::modal_slot::ModalSlot;
 use crate::SidebarSlot;
 use crate::editor::registry::PaneRegistry;
-use crate::editor::tree::{LayoutFrame, LayoutNode};
+use crate::editor::tree::frame_pane;
+#[cfg(test)]
+use crate::editor::tree::{LayoutFrame, LayoutSplit};
 
 mod focus;
 mod hittest;
 mod ops;
-
-pub use focus::path_to_leaf;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum LeafRef {
@@ -123,9 +123,7 @@ impl Editor {
         };
         let cursor_id = cursors.insert(Cursor::new(doc_id));
         let frame_id = mint_id();
-        let panes = PaneRegistry::new(LayoutNode::Frame(LayoutFrame::with_cursor(
-            frame_id, cursor_id,
-        )));
+        let panes = PaneRegistry::new(frame_pane(frame_id, cursor_id));
         let focus = FocusChain::new(); // root is the frame leaf itself
 
         let bus = crate::PulseBus::new();
@@ -484,17 +482,26 @@ mod tests {
         assert_eq!(ws.panes.frames().len(), 2);
         ws.close_active_frame();
         assert_eq!(ws.panes.frames().len(), 1);
-        assert!(matches!(ws.panes.root(), LayoutNode::Frame(_)), "single frame at root");
+        assert!(
+            ws.panes
+                .root()
+                .as_any()
+                .and_then(|a| a.downcast_ref::<LayoutFrame>())
+                .is_some(),
+            "single frame at root",
+        );
     }
 
     #[test]
     fn toggle_left_sidebar_adds_then_removes_it() {
         let mut ws = Editor::open(None).unwrap();
         ws.toggle_sidebar(SidebarSlot::Left);
-        let split = match ws.panes.root() {
-            LayoutNode::Split(s) => s,
-            _ => panic!("root lifted to a Split"),
-        };
+        let split = ws
+            .panes
+            .root()
+            .as_any()
+            .and_then(|a| a.downcast_ref::<LayoutSplit>())
+            .expect("root lifted to a Split");
         assert_eq!(split.children.len(), 2, "split has editor + left sidebar");
 
         ws.toggle_sidebar(SidebarSlot::Left);
@@ -578,7 +585,11 @@ mod tests {
         ws.close_active_frame();
         assert_eq!(ws.panes.frames().len(), 2);
         assert!(
-            matches!(ws.panes.root(), LayoutNode::Split(_)),
+            ws.panes
+                .root()
+                .as_any()
+                .and_then(|a| a.downcast_ref::<LayoutSplit>())
+                .is_some(),
             "two frames should be in a Split, not a flat Frame leaf",
         );
         let node = ws.panes.at_path(&ws.focus).expect("focus resolves");

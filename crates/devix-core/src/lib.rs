@@ -5,9 +5,10 @@
 //! the theme registry. The eventual no-`ratatui` / no-`crossterm` shape
 //! described in `docs/specs/crates.md` is reached at the end of Stage 9:
 //! T-11 absorbed the chrome widgets and ratatui-bound layout primitives
-//! to break a transient `devix-core ↔ devix-tui` cycle, and T-92 / T-95
-//! finish the move to `devix-tui` once `LayoutNode` collapses (per the
-//! foundations-review amendment log 2026-05-06).
+//! to break a transient `devix-core ↔ devix-tui` cycle; T-92 / T-95
+//! finish the move to `devix-tui` once the layout-tree dissolution
+//! (T-91) finishes (per the foundations-review amendment log
+//! 2026-05-06).
 //!
 //! Stage 1 (T-10..T-13) absorbed the dissolved `devix-editor`,
 //! `devix-plugin`, and `devix-panes` crates into this crate. The
@@ -78,10 +79,11 @@ pub use editor::cursor::{Cursor, CursorId, ScrollMode};
 pub use editor::document::{DocId, Document};
 pub use editor::editor::{
     Editor, LeafRef, RenderCache, TabHit as EditorTabHit, TabStripCache, TabStripHit,
-    path_to_leaf,
 };
 pub use editor::frame::FrameId;
-pub use editor::tree::{LayoutCtx, LayoutFrame, LayoutNode, LayoutSidebar, LayoutSplit};
+pub use editor::tree::{
+    LayoutCtx, LayoutFrame, LayoutSidebar, LayoutSplit, frame_pane, sidebar_pane, split_pane,
+};
 
 // Plugin surface (pre-Stage-1: was `devix-plugin`'s public surface).
 pub use plugin::{

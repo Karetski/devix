@@ -7,7 +7,6 @@ use crate::Rect;
 use crate::editor::frame::FrameId;
 
 use super::{Editor, TabStripHit};
-use super::focus::path_to_leaf;
 
 impl Editor {
     /// Find the tab-strip element under (col, row), if any. Used by the input
@@ -66,7 +65,7 @@ impl Editor {
         let area = self.outer_editor_area();
         let Some((_, node)) = self.panes.pane_at_xy(area, col, row) else { return };
         let Some(leaf) = crate::editor::registry::pane_leaf_id(node) else { return };
-        if let Some(path) = path_to_leaf(self.panes.root(), area, leaf) {
+        if let Some(path) = self.panes.path_to_leaf(leaf) {
             self.set_focus(path);
         }
     }
