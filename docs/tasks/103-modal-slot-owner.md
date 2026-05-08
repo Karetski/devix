@@ -1,6 +1,6 @@
 # Task T-103 — Modal slot owner
 Stage: 10
-Status: pending
+Status: complete
 Depends on: T-100
 Blocks:     T-104
 
@@ -24,10 +24,23 @@ exposes the modal as a Pane to the View producer.
 - `crates/devix-core/src/editor/editor.rs`
 
 ## Acceptance criteria
-- [ ] At most one modal active at a time.
-- [ ] `ModalOpened` / `ModalDismissed` fire on transitions.
-- [ ] `cargo build --workspace` passes.
-- [ ] `cargo test --workspace` passes.
+- [x] At most one modal active at a time.
+- [x] `ModalOpened` / `ModalDismissed` fire on transitions.
+- [x] `cargo build --workspace` passes.
+- [x] `cargo test --workspace` passes.
+
+## Notes (2026-05-07)
+- New module `editor/modal_slot.rs` (the chosen filename avoids clash
+  with the existing `editor/commands/modal/` palette code).
+  `Editor.modal: Option<Box<dyn Pane>>` becomes `Editor.modal:
+  ModalSlot`; the `Option`-shaped accessors (`as_ref` / `as_mut` /
+  `is_some` / `is_none`) are preserved so existing call sites
+  (responder chain, render path, downcast helpers) continue to work.
+- Pulse publishing happens in `Editor::open_modal` /
+  `Editor::dismiss_modal`; no caller writes to `editor.modal` directly.
+- T-43's View producer wiring (`View::Modal`) is unchanged — it still
+  reads from `editor.modal.as_ref()`. The slot's invariant is enforced
+  in core, not in the producer.
 
 ## Spec references
 - `docs/specs/pulse-bus.md` — *Catalog → Modal*.

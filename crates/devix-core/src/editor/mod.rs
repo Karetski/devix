@@ -16,6 +16,7 @@ pub mod document;
 pub mod editor;
 pub mod focus_chain;
 pub mod frame;
+pub mod modal_slot;
 pub mod registry;
 pub mod tree;
 pub mod view;
@@ -33,5 +34,6 @@ pub use editor::{
 };
 pub use focus_chain::{FocusChain, FocusTransition};
 pub use frame::FrameId;
+pub use modal_slot::ModalSlot;
 pub use registry::PaneRegistry;
 pub use tree::{LayoutCtx, LayoutFrame, LayoutNode, LayoutSidebar, LayoutSplit};

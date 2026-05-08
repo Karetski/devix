@@ -23,6 +23,7 @@ use crate::editor::document::{DocId, Document};
 
 use crate::editor::focus_chain::FocusChain;
 use crate::editor::frame::{FrameId, mint_id};
+use crate::editor::modal_slot::ModalSlot;
 use crate::SidebarSlot;
 use crate::editor::registry::PaneRegistry;
 use crate::editor::tree::{LayoutFrame, LayoutNode};
@@ -87,14 +88,13 @@ pub struct Editor {
     /// flow through this owner; per-frame state still lives on the
     /// underlying `LayoutFrame`.
     pub panes: PaneRegistry,
-    /// Head of the responder chain. When `Some`, the modal Pane gets
-    /// first crack at every input event before the focused-leaf path,
-    /// and paints last (z-top). Concrete modals (`PalettePane`,
-    /// `SymbolPickerPane`, future plugin pickers) own their state
-    /// outright and live here for the duration of their session. The
-    /// framework is generic over `&dyn Pane`; there is no closed enum
-    /// of modal kinds.
-    pub modal: Option<Box<dyn Pane>>,
+    /// Modal slot — owner of the at-most-one active modal. Carved out
+    /// per T-103. When occupied, the modal Pane gets first crack at
+    /// every input event before the focused-leaf path, and paints last
+    /// (z-top). `Editor::open_modal` / `dismiss_modal` go through this
+    /// owner and emit `Pulse::ModalOpened` / `ModalDismissed` on
+    /// transitions.
+    pub modal: ModalSlot,
     /// Focus chain — owner of the active pane path. Carved out per
     /// T-101. Mutations route through `FocusChain::replace` /
     /// `transform`; real transitions emit `Pulse::FocusChanged`
@@ -138,7 +138,7 @@ impl Editor {
             documents,
             cursors,
             panes,
-            modal: None,
+            modal: ModalSlot::new(),
             focus,
             doc_index,
             render_cache: RenderCache::default(),
@@ -171,6 +171,33 @@ impl Editor {
     pub fn set_focus(&mut self, new: Vec<usize>) {
         if let Some(t) = self.focus.replace(new) {
             self.bus.publish(t.into_pulse());
+        }
+    }
+
+    /// Install `pane` of `kind` as the active modal. If a modal was
+    /// already open, it's dismissed first (its `ModalDismissed`
+    /// publishes before the new modal's `ModalOpened`). T-103.
+    pub fn open_modal(&mut self, pane: Box<dyn Pane>, kind: devix_protocol::pulse::ModalKind) {
+        let frame_path = self
+            .active_frame()
+            .map(|_| modal_frame_path(self.focus.active()));
+        let prev = self.modal.open(pane, kind);
+        if let Some(prev_kind) = prev {
+            self.bus
+                .publish(devix_protocol::pulse::Pulse::ModalDismissed { modal: prev_kind });
+        }
+        self.bus.publish(devix_protocol::pulse::Pulse::ModalOpened {
+            modal: kind,
+            frame: frame_path,
+        });
+    }
+
+    /// Dismiss the active modal, if any. Emits `ModalDismissed` on
+    /// transition. No-op if the slot is already empty. T-103.
+    pub fn dismiss_modal(&mut self) {
+        if let Some(kind) = self.modal.dismiss() {
+            self.bus
+                .publish(devix_protocol::pulse::Pulse::ModalDismissed { modal: kind });
         }
     }
 
@@ -329,6 +356,17 @@ impl Editor {
 
 pub(super) fn canonicalize_or_keep(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// Build a `/pane(/<i>)*` path from the focus index list. Used by
+/// `Editor::open_modal` to populate `Pulse::ModalOpened.frame`.
+fn modal_frame_path(indices: &[usize]) -> devix_protocol::path::Path {
+    let mut s = String::from("/pane");
+    for i in indices {
+        s.push('/');
+        s.push_str(&i.to_string());
+    }
+    devix_protocol::path::Path::parse(&s).expect("/pane(/<i>)* is canonical")
 }
 
 /// Install a notify watcher on `documents[id]` whose callback
@@ -805,6 +843,35 @@ mod tests {
             .filter(|p| p.kind() == PulseKind::SidebarToggled)
             .count();
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn open_then_dismiss_modal_publishes_modal_pulses() {
+        use crate::editor::commands::{CommandRegistry, modal::PalettePane};
+        use devix_protocol::pulse::{ModalKind, Pulse, PulseKind};
+        let mut ws = Editor::open(None).unwrap();
+        let captured = capture_pulses(&ws.bus);
+        let registry = CommandRegistry::default();
+        ws.open_modal(
+            Box::new(PalettePane::from_registry(&registry)),
+            ModalKind::Palette,
+        );
+        ws.dismiss_modal();
+        let pulses = captured.lock().unwrap();
+        let kinds: Vec<PulseKind> = pulses
+            .iter()
+            .filter(|p| matches!(
+                p.kind(),
+                PulseKind::ModalOpened | PulseKind::ModalDismissed
+            ))
+            .map(|p| p.kind())
+            .collect();
+        assert_eq!(kinds, vec![PulseKind::ModalOpened, PulseKind::ModalDismissed]);
+        if let Some(Pulse::ModalOpened { modal, .. }) =
+            pulses.iter().find(|p| p.kind() == PulseKind::ModalOpened)
+        {
+            assert_eq!(*modal, ModalKind::Palette);
+        }
     }
 
     #[test]

@@ -278,9 +278,12 @@ mod tests {
     #[test]
     fn close_modal_clears_any_modal() {
         let mut ws = Editor::open(None).unwrap();
-        ws.modal = Some(Box::new(crate::editor::commands::modal::PalettePane::from_registry(
-            &CommandRegistry::default(),
-        )));
+        ws.open_modal(
+            Box::new(crate::editor::commands::modal::PalettePane::from_registry(
+                &CommandRegistry::default(),
+            )),
+            devix_protocol::pulse::ModalKind::Palette,
+        );
         let mut clipboard = crate::NoClipboard;
         let mut quit = false;
         let commands = CommandRegistry::default();

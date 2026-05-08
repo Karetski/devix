@@ -1,5 +1,7 @@
 //! Command palette and modal-management commands.
 
+use devix_protocol::pulse::ModalKind;
+
 use crate::Action;
 
 use crate::editor::commands::context::Context;
@@ -8,7 +10,8 @@ use crate::editor::commands::modal::PalettePane;
 pub struct OpenPalette;
 impl<'a> Action<Context<'a>> for OpenPalette {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        ctx.editor.modal = Some(Box::new(PalettePane::from_registry(ctx.commands)));
+        let pane = Box::new(PalettePane::from_registry(ctx.commands));
+        ctx.editor.open_modal(pane, ModalKind::Palette);
     }
 }
 
@@ -16,7 +19,7 @@ pub struct ClosePalette;
 impl<'a> Action<Context<'a>> for ClosePalette {
     fn invoke(&self, ctx: &mut Context<'a>) {
         if super::modal_is::<PalettePane>(ctx) {
-            ctx.editor.modal = None;
+            ctx.editor.dismiss_modal();
         }
     }
 }
@@ -26,7 +29,7 @@ impl<'a> Action<Context<'a>> for ClosePalette {
 pub struct CloseModal;
 impl<'a> Action<Context<'a>> for CloseModal {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        ctx.editor.modal = None;
+        ctx.editor.dismiss_modal();
     }
 }
 
@@ -62,7 +65,7 @@ impl<'a> Action<Context<'a>> for PaletteAccept {
                     .selected_command_id()
                     .and_then(|id| ctx.commands.resolve(id))
             });
-        ctx.editor.modal = None;
+        ctx.editor.dismiss_modal();
         if let Some(action) = chosen {
             action.invoke(ctx);
         }

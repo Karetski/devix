@@ -232,7 +232,7 @@ impl<B: Backend> Application<B> {
             editor.panes.render(area, frame, &layout_ctx);
 
             if let Some(modal) = editor.modal.as_ref() {
-                render::paint_modal(modal.as_ref(), area, frame, theme, commands, keymap);
+                render::paint_modal(modal, area, frame, theme, commands, keymap);
             }
         })?;
         Ok(())
