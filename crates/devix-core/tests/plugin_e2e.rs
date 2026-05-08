@@ -200,7 +200,7 @@ fn pane_set_lines_updates_render_after_load() {
 
     // Invoke the swap action and wait for the dirty signal.
     let handle = runtime.contributions().commands[0].handle;
-    runtime.invoke_sender().send(handle).unwrap();
+    devix_core::send_invoke(&runtime.invoke_sender(), handle);
     let got = drain_until(&mut runtime, Duration::from_secs(2), |m| {
         matches!(m, PluginMsg::PaneChanged)
     });
@@ -284,7 +284,7 @@ fn open_path_message_surfaces_through_runtime() {
     let path = write_plugin_named("open-path", source);
     let mut runtime = PluginRuntime::load(&path).unwrap();
     let handle = runtime.contributions().commands[0].handle;
-    runtime.invoke_sender().send(handle).unwrap();
+    devix_core::send_invoke(&runtime.invoke_sender(), handle);
     let got = drain_until(&mut runtime, Duration::from_secs(2), |m| {
         matches!(m, PluginMsg::OpenPath(p) if p == &PathBuf::from("/tmp/devix-e2e-target"))
     });
