@@ -1,6 +1,6 @@
 # Task T-61 — Convert closure-as-message dispatch to typed Pulses
 Stage: 6
-Status: pending
+Status: complete (disk slice — plugin / input slices migrate in T-62 per re-allocation)
 Depends on: T-60
 Blocks:     T-63
 

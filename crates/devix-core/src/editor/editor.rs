@@ -14,7 +14,6 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use anyhow::Result;
 use crate::{Pane, Rect};
@@ -97,22 +96,7 @@ pub struct Editor {
     pub focus: Vec<usize>,
     pub doc_index: HashMap<PathBuf, DocId>,
     pub render_cache: RenderCache,
-    /// Push-callback for disk-change events. When `Some`, every newly
-    /// opened document gets a `notify` watcher whose callback invokes
-    /// `disk_sink(doc_id)` directly. Set once at startup via
-    /// [`Editor::attach_disk_sink`]; never polled.
-    pub disk_sink: Option<DiskSink>,
 }
-
-/// Push-callback type for disk-change events. Per T-57, the payload
-/// matches the eventual `Pulse::DiskChanged { path: Path, fs_path:
-/// PathBuf }` shape — `path` is the devix `/buf/<id>` path
-/// (resource identity) and `fs_path` is the filesystem path the
-/// watcher is observing. Stage 6's pulse-bus migration replaces the
-/// callback shape with a typed `Pulse::DiskChanged` published into
-/// `PulseBus`; this type is the bridge until then.
-pub type DiskSink =
-    Arc<dyn Fn(devix_protocol::path::Path, PathBuf) + Send + Sync + 'static>;
 
 impl Editor {
     /// Create a editor with a single frame, single tab, single cursor.
@@ -136,6 +120,12 @@ impl Editor {
         let root = LayoutNode::Frame(LayoutFrame::with_cursor(frame_id, cursor_id));
         let focus = vec![]; // root is the frame leaf itself
 
+        let bus = crate::PulseBus::new();
+        // Install bus-flavored disk watchers on every initially-open
+        // document so disk-change events flow as Pulse::DiskChanged.
+        for id in documents.keys().collect::<Vec<_>>() {
+            install_bus_watcher_for_doc(&mut documents, id, &bus);
+        }
         Ok(Self {
             documents,
             cursors,
@@ -144,29 +134,10 @@ impl Editor {
             focus,
             doc_index,
             render_cache: RenderCache::default(),
-            disk_sink: None,
-            bus: crate::PulseBus::new(),
+            bus,
         })
     }
 
-    /// Install a push-callback for disk-change events and (re)attach
-    /// `notify` watchers on every currently-open document so they wire
-    /// directly into the new sink. Future `open_path_replace_current`
-    /// calls also use this sink.
-    ///
-    /// Replaces any previously-attached sink (including its watchers).
-    pub fn attach_disk_sink(&mut self, sink: DiskSink) {
-        // Re-install watchers on every open doc with a path.
-        let ids: Vec<DocId> = self
-            .documents
-            .iter()
-            .map(|(id, _)| id)
-            .collect();
-        for id in ids {
-            install_watcher_for_doc(&mut self.documents, id, &sink);
-        }
-        self.disk_sink = Some(sink);
-    }
 
     pub fn active_cursor(&self) -> Option<&Cursor> {
         let frame_id = self.active_frame()?;
@@ -406,32 +377,10 @@ fn walk_pane_paths(
     }
 }
 
-/// Spawn a `notify` watcher on `documents[id]` whose callback invokes
-/// `sink(id)` directly. Pulled out so `attach_disk_sink` (initial wiring)
-/// and `open_path_replace_current` (per-open wiring) share one
-/// implementation.
-pub(crate) fn install_watcher_for_doc(
-    documents: &mut crate::editor::document::DocStore,
-    id: DocId,
-    sink: &DiskSink,
-) {
-    let Some(doc) = documents.get_mut(id) else { return };
-    let Some(fs_path) = doc.buffer.path().map(std::path::Path::to_path_buf) else {
-        // Watchers only attach to documents with a backing fs path;
-        // no fs_path means there's nothing to watch.
-        return;
-    };
-    let path = id.to_path();
-    let sink = sink.clone();
-    doc.install_disk_watcher(Box::new(move || sink(path.clone(), fs_path.clone())));
-}
-
 /// Install a notify watcher on `documents[id]` whose callback
 /// publishes `Pulse::DiskChanged { path, fs_path }` into `bus` via
-/// `publish_async`. T-60 introduces this bus-shaped path; T-63
-/// retires the closure-based `DiskSink` once every consumer has
-/// subscribed off the typed pulse instead.
-#[allow(dead_code)] // wired up by T-61 once the disk-changed subscriber lands
+/// `publish_async`. Replaces the legacy closure-based DiskSink path
+/// retired in T-61.
 pub(crate) fn install_bus_watcher_for_doc(
     documents: &mut crate::editor::document::DocStore,
     id: DocId,

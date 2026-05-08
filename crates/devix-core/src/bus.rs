@@ -156,6 +156,25 @@ impl PulseBus {
         count
     }
 
+    /// Drain the cross-thread queue into `out` *without* dispatching
+    /// to bus subscribers. Returns the number drained. Used by the
+    /// main loop to dispatch typed pulses with `&mut`-state callers
+    /// can't reach through the spec's `Fn(&Pulse) + Send + Sync`
+    /// subscriber shape (e.g., handlers that need `&mut Editor`).
+    /// `Fn` subscribers are still called by `drain` / `publish`; this
+    /// method coexists for the loop-side typed dispatch case
+    /// introduced at T-61 (recorded in `foundations-review.md`
+    /// 2026-05-07).
+    pub fn drain_into(&self, out: &mut Vec<Pulse>) -> usize {
+        let mut count = 0;
+        let rx = self.0.rx.lock().unwrap();
+        while let Ok(p) = rx.try_recv() {
+            out.push(p);
+            count += 1;
+        }
+        count
+    }
+
     /// Register a handler. Returns an id usable for `unsubscribe`.
     pub fn subscribe<F>(&self, filter: PulseFilter, handler: F) -> SubscriptionId
     where

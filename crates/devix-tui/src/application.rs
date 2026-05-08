@@ -117,9 +117,14 @@ impl<B: Backend> Application<B> {
                 Err(_) => break,
             }
             // Drain cross-thread `publish_async` pulses on the main
-            // thread per pulse-bus.md. Subscribers run synchronously
-            // before flush_effects so any RenderDirty / Effect::Redraw
-            // queued by a subscriber lands in the same tick.
+            // thread per pulse-bus.md. Typed dispatch via drain_into
+            // (foundations-review 2026-05-07) so handlers can take
+            // `&mut Editor` directly. Bus subscribers (Fn handlers
+            // for cross-cutting concerns like logging / plugins)
+            // are still served by the bus's regular `drain`; the
+            // typed-dispatch loop runs first so the editor mutates
+            // before subscribers observe a derived RenderDirty.
+            self.dispatch_typed_pulses();
             self.editor.bus.drain();
             self.flush_effects();
         }
@@ -154,6 +159,34 @@ impl<B: Backend> Application<B> {
         let mut ctx = self.context();
         if catch_unwind(AssertUnwindSafe(|| p(&mut ctx))).is_err() {
             eprintln!("pulse panicked; dropping");
+        }
+    }
+
+    fn dispatch_typed_pulses(&mut self) {
+        use devix_protocol::pulse::Pulse;
+        let mut pulses: Vec<Pulse> = Vec::new();
+        self.editor.bus.drain_into(&mut pulses);
+        for pulse in pulses {
+            match pulse {
+                Pulse::DiskChanged { path, fs_path } => {
+                    let mut ctx = self.context();
+                    if catch_unwind(AssertUnwindSafe(|| {
+                        handle_disk_changed(&mut ctx, &path, &fs_path);
+                    }))
+                    .is_err()
+                    {
+                        eprintln!("disk-changed handler panicked; dropping");
+                    }
+                }
+                // Other variants land in T-62 / T-63 as more
+                // producers migrate. Unhandled pulses fall back to
+                // bus subscribers via `drain` immediately after.
+                _ => {
+                    // Re-enqueue so bus subscribers see it. Cheap —
+                    // round-trips through the cross-thread queue.
+                    self.editor.bus.publish_async(pulse);
+                }
+            }
         }
     }
 
@@ -297,5 +330,44 @@ mod test_support {
         pub fn force_render(&mut self) {
             let _ = self.render();
         }
+    }
+}
+
+/// Disk watcher reported a change for `path`. Three-way handling:
+/// dirty buffer → mark pending and prompt; active+clean → reload via
+/// the command path; background+clean → silent reload + cursor clamp.
+/// Migrated from main.rs (T-61) to live alongside the typed-pulse
+/// dispatch that calls it.
+fn handle_disk_changed(
+    ctx: &mut AppContext<'_>,
+    path: &devix_protocol::path::Path,
+    _fs_path: &std::path::Path,
+) {
+    let Some(doc) = devix_core::DocId::id_from_path(path) else { return };
+    let active_doc_id = ctx.editor.active_cursor().map(|c| c.doc);
+    let dirty = ctx
+        .editor
+        .documents
+        .get(doc)
+        .map(|d| d.buffer.dirty())
+        .unwrap_or(false);
+
+    if dirty {
+        if let Some(d) = ctx.editor.documents.get_mut(doc) {
+            d.disk_changed_pending = true;
+        }
+        ctx.request_redraw();
+    } else if Some(doc) == active_doc_id {
+        ctx.run(&devix_core::cmd::ReloadFromDisk);
+    } else if let Some(d) = ctx.editor.documents.get_mut(doc) {
+        if d.reload_from_disk().is_ok() {
+            let max = ctx.editor.documents[doc].buffer.len_chars();
+            for cursor in ctx.editor.cursors.values_mut() {
+                if cursor.doc == doc {
+                    cursor.selection.clamp(max);
+                }
+            }
+        }
+        ctx.request_redraw();
     }
 }

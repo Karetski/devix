@@ -94,10 +94,7 @@ impl Editor {
             let doc = Document::from_path(path)?;
             let id = self.documents.insert(doc);
             self.doc_index.insert(key, id);
-            if let Some(sink) = self.disk_sink.as_ref() {
-                let sink = sink.clone();
-                super::install_watcher_for_doc(&mut self.documents, id, &sink);
-            }
+            super::install_bus_watcher_for_doc(&mut self.documents, id, &self.bus);
             id
         };
         // Resolve the active frame and old cursor BEFORE allocating the

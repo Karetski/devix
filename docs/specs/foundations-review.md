@@ -426,6 +426,17 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-07 — `pulse-bus.md` extension: `drain_into`.** Adds a
+  drain variant that pops the cross-thread queue into a caller-
+  owned `Vec<Pulse>` *without* invoking bus subscribers. Lets the
+  main loop dispatch typed pulses with `&mut state` (the editor)
+  that the spec's `Fn(&Pulse) + Send + Sync` subscriber shape
+  can't reach without wrapping the editor in `Arc<Mutex<>>`. Bus
+  subscribers still work for cross-cutting concerns
+  (logging, plugins) via the existing `subscribe` /
+  `publish` / `drain` shape. Spec doc updated under
+  *The `PulseBus` API*; impl in `devix-core::bus::PulseBus::drain_into`.
+
 - **2026-05-07 — Stage 6 scope re-allocation.** Original T-60 spec
   said "Replace every existing EventSink::pulse / DiskSink::push /
   MsgSink::send / Wakeup::request call site with PulseBus.publish*"

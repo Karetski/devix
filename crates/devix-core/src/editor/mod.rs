@@ -27,7 +27,7 @@ pub use commands::{
 pub use cursor::{Cursor, CursorId, ScrollMode};
 pub use document::{DocId, Document};
 pub use editor::{
-    DiskSink, Editor, LeafRef, RenderCache, TabHit, TabStripCache, TabStripHit, path_to_leaf,
+    Editor, LeafRef, RenderCache, TabHit, TabStripCache, TabStripHit, path_to_leaf,
 };
 pub use frame::FrameId;
 pub use tree::{LayoutCtx, LayoutFrame, LayoutNode, LayoutSidebar, LayoutSplit};

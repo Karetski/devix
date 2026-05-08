@@ -66,7 +66,7 @@ pub use editor::commands::{
 pub use editor::cursor::{Cursor, CursorId, ScrollMode};
 pub use editor::document::{DocId, Document};
 pub use editor::editor::{
-    DiskSink, Editor, LeafRef, RenderCache, TabHit as EditorTabHit, TabStripCache, TabStripHit,
+    Editor, LeafRef, RenderCache, TabHit as EditorTabHit, TabStripCache, TabStripHit,
     path_to_leaf,
 };
 pub use editor::frame::FrameId;

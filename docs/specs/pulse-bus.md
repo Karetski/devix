@@ -179,6 +179,16 @@ impl PulseBus {
     /// Returns the count drained, mostly for tests.
     pub fn drain(&self) -> usize;
 
+    /// Drain into `out` *without* dispatching to bus subscribers.
+    /// Used by the main loop's typed dispatch path when a handler
+    /// needs `&mut` state subscribers can't reach through the spec's
+    /// `Fn(&Pulse) + Send + Sync` shape (e.g., `&mut Editor`).
+    /// Coexists with `drain` (which dispatches to subscribers); the
+    /// loop calls `drain_into` then matches on pulse variants and
+    /// invokes typed handlers with its own state. Added during T-61
+    /// (see foundations-review log 2026-05-07).
+    pub fn drain_into(&self, out: &mut Vec<Pulse>) -> usize;
+
     /// Register a handler. Returns an id usable for `unsubscribe`.
     pub fn subscribe<F>(&self, filter: PulseFilter, handler: F) -> SubscriptionId
     where F: Fn(&Pulse) + Send + Sync + 'static;

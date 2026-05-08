@@ -12,8 +12,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use devix_tui::clipboard;
 use devix_tui::{AppContext, Application, EventSink};
-use devix_core::{DocId, Editor, build_registry, cmd, default_keymap};
-use devix_protocol::path::Path as DevixPath;
+use devix_core::{Editor, build_registry, cmd, default_keymap};
 use devix_core::Theme;
 use devix_core::{MsgSink, PluginMsg, PluginRuntime, default_plugin_path};
 
@@ -24,14 +23,9 @@ fn main() -> Result<()> {
     let (sink, rx) = EventSink::channel();
 
     let mut editor = Editor::open(path)?;
-    {
-        let sink = sink.clone();
-        editor.attach_disk_sink(Arc::new(move |path: DevixPath, fs_path: PathBuf| {
-            let _ = sink.pulse(move |ctx: &mut AppContext<'_>| {
-                handle_disk_changed(ctx, &path, &fs_path);
-            });
-        }));
-    }
+    // Disk-watch events flow as Pulse::DiskChanged on the editor's
+    // bus; Application::run drains and dispatches them to
+    // handle_disk_changed on the main thread (T-61).
 
     let mut commands = build_registry();
     let mut keymap = default_keymap();
@@ -69,42 +63,6 @@ fn main() -> Result<()> {
     app.run()
 }
 
-/// Disk watcher reported a change for `doc`. Three-way handling:
-/// dirty buffer → mark pending and prompt; active+clean → reload via
-/// the command path; background+clean → silent reload + cursor clamp.
-fn handle_disk_changed(
-    ctx: &mut AppContext<'_>,
-    path: &DevixPath,
-    _fs_path: &std::path::Path,
-) {
-    let Some(doc) = DocId::id_from_path(path) else { return };
-    let active_doc_id = ctx.editor.active_cursor().map(|c| c.doc);
-    let dirty = ctx
-        .editor
-        .documents
-        .get(doc)
-        .map(|d| d.buffer.dirty())
-        .unwrap_or(false);
-
-    if dirty {
-        if let Some(d) = ctx.editor.documents.get_mut(doc) {
-            d.disk_changed_pending = true;
-        }
-        ctx.request_redraw();
-    } else if Some(doc) == active_doc_id {
-        ctx.run(&cmd::ReloadFromDisk);
-    } else if let Some(d) = ctx.editor.documents.get_mut(doc) {
-        if d.reload_from_disk().is_ok() {
-            let max = ctx.editor.documents[doc].buffer.len_chars();
-            for cursor in ctx.editor.cursors.values_mut() {
-                if cursor.doc == doc {
-                    cursor.selection.clamp(max);
-                }
-            }
-        }
-        ctx.request_redraw();
-    }
-}
 
 /// Plugin host pushed a message; route it.
 fn handle_plugin_msg(ctx: &mut AppContext<'_>, msg: PluginMsg) {
