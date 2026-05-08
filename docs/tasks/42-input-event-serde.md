@@ -1,6 +1,6 @@
 # Task T-42 — InputEvent + Chord + KeyCode (canonical-kebab serde)
 Stage: 4
-Status: pending
+Status: complete
 Depends on: T-30, T-40
 Blocks:     T-44, T-54, T-62
 
