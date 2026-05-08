@@ -225,15 +225,12 @@ fn map_sidebar_slot(s: CoreSidebarSlot) -> ViewSidebarSlot {
     }
 }
 
-/// Turn a `DocId` (slotmap key) into its canonical `/buf/<id>` path.
-/// Today the path-facing id IS the slotmap key's u64 backing — when
-/// T-50 lands the process-monotonic counter, `Document::id_from_path`
-/// becomes the round-trip pair. For T-43 we use the slotmap key's
-/// `data().as_ffi()` directly.
+/// Encode a `DocId` as its canonical `/buf/<id>` path. T-50 swapped
+/// in a process-monotonic counter, closing the slotmap-key shim
+/// the T-43 producer used at first. `DocId::to_path` is the
+/// round-trip pair to `DocId::id_from_path`.
 fn doc_path_for(doc: crate::editor::document::DocId) -> Option<Path> {
-    use slotmap::Key;
-    let id = doc.data().as_ffi();
-    Path::parse(&format!("/buf/{}", id)).ok()
+    Some(doc.to_path())
 }
 
 fn tab_label_and_doc(cursor_id: CursorId, editor: &Editor) -> (String, Path) {

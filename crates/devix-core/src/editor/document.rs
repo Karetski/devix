@@ -1,27 +1,74 @@
 //! Document = Buffer + filesystem-watcher attachment + tree-sitter highlighter.
-//! Owned by Editor.
+//! Owned by Editor's `DocStore`.
 //!
 //! All buffer mutations should go through `Document::apply_tx` /
 //! `Document::undo` / `Document::redo` / `Document::reload_from_disk` rather
 //! than reaching into `buffer` directly. Those methods keep the highlighter's
 //! tree synchronized with the rope; bypassing them leaves stale highlight
 //! spans pointing into the wrong byte ranges.
+//!
+//! `DocId` is a process-monotonic `u64` per `docs/specs/namespace.md`
+//! § *Segment encoding rules → Resource ids*. Slot keys are no longer
+//! exposed in paths; ids are minted from a global `AtomicU64` and are
+//! stable across the session — `/buf/42` never names two different
+//! buffers (a closed-and-reopened buffer mints a fresh id).
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
+use devix_protocol::path::Path as DevixPath;
+use devix_protocol::Lookup;
 use devix_text::{Buffer, Selection, Transaction};
 use devix_syntax::{HighlightSpan, Highlighter, Language, input_edit_for_range};
 use notify::{RecursiveMode, Watcher};
-use slotmap::new_key_type;
 
-new_key_type! { pub struct DocId; }
+/// Process-monotonic `Document` id. Minted via `DocStore::insert`;
+/// never reused across the session (per `namespace.md`'s stability
+/// guarantee). Wire form on paths is `/buf/<id>`.
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
+pub struct DocId(u64);
+
+static DOC_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+impl DocId {
+    /// Mint a fresh id. Internal — `DocStore::insert` is the
+    /// canonical entry point; tests use this directly.
+    fn mint() -> Self {
+        DocId(DOC_ID_COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Decode the inner u64 (for path encoding).
+    pub fn as_u64(self) -> u64 {
+        self.0
+    }
+
+    /// Construct from a `Path`. Returns `None` if `path` isn't of
+    /// the form `/buf/<u64>`.
+    pub fn id_from_path(path: &DevixPath) -> Option<Self> {
+        let mut segs = path.segments();
+        if segs.next()? != "buf" {
+            return None;
+        }
+        let id_seg = segs.next()?;
+        if segs.next().is_some() {
+            return None;
+        }
+        id_seg.parse::<u64>().ok().map(DocId)
+    }
+
+    /// Encode this id into its canonical path (`/buf/<id>`).
+    pub fn to_path(self) -> DevixPath {
+        DevixPath::parse(&format!("/buf/{}", self.0)).expect("/buf/<u64> is canonical")
+    }
+}
 
 pub struct Document {
     pub buffer: Buffer,
     /// Active filesystem watcher. Installed by [`Document::install_disk_watcher`]
-    /// after the document has a stable identity in its owning SlotMap, since
+    /// after the document has a stable identity in its owning store, since
     /// the notify callback closes over a caller-supplied closure that
     /// typically wants the doc's id.
     pub watcher: Option<notify::RecommendedWatcher>,
@@ -50,7 +97,7 @@ impl Document {
 
     /// Open `path`. Does *not* attach a filesystem watcher; the editor
     /// installs one via [`Document::install_disk_watcher`] after the doc
-    /// is in its SlotMap (so the watcher's callback can close over the
+    /// is in the `DocStore` (so the watcher's callback can close over the
     /// stable `DocId`).
     pub fn from_path(path: PathBuf) -> Result<Self> {
         let buffer = Buffer::from_path(&path)?;
@@ -157,6 +204,115 @@ impl Document {
     }
 }
 
+/// Per-session document registry. Implements
+/// `Lookup<Resource = Document>` mounted at `/buf/<id>` per
+/// `docs/specs/namespace.md` § *Migration table*.
+#[derive(Default)]
+pub struct DocStore {
+    docs: HashMap<DocId, Document>,
+}
+
+impl DocStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Insert `doc`, mint a fresh `DocId`, and return it.
+    pub fn insert(&mut self, doc: Document) -> DocId {
+        let id = DocId::mint();
+        self.docs.insert(id, doc);
+        id
+    }
+
+    /// Remove a document by id; returns it if present.
+    pub fn remove(&mut self, id: DocId) -> Option<Document> {
+        self.docs.remove(&id)
+    }
+
+    /// Look up a document by id (slotmap-shape compatibility).
+    pub fn get(&self, id: DocId) -> Option<&Document> {
+        self.docs.get(&id)
+    }
+
+    /// Look up a document by id mutably.
+    pub fn get_mut(&mut self, id: DocId) -> Option<&mut Document> {
+        self.docs.get_mut(&id)
+    }
+
+    /// Iterate `(id, &Document)` pairs.
+    pub fn iter(&self) -> impl Iterator<Item = (DocId, &Document)> {
+        self.docs.iter().map(|(id, d)| (*id, d))
+    }
+
+    /// Iterate `(id, &mut Document)` pairs.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (DocId, &mut Document)> {
+        self.docs.iter_mut().map(|(id, d)| (*id, d))
+    }
+
+    /// Iterate documents (no ids).
+    pub fn values(&self) -> impl Iterator<Item = &Document> {
+        self.docs.values()
+    }
+
+    /// Iterate documents mutably (no ids).
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut Document> {
+        self.docs.values_mut()
+    }
+
+    /// Iterate ids only.
+    pub fn keys(&self) -> impl Iterator<Item = DocId> + '_ {
+        self.docs.keys().copied()
+    }
+
+    /// Whether `id` is in the store.
+    pub fn contains_key(&self, id: DocId) -> bool {
+        self.docs.contains_key(&id)
+    }
+
+    /// Number of live documents.
+    pub fn len(&self) -> usize {
+        self.docs.len()
+    }
+
+    /// True when no documents are live.
+    pub fn is_empty(&self) -> bool {
+        self.docs.is_empty()
+    }
+}
+
+impl std::ops::Index<DocId> for DocStore {
+    type Output = Document;
+    fn index(&self, id: DocId) -> &Document {
+        self.docs
+            .get(&id)
+            .unwrap_or_else(|| panic!("DocStore: unknown DocId {:?}", id))
+    }
+}
+
+impl std::ops::IndexMut<DocId> for DocStore {
+    fn index_mut(&mut self, id: DocId) -> &mut Document {
+        self.docs
+            .get_mut(&id)
+            .unwrap_or_else(|| panic!("DocStore: unknown DocId {:?}", id))
+    }
+}
+
+impl Lookup for DocStore {
+    type Resource = Document;
+
+    fn lookup(&self, path: &DevixPath) -> Option<&Document> {
+        DocId::id_from_path(path).and_then(|id| self.get(id))
+    }
+
+    fn lookup_mut(&mut self, path: &DevixPath) -> Option<&mut Document> {
+        DocId::id_from_path(path).and_then(|id| self.get_mut(id))
+    }
+
+    fn paths(&self) -> Box<dyn Iterator<Item = DevixPath> + '_> {
+        Box::new(self.docs.keys().map(|id| id.to_path()))
+    }
+}
+
 /// Watch `target_path`'s parent directory non-recursively, filtering
 /// events to only fire when `target_path` is one of the changed paths,
 /// and invoking `on_change` directly from the notify callback. The
@@ -253,5 +409,54 @@ mod tests {
             after.len(),
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn doc_id_to_path_round_trips() {
+        let id = DocId::mint();
+        let path = id.to_path();
+        assert!(path.as_str().starts_with("/buf/"));
+        let back = DocId::id_from_path(&path).unwrap();
+        assert_eq!(id, back);
+    }
+
+    #[test]
+    fn doc_id_from_path_rejects_other_roots() {
+        let p = DevixPath::parse("/cur/3").unwrap();
+        assert!(DocId::id_from_path(&p).is_none());
+        let p = DevixPath::parse("/buf/abc").unwrap();
+        assert!(DocId::id_from_path(&p).is_none());
+        let p = DevixPath::parse("/buf").unwrap();
+        assert!(DocId::id_from_path(&p).is_none());
+        let p = DevixPath::parse("/buf/42/extra").unwrap();
+        assert!(DocId::id_from_path(&p).is_none());
+    }
+
+    #[test]
+    fn doc_store_implements_lookup_round_trip() {
+        let mut store = DocStore::new();
+        let id = store.insert(Document::empty());
+        let path = id.to_path();
+        assert!(store.lookup(&path).is_some());
+        assert!(store.lookup_mut(&path).is_some());
+        let paths: Vec<DevixPath> = store.paths().collect();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0], path);
+    }
+
+    #[test]
+    fn doc_store_close_and_reopen_mints_fresh_id() {
+        let mut store = DocStore::new();
+        let id_a = store.insert(Document::empty());
+        store.remove(id_a).unwrap();
+        let id_b = store.insert(Document::empty());
+        // Process-monotonic counter — id_b is strictly greater.
+        assert_ne!(id_a, id_b);
+        assert!(id_b.as_u64() > id_a.as_u64());
+        // Original id no longer resolves.
+        assert!(store.get(id_a).is_none());
+        // Reopened path is the new id's path, not the closed-buffer's.
+        assert!(store.lookup(&id_a.to_path()).is_none());
+        assert!(store.lookup(&id_b.to_path()).is_some());
     }
 }

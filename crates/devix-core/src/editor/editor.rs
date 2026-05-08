@@ -72,7 +72,7 @@ pub enum TabStripHit {
 }
 
 pub struct Editor {
-    pub documents: SlotMap<DocId, Document>,
+    pub documents: crate::editor::document::DocStore,
     pub cursors: SlotMap<CursorId, Cursor>,
     /// Structural Pane tree — the layout source of truth, and **also**
     /// the only place per-frame state lives now. `LayoutFrame` owns its
@@ -108,7 +108,7 @@ impl Editor {
     /// Create a editor with a single frame, single tab, single cursor.
     /// `path` is opened if Some; otherwise an empty scratch buffer is used.
     pub fn open(path: Option<PathBuf>) -> Result<Self> {
-        let mut documents: SlotMap<DocId, Document> = SlotMap::with_key();
+        let mut documents = crate::editor::document::DocStore::new();
         let mut cursors: SlotMap<CursorId, Cursor> = SlotMap::with_key();
         let mut doc_index = HashMap::new();
 
@@ -338,7 +338,7 @@ pub(super) fn canonicalize_or_keep(p: &Path) -> PathBuf {
 /// and `open_path_replace_current` (per-open wiring) share one
 /// implementation.
 pub(crate) fn install_watcher_for_doc(
-    documents: &mut SlotMap<DocId, Document>,
+    documents: &mut crate::editor::document::DocStore,
     id: DocId,
     sink: &DiskSink,
 ) {

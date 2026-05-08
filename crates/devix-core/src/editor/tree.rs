@@ -26,7 +26,7 @@ use crate::{
 
 use crate::editor::buffer::EditorPane;
 use crate::editor::cursor::{Cursor, CursorId};
-use crate::editor::document::{DocId, Document};
+use crate::editor::document::Document;
 use crate::editor::{LeafRef, RenderCache};
 use crate::editor::frame::FrameId;
 
@@ -112,7 +112,7 @@ impl LayoutSidebar {
 /// constructs one inside `Application::render` and threads it through
 /// every recursive `LayoutNode::render` call.
 pub struct LayoutCtx<'a> {
-    pub documents: &'a SlotMap<DocId, Document>,
+    pub documents: &'a crate::editor::document::DocStore,
     pub cursors: &'a SlotMap<CursorId, Cursor>,
     pub theme: &'a Theme,
     pub render_cache: &'a RenderCache,

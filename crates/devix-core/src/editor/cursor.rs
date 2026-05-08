@@ -85,12 +85,12 @@ impl Cursor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use slotmap::SlotMap;
+    use crate::editor::document::{DocStore, Document};
 
     #[test]
     fn fresh_cursor_starts_at_origin_anchored() {
-        let mut docs: SlotMap<DocId, ()> = SlotMap::with_key();
-        let id = docs.insert(());
+        let mut store = DocStore::new();
+        let id = store.insert(Document::empty());
         let c = Cursor::new(id);
         assert_eq!(c.primary().head, 0);
         assert_eq!(c.scroll_mode, ScrollMode::Anchored);

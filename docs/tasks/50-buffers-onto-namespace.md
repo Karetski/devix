@@ -1,6 +1,6 @@
 # Task T-50 — Migrate buffers onto namespace (`/buf/<id>`)
 Stage: 5
-Status: pending
+Status: complete
 Depends on: T-30
 Blocks:     T-57
 
