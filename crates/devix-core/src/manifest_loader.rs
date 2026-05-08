@@ -248,6 +248,87 @@ fn intern_id(s: &str) -> &'static str {
     Box::leak(s.to_string().into_boxed_str())
 }
 
+/// Construct a `Theme` from a manifest's theme spec.
+/// Maps protocol `Style` / `Color` to the in-memory ratatui shape
+/// the renderer consumes. Returns `None` only for empty palettes
+/// (a theme must have at least one scope).
+pub fn theme_from_manifest_spec(spec: &devix_protocol::ThemeSpec) -> crate::theme::Theme {
+    use crate::theme::Theme;
+    use ratatui::style::{Modifier, Style as RtStyle};
+
+    // Default text + selection styles. Manifest doesn't yet carry a
+    // top-level text/selection palette (spec extension would be
+    // required); for now the editor's existing One-Dark fallbacks
+    // apply to manifest-loaded themes that don't override them
+    // through scopes.
+    let text = RtStyle::default().fg(ratatui::style::Color::Rgb(0xab, 0xb2, 0xbf));
+    let selection = RtStyle::default().bg(ratatui::style::Color::Rgb(60, 80, 130));
+    let mut theme = Theme::new(text, selection);
+
+    for (scope, style) in &spec.scopes {
+        let mut rt = RtStyle::default();
+        if let Some(fg) = style.fg {
+            rt = rt.fg(protocol_color_to_ratatui(fg));
+        }
+        if let Some(bg) = style.bg {
+            rt = rt.bg(protocol_color_to_ratatui(bg));
+        }
+        if style.bold {
+            rt = rt.add_modifier(Modifier::BOLD);
+        }
+        if style.italic {
+            rt = rt.add_modifier(Modifier::ITALIC);
+        }
+        if style.underline {
+            rt = rt.add_modifier(Modifier::UNDERLINED);
+        }
+        if style.dim {
+            rt = rt.add_modifier(Modifier::DIM);
+        }
+        if style.reverse {
+            rt = rt.add_modifier(Modifier::REVERSED);
+        }
+        theme = theme.with_scope(scope.clone(), rt);
+    }
+    theme
+}
+
+/// Find a theme by id in the manifest's themes list and construct it.
+pub fn theme_from_manifest(
+    manifest: &Manifest,
+    id: &str,
+) -> Option<crate::theme::Theme> {
+    let spec = manifest.contributes.themes.iter().find(|t| t.id == id)?;
+    Some(theme_from_manifest_spec(spec))
+}
+
+fn protocol_color_to_ratatui(c: devix_protocol::view::Color) -> ratatui::style::Color {
+    use devix_protocol::view::{Color, NamedColor};
+    use ratatui::style::Color as Rt;
+    match c {
+        Color::Default => Rt::Reset,
+        Color::Rgb(r, g, b) => Rt::Rgb(r, g, b),
+        Color::Indexed(n) => Rt::Indexed(n),
+        Color::Named(n) => match n {
+            NamedColor::Black => Rt::Black,
+            NamedColor::Red => Rt::Red,
+            NamedColor::Green => Rt::Green,
+            NamedColor::Yellow => Rt::Yellow,
+            NamedColor::Blue => Rt::Blue,
+            NamedColor::Magenta => Rt::Magenta,
+            NamedColor::Cyan => Rt::Cyan,
+            NamedColor::White => Rt::White,
+            NamedColor::DarkGray => Rt::DarkGray,
+            NamedColor::LightRed => Rt::LightRed,
+            NamedColor::LightGreen => Rt::LightGreen,
+            NamedColor::LightYellow => Rt::LightYellow,
+            NamedColor::LightBlue => Rt::LightBlue,
+            NamedColor::LightMagenta => Rt::LightMagenta,
+            NamedColor::LightCyan => Rt::LightCyan,
+        },
+    }
+}
+
 /// User keymap override file. Resolved from
 /// `$XDG_CONFIG_HOME/devix/keymap-overrides.json` (or the
 /// `~/.config/devix/...` fallback), parsed as

@@ -1,6 +1,6 @@
 # Task T-73 — Load built-in theme from manifest; ThemeChanged wiring
 Stage: 7
-Status: pending
+Status: complete (ThemeChanged publish on activation deferred until activation API exists at T-112)
 Depends on: T-55, T-70
 Blocks:     T-74, T-112
 

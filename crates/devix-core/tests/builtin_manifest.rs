@@ -3,6 +3,7 @@ use devix_core::editor::commands::keymap::Keymap;
 use devix_core::editor::commands::registry::CommandRegistry;
 use devix_core::manifest_loader::{
     parse_manifest_bytes, register_command_contributions, register_keymap_contributions,
+    theme_from_manifest,
 };
 use std::path::Path;
 
@@ -33,6 +34,27 @@ fn every_manifest_command_id_has_a_rust_handler() {
             spec.id,
         );
     }
+}
+
+#[test]
+fn theme_from_manifest_constructs_default() {
+    let m = builtin_manifest();
+    let theme = theme_from_manifest(&m, "default")
+        .expect("manifest must include `default` theme");
+    use devix_protocol::Lookup;
+    let p = devix_protocol::path::Path::parse("/theme/keyword").unwrap();
+    assert!(theme.lookup(&p).is_some());
+    let p = devix_protocol::path::Path::parse("/theme/keyword.unusual").unwrap();
+    assert!(
+        theme.lookup(&p).is_some(),
+        "dotted-prefix fallback must still work after manifest load",
+    );
+}
+
+#[test]
+fn theme_from_manifest_returns_none_for_unknown_id() {
+    let m = builtin_manifest();
+    assert!(theme_from_manifest(&m, "nope").is_none());
 }
 
 #[test]
