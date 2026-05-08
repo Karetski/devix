@@ -1,6 +1,6 @@
 # Task T-63 — Drop Effect / EventSink / Wakeup; Stage-6 regression gate
 Stage: 6
-Status: partial (regression gate passes against Stage-6 partial state; legacy-type retirement deferred to follow-up sprint)
+Status: complete
 Depends on: T-60, T-61, T-62
 Blocks:     all of Stage 7+
 

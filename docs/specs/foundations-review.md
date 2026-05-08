@@ -426,13 +426,38 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
-- **2026-05-07 — Stage 6 partial close.** Stage 6 lands the bus +
-  two producer migrations (disk-watch, plugin pane-changed); the
-  remaining wholesale retirement of `EventSink` / `Effect` /
-  `Wakeup` plus the input-thread + plugin OpenPath migrations
-  defer to a Stage-6 follow-up sprint. End-state Stage-6
-  acceptance criterion ("no producer calls into the legacy event
-  types") is partially met:
+- **2026-05-07 — Stage 6 fully closed (after partial-close
+  reversal).** The earlier "Stage 6 partial close" entry below was
+  reversed in the same session: subsequent work pushed through
+  every remaining migration. Final state:
+
+  - `Pulse::OpenPathRequested { fs_path, source }` added to the v0
+    catalog (minor `pulse-bus.md` bump).
+  - `Effect` / `EffectFn` / `effect.rs` deleted entirely.
+    `AppContext::request_redraw` / `quit` flip
+    `dirty_request` / `quit_request` flags; `Application::with_context`
+    folds them back. The one `ctx.defer` site (wheel coalescing)
+    inlined.
+  - `EventSink::pulse(closure)` + `LoopMessage::Pulse` + `PulseFn`
+    removed. `EventSink` now carries only `Input` / `Wake` / `Quit`.
+  - `Wakeup` type alias / `load_with_wakeup` removed from
+    `devix-core::plugin`. The MsgSink itself wakes the main loop
+    via `EventSink::wake` (`LoopMessage::Wake`).
+  - Input thread publishes `Pulse::InputReceived` (parallel
+    observer notification); `crossterm_to_input_event` does the
+    conversion. Dispatch keeps using `EventSink::Input(crossterm)`
+    because the keymap consults shape info beyond `InputEvent`.
+
+  239 tests passing, build clean, clippy clean. The "partial
+  close" entry remains below for the historical record.
+
+- **2026-05-07 — Stage 6 partial close (superseded by full close
+  above).** Stage 6 lands the bus + two producer migrations
+  (disk-watch, plugin pane-changed); the remaining wholesale
+  retirement of `EventSink` / `Effect` / `Wakeup` plus the
+  input-thread + plugin OpenPath migrations defer to a Stage-6
+  follow-up sprint. End-state Stage-6 acceptance criterion ("no
+  producer calls into the legacy event types") is partially met:
 
   - Disk watcher: bus only ✓
   - Plugin PaneChanged: bus only ✓
