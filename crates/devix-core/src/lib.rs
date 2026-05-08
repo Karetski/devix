@@ -76,6 +76,6 @@ pub use editor::tree::{LayoutCtx, LayoutFrame, LayoutNode, LayoutSidebar, Layout
 pub use plugin::{
     CommandSpec as PluginCommandSpec, Contributions as PluginContributions,
     LuaAction, LuaPane, LuaPaneHandle, MsgSink, PaneSpec as PluginPaneSpec, PluginCommandAction,
-    PluginHost, PluginInput, PluginMsg, PluginPane, PluginRuntime, Wakeup, default_plugin_path,
+    PluginHost, PluginInput, PluginMsg, PluginPane, PluginRuntime, default_plugin_path,
     make_command_action, parse_chord,
 };

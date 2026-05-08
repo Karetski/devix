@@ -5,7 +5,6 @@
 //! around what is in practice one input thread plus a plugin runtime.
 //! UIKit analogue: `UIApplication` collapsed with the one true delegate.
 
-use std::collections::VecDeque;
 use std::io::{Stdout, stdout};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::Receiver;
@@ -24,8 +23,7 @@ use ratatui::Terminal;
 use ratatui::backend::{Backend, CrosstermBackend};
 
 use crate::context::AppContext;
-use crate::effect::Effect;
-use crate::event_sink::{EventSink, LoopMessage, PulseFn};
+use crate::event_sink::{EventSink, LoopMessage};
 use crate::input as events;
 use crate::input_thread::InputThread;
 use crate::interpreter as render;
@@ -44,7 +42,6 @@ pub struct Application<B: Backend = CrosstermBackend<Stdout>> {
     /// worker exits.
     plugin: Option<PluginRuntime>,
 
-    pub(crate) effects: VecDeque<Effect>,
     sink: EventSink,
     rx: Receiver<LoopMessage>,
     terminal: Terminal<B>,
@@ -80,7 +77,6 @@ impl Application<CrosstermBackend<Stdout>> {
             theme,
             clipboard,
             plugin: None,
-            effects: VecDeque::new(),
             sink,
             rx,
             terminal,
@@ -104,7 +100,7 @@ impl<B: Backend> Application<B> {
     }
 
     pub fn run(mut self) -> Result<()> {
-        let input = InputThread::spawn(self.sink.clone())?;
+        let input = InputThread::spawn(self.sink.clone(), self.editor.bus.clone())?;
         while !self.quit {
             if self.dirty {
                 self.render()?;
@@ -112,7 +108,10 @@ impl<B: Backend> Application<B> {
             }
             match self.rx.recv() {
                 Ok(LoopMessage::Input(ev)) => self.deliver_input(ev),
-                Ok(LoopMessage::Pulse(p)) => self.deliver_pulse(p),
+                Ok(LoopMessage::Wake) => {
+                    // No-op — the bus drain below picks up whatever
+                    // the wake-sender pushed.
+                }
                 Ok(LoopMessage::Quit) => self.quit = true,
                 Err(_) => break,
             }
@@ -126,7 +125,6 @@ impl<B: Backend> Application<B> {
             // before subscribers observe a derived RenderDirty.
             self.dispatch_typed_pulses();
             self.editor.bus.drain();
-            self.flush_effects();
         }
         input.shutdown(SHUTDOWN_DEADLINE);
         // Dropping the plugin runtime closes its channels; its worker
@@ -136,30 +134,39 @@ impl<B: Backend> Application<B> {
         Ok(())
     }
 
-    fn context(&mut self) -> AppContext<'_> {
-        AppContext {
-            editor: &mut self.editor,
-            commands: &self.commands,
-            keymap: &self.keymap,
-            theme: &self.theme,
-            clipboard: self.clipboard.as_mut(),
-            sink: &self.sink,
-            effects: &mut self.effects,
+    /// Run a one-shot delivery with a freshly-built `AppContext`.
+    /// The context's `dirty_request` / `quit_request` flags are
+    /// folded back into the runtime after the delivery returns —
+    /// replaces the `Effect::{Redraw, Quit}` queueing path retired
+    /// in T-63.
+    fn with_context<F: FnOnce(&mut AppContext<'_>)>(&mut self, label: &str, f: F) {
+        let mut dirty_request = false;
+        let mut quit_request = false;
+        {
+            let mut ctx = AppContext {
+                editor: &mut self.editor,
+                commands: &self.commands,
+                keymap: &self.keymap,
+                theme: &self.theme,
+                clipboard: self.clipboard.as_mut(),
+                sink: &self.sink,
+                dirty_request: &mut dirty_request,
+                quit_request: &mut quit_request,
+            };
+            if catch_unwind(AssertUnwindSafe(|| f(&mut ctx))).is_err() {
+                eprintln!("{} handler panicked; dropping", label);
+            }
+        }
+        if dirty_request {
+            self.dirty = true;
+        }
+        if quit_request {
+            self.quit = true;
         }
     }
 
     fn deliver_input(&mut self, ev: crossterm::event::Event) {
-        let mut ctx = self.context();
-        if catch_unwind(AssertUnwindSafe(|| events::handle(ev, &mut ctx))).is_err() {
-            eprintln!("input handler panicked; dropping event");
-        }
-    }
-
-    fn deliver_pulse(&mut self, p: PulseFn) {
-        let mut ctx = self.context();
-        if catch_unwind(AssertUnwindSafe(|| p(&mut ctx))).is_err() {
-            eprintln!("pulse panicked; dropping");
-        }
+        self.with_context("input", |ctx| events::handle(ev, ctx));
     }
 
     fn dispatch_typed_pulses(&mut self) {
@@ -169,17 +176,25 @@ impl<B: Backend> Application<B> {
         for pulse in pulses {
             match pulse {
                 Pulse::DiskChanged { path, fs_path } => {
-                    let mut ctx = self.context();
-                    if catch_unwind(AssertUnwindSafe(|| {
-                        handle_disk_changed(&mut ctx, &path, &fs_path);
-                    }))
-                    .is_err()
-                    {
-                        eprintln!("disk-changed handler panicked; dropping");
-                    }
+                    self.with_context("disk-changed", |ctx| {
+                        handle_disk_changed(ctx, &path, &fs_path);
+                    });
                 }
                 Pulse::RenderDirty { .. } => {
                     self.dirty = true;
+                }
+                Pulse::OpenPathRequested { fs_path, .. } => {
+                    self.with_context("open-path-requested", |ctx| {
+                        if ctx.editor.active_frame().is_none() {
+                            if let Some(fid) = ctx.editor.root.frames().first().copied() {
+                                ctx.editor.focus_frame(fid);
+                            }
+                        }
+                        ctx.run(&devix_core::cmd::OpenPath(fs_path));
+                    });
+                }
+                Pulse::ShutdownRequested => {
+                    self.quit = true;
                 }
                 // Other variants land in T-63 as more producers
                 // migrate. Unhandled pulses fall back to bus
@@ -188,19 +203,6 @@ impl<B: Backend> Application<B> {
                     // Re-enqueue so bus subscribers see it. Cheap —
                     // round-trips through the cross-thread queue.
                     self.editor.bus.publish_async(pulse);
-                }
-            }
-        }
-    }
-
-    fn flush_effects(&mut self) {
-        while let Some(e) = self.effects.pop_front() {
-            match e {
-                Effect::Redraw => self.dirty = true,
-                Effect::Quit => self.quit = true,
-                Effect::Run(f) => {
-                    let mut ctx = self.context();
-                    let _ = catch_unwind(AssertUnwindSafe(|| f(&mut ctx)));
                 }
             }
         }
@@ -290,7 +292,6 @@ mod test_support {
                 theme,
                 clipboard,
                 plugin: None,
-                effects: VecDeque::new(),
                 sink,
                 rx,
                 terminal,
@@ -310,11 +311,12 @@ mod test_support {
             }
             match self.rx.try_recv() {
                 Ok(LoopMessage::Input(ev)) => self.deliver_input(ev),
-                Ok(LoopMessage::Pulse(p)) => self.deliver_pulse(p),
+                Ok(LoopMessage::Wake) => {}
                 Ok(LoopMessage::Quit) => self.quit = true,
                 Err(_) => return false,
             }
-            self.flush_effects();
+            self.dispatch_typed_pulses();
+            self.editor.bus.drain();
             true
         }
 

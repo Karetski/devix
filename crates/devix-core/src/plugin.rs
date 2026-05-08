@@ -666,17 +666,12 @@ fn strip_dangerous_globals(lua: &Lua) -> Result<()> {
     Ok(())
 }
 
-/// Wakeup hook. The plugin worker thread calls this every time it
-/// produces an outbound message, so the host can unblock its main
-/// event loop and drain the runtime without polling on a fixed
-/// cadence. Type-erased to keep `devix-plugin` from depending on the
-/// host's event enum.
-pub type Wakeup = Arc<dyn Fn() + Send + Sync + 'static>;
-
 /// Push-callback for plugin messages. Production callers pass one of
 /// these to [`PluginRuntime::load_with_sink`]; the worker thread invokes
 /// it directly for every emitted [`PluginMsg`], so the editor's run loop
-/// never has to drain a queue.
+/// never has to drain a queue. T-63 retired the prior `Wakeup` hook —
+/// the MsgSink itself is the wake mechanism (it publishes onto the
+/// editor's bus and pings the main loop directly).
 pub type MsgSink = Arc<dyn Fn(PluginMsg) + Send + Sync + 'static>;
 
 /// Plugin runtime: owns the host on a dedicated thread and exposes
@@ -700,32 +695,22 @@ pub struct PluginRuntime {
 }
 
 impl PluginRuntime {
-    /// Load without a wakeup hook. Suitable for tests; production
-    /// callers should use [`load_with_sink`] so the editor's run loop
-    /// gets a typed pulse the moment the plugin emits a message — no
-    /// polling layer in between.
+    /// Load without a push-sink. Messages buffer on an internal
+    /// queue; consumers drain via [`PluginRuntime::drain_messages`].
+    /// Kept for tests; production uses [`load_with_sink`].
     pub fn load(path: &Path) -> Result<Self> {
-        Self::load_full(path, None, None)
-    }
-
-    /// Load with a doorbell-style wakeup hook. The worker buffers
-    /// emitted messages on an internal queue and calls `wakeup()` after
-    /// each batch; consumers drain via [`PluginRuntime::drain_messages`].
-    /// Kept for tests and any caller that genuinely wants a queue.
-    pub fn load_with_wakeup(path: &Path, wakeup: Option<Wakeup>) -> Result<Self> {
-        Self::load_full(path, wakeup, None)
+        Self::load_full(path, None)
     }
 
     /// Load with a push-callback. Every emitted [`PluginMsg`] is handed
     /// directly to `sink` from the plugin worker thread; nothing is
     /// buffered on this side. Production path.
     pub fn load_with_sink(path: &Path, sink: MsgSink) -> Result<Self> {
-        Self::load_full(path, None, Some(sink))
+        Self::load_full(path, Some(sink))
     }
 
     fn load_full(
         path: &Path,
-        wakeup: Option<Wakeup>,
         msg_sink: Option<MsgSink>,
     ) -> Result<Self> {
         let (invoke_tx, mut invoke_rx) = unbounded_channel::<u64>();
@@ -762,7 +747,7 @@ impl PluginRuntime {
                             return;
                         }
                     };
-                    forward_messages(&host, &msg_tx, msg_sink.as_ref(), wakeup.as_ref());
+                    forward_messages(&host, &msg_tx, msg_sink.as_ref());
                     if init_tx.send(Ok(contributions)).is_err() {
                         return;
                     }
@@ -781,7 +766,7 @@ impl PluginRuntime {
                                 }
                             }
                         }
-                        forward_messages(&host, &msg_tx, msg_sink.as_ref(), wakeup.as_ref());
+                        forward_messages(&host, &msg_tx, msg_sink.as_ref());
                     }
                 });
             })
@@ -911,28 +896,20 @@ fn forward_messages(
     host: &PluginHost,
     msg_tx: &UnboundedSender<PluginMsg>,
     msg_sink: Option<&MsgSink>,
-    wakeup: Option<&Wakeup>,
 ) {
-    let mut sent_any = false;
     for msg in host.drain_messages() {
         match msg_sink {
             // Direct push: hand the message straight to the host's run
-            // loop. No buffer, no doorbell, nothing to drain on the
-            // editor side.
+            // loop. The MsgSink itself wakes the main loop (T-63
+            // retired the separate Wakeup hook).
             Some(sink) => sink(msg),
-            // Buffered fallback: queue for `drain_messages` and ring
-            // the doorbell after the batch.
+            // Buffered fallback: queue for `drain_messages`. Tests
+            // poll the queue directly.
             None => {
                 if msg_tx.send(msg).is_err() {
                     break;
                 }
             }
-        }
-        sent_any = true;
-    }
-    if msg_sink.is_none() && sent_any {
-        if let Some(w) = wakeup {
-            (w)();
         }
     }
 }

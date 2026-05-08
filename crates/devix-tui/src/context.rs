@@ -1,17 +1,20 @@
 //! `AppContext` — the unified `&mut` surface threaded through every
-//! delivery (input handler, pulse, deferred closure).
+//! delivery (input handler, typed-pulse dispatch).
 //!
 //! Built fresh from `&mut Application` for the duration of one delivery.
 //! No `Arc`, no `RefCell`; single owner, single thread, nothing to lock.
-
-use std::collections::VecDeque;
+//!
+//! T-63 retired the `Effect` enum: `request_redraw` and `quit` flip
+//! direct flags on the context (which `Application::flush_context_flags`
+//! folds back into the runtime's `dirty` / `quit` after each delivery
+//! returns). The previous `Effect::Run(closure)` escape hatch is gone —
+//! the one site that used it (wheel-scroll coalescing) was inlined.
 
 use devix_core::{
     CommandRegistry, Context as EditorContext, Editor, EditorCommand, Keymap, Viewport,
 };
 use devix_core::{Clipboard, Theme};
 
-use crate::effect::Effect;
 use crate::event_sink::EventSink;
 
 pub struct AppContext<'a> {
@@ -21,29 +24,23 @@ pub struct AppContext<'a> {
     pub theme: &'a Theme,
     pub clipboard: &'a mut dyn Clipboard,
     pub sink: &'a EventSink,
-    pub(crate) effects: &'a mut VecDeque<Effect>,
+    /// Set by `request_redraw`; the runtime ORs this into its `dirty`
+    /// flag after the delivery returns.
+    pub(crate) dirty_request: &'a mut bool,
+    /// Set by `quit`; the runtime ORs this into its `quit` flag.
+    pub(crate) quit_request: &'a mut bool,
 }
 
 impl AppContext<'_> {
     pub fn request_redraw(&mut self) {
-        self.effects.push_back(Effect::Redraw);
+        *self.dirty_request = true;
     }
 
     pub fn quit(&mut self) {
-        self.effects.push_back(Effect::Quit);
+        *self.quit_request = true;
     }
 
-    pub fn defer<F>(&mut self, f: F)
-    where
-        F: for<'b> FnOnce(&mut AppContext<'b>) + Send + 'static,
-    {
-        self.effects.push_back(Effect::Run(Box::new(f)));
-    }
-
-    /// Invoke an editor command. Bridges to `devix_core::Context`
-    /// (which expects an immediate `quit: &mut bool` flag); if the command
-    /// sets it, translates to `Effect::Quit` so quit stays deferred at the
-    /// runtime layer.
+    /// Invoke an editor command.
     pub fn run(&mut self, action: &dyn EditorCommand) {
         let viewport = active_viewport(self.editor);
         let mut quit = false;
@@ -58,9 +55,9 @@ impl AppContext<'_> {
             action.invoke(&mut cx);
         }
         if quit {
-            self.effects.push_back(Effect::Quit);
+            *self.quit_request = true;
         }
-        self.effects.push_back(Effect::Redraw);
+        *self.dirty_request = true;
     }
 }
 

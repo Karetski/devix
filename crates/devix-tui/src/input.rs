@@ -180,13 +180,14 @@ fn handle_mouse(ev: Event, me: MouseEvent, ctx: &mut AppContext<'_>) {
                 return;
             }
             let delta: isize = if matches!(me.kind, MouseEventKind::ScrollUp) { -1 } else { 1 };
-            // Defer the scroll so consecutive wheel events coalesce into
-            // one `ScrollBy` per loop iteration; the deferred closure
-            // posts a pulse that runs the command at flush time.
-            let sink = ctx.sink.clone();
-            ctx.defer(move |_| {
-                let _ = sink.pulse(move |ctx| ctx.run(&cmd::ScrollBy(delta)));
-            });
+            // T-63: Effect::Run / EventSink::pulse are retired. Run
+            // the scroll command synchronously; consecutive wheel
+            // events arriving within the same loop iteration each
+            // run `ScrollBy(±1)` directly. Coalescing across ticks
+            // is implicit — multiple wheel events in one tick all
+            // mutate scroll, then a single render flush at the next
+            // dirty cycle paints the final position.
+            ctx.run(&cmd::ScrollBy(delta));
         }
         MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => {
             if let Some(fid) = ctx.editor.frame_at_strip(me.column, me.row) {

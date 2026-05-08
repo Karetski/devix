@@ -2,21 +2,24 @@
 //!
 //! - [`Application`] owns the run loop, the terminal, and every long-lived
 //!   resource by direct field.
-//! - [`Effect`] is runtime-internal deferred work drained between
-//!   messages. Stage 6 (T-61 / T-63) folds `Effect` into typed pulses.
 //! - [`AppContext`] is the unified `&mut` surface threaded through every
-//!   delivery.
+//!   delivery (input handler, typed-pulse handler).
 //!
-//! `EventSink` is the cross-thread handle producers hold; cross-thread
-//! messages are boxed `FnOnce(&mut AppContext)` closures — there is no
-//! typed pulse trait, no `Service` trait, no god-set of message structs.
-//! Stage 6 (T-60 / T-63) replaces this with `PulseBus` (`devix-core::bus`)
-//! per `docs/specs/pulse-bus.md`.
+//! Cross-thread events flow through two channels:
+//! * `PulseBus` (`devix-core::bus`, owned by `Editor`) for typed pulses
+//!   per `docs/specs/pulse-bus.md` — disk watcher, plugin runtime, future
+//!   LSP / clients.
+//! * `EventSink` for terminal input from the input thread (crossterm
+//!   events aren't a `Pulse` shape; the input thread keeps its dedicated
+//!   channel).
+//!
+//! T-63 retired the closure-as-message `LoopMessage::Pulse(closure)` and
+//! the `Effect` enum (`Redraw` / `Quit` / `Run`); typed pulses + direct
+//! `AppContext::dirty_request` / `quit_request` flags replace them.
 
 pub mod application;
 pub mod clipboard;
 pub mod context;
-pub mod effect;
 pub mod event_sink;
 pub mod input;
 mod input_thread;
@@ -25,5 +28,4 @@ pub mod view_paint;
 
 pub use application::Application;
 pub use context::AppContext;
-pub use effect::{Effect, EffectFn};
-pub use event_sink::{EventSink, LoopMessage, PulseFn};
+pub use event_sink::{EventSink, LoopMessage};

@@ -134,6 +134,17 @@ pub enum Pulse {
     StartupFinished,
     ShutdownRequested,
 
+    // ---- File-open requests (plugins / external clients) ----
+    /// A producer (plugin, future external client) asks the editor
+    /// to open `fs_path`. Subscribers (typically Application or
+    /// future Core handlers) translate this into a typed
+    /// `cmd::OpenPath` invocation. Added during T-63 per
+    /// foundations-review 2026-05-07; minor pulse-bus.md bump.
+    OpenPathRequested {
+        fs_path: PathBuf,
+        source: InvocationSource,
+    },
+
     // ---- Session lifecycle (per foundations-review Gate T-22) ----
     ClientConnected {
         client: Path,
@@ -184,6 +195,7 @@ pub enum PulseKind {
     RenderDirty,
     StartupFinished,
     ShutdownRequested,
+    OpenPathRequested,
     ClientConnected,
     ClientDisconnected,
     ViewportChanged,
@@ -219,6 +231,7 @@ impl Pulse {
             Pulse::RenderDirty { .. } => PulseKind::RenderDirty,
             Pulse::StartupFinished => PulseKind::StartupFinished,
             Pulse::ShutdownRequested => PulseKind::ShutdownRequested,
+            Pulse::OpenPathRequested { .. } => PulseKind::OpenPathRequested,
             Pulse::ClientConnected { .. } => PulseKind::ClientConnected,
             Pulse::ClientDisconnected { .. } => PulseKind::ClientDisconnected,
             Pulse::ViewportChanged { .. } => PulseKind::ViewportChanged,
@@ -463,6 +476,7 @@ mod tests {
     #[test]
     fn kind_round_trips_serde_for_every_variant() {
         let kinds = [
+            PulseKind::OpenPathRequested,
             PulseKind::BufferOpened,
             PulseKind::BufferChanged,
             PulseKind::BufferSaved,
@@ -498,7 +512,7 @@ mod tests {
             let back: PulseKind = serde_json::from_str(&s).unwrap();
             assert_eq!(k, back);
         }
-        assert_eq!(kinds.len(), 29, "v0 catalog size");
+        assert_eq!(kinds.len(), 30, "v0 catalog size + OpenPathRequested");
     }
 
     #[test]

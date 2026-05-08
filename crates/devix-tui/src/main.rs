@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use devix_tui::clipboard;
-use devix_tui::{AppContext, Application, EventSink};
-use devix_core::{Editor, build_registry, cmd, default_keymap};
+use devix_tui::{Application, EventSink};
+use devix_core::{Editor, build_registry, default_keymap};
 use devix_core::Theme;
 use devix_core::{MsgSink, PluginMsg, PluginRuntime, default_plugin_path};
 
@@ -32,26 +32,29 @@ fn main() -> Result<()> {
 
     let mut plugin_runtime = match default_plugin_path() {
         Some(p) => {
-            // Plugin → editor messages: PaneChanged migrates to the
-            // bus as Pulse::RenderDirty (T-62 slice); Status is a
-            // no-op today; OpenPath still routes through the closure
-            // path because it requires invoking a typed command (the
-            // command-invocation pulse mapping lands when plugin
-            // contributions go through the protocol layer, T-110+).
-            let sink_for_msgs = sink.clone();
+            // Plugin → editor messages: every variant publishes a
+            // typed pulse onto the bus, then wakes the main loop
+            // (LoopMessage::Wake) so its blocking `rx.recv` returns
+            // and drains the bus on the next tick. T-63 retires the
+            // EventSink closure path here entirely.
             let bus = editor.bus.clone();
-            let msg_sink: MsgSink = Arc::new(move |msg| match msg {
-                PluginMsg::PaneChanged => {
-                    bus.publish_async(devix_protocol::pulse::Pulse::RenderDirty {
-                        reason: devix_protocol::pulse::DirtyReason::Frontend,
-                    });
+            let wake_sink = sink.clone();
+            let msg_sink: MsgSink = Arc::new(move |msg| {
+                match msg {
+                    PluginMsg::PaneChanged => {
+                        bus.publish_async(devix_protocol::pulse::Pulse::RenderDirty {
+                            reason: devix_protocol::pulse::DirtyReason::Frontend,
+                        });
+                    }
+                    PluginMsg::Status(_) => return,
+                    PluginMsg::OpenPath(fs_path) => {
+                        bus.publish_async(devix_protocol::pulse::Pulse::OpenPathRequested {
+                            fs_path,
+                            source: devix_protocol::pulse::InvocationSource::Plugin,
+                        });
+                    }
                 }
-                PluginMsg::Status(_) => {}
-                PluginMsg::OpenPath(_) => {
-                    let _ = sink_for_msgs.pulse(move |ctx: &mut AppContext<'_>| {
-                        handle_plugin_msg(ctx, msg)
-                    });
-                }
+                let _ = wake_sink.wake();
             });
             PluginRuntime::load_with_sink(&p, msg_sink).ok()
         }
@@ -74,21 +77,4 @@ fn main() -> Result<()> {
     }
 
     app.run()
-}
-
-
-/// Plugin host pushed a message; route it.
-fn handle_plugin_msg(ctx: &mut AppContext<'_>, msg: PluginMsg) {
-    match msg {
-        PluginMsg::Status(_) => {}
-        PluginMsg::PaneChanged => ctx.request_redraw(),
-        PluginMsg::OpenPath(path) => {
-            if ctx.editor.active_frame().is_none() {
-                if let Some(fid) = ctx.editor.root.frames().first().copied() {
-                    ctx.editor.focus_frame(fid);
-                }
-            }
-            ctx.run(&cmd::OpenPath(path));
-        }
-    }
 }
