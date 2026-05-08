@@ -426,6 +426,27 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-07 — Stage-4 deviations accepted.** Three small
+  deviations from the spec text accepted during the post-Stage-4
+  review:
+  - **T-44 byte-parity criterion deferred to T-95.** The original
+    "byte-equivalent ratatui buffers vs. legacy direct-paint"
+    acceptance is unachievable while the legacy Pane render path
+    drives the App's render loop — both renderers would compete.
+    `paint_view` ships at T-44 as a structural library function;
+    T-95 wires it in and achieves parity as the legacy path
+    retires. T-44 task file records the scope change.
+  - **T-43 `View::Buffer.highlights` ships empty.** Tree-sitter
+    highlights flow once the Stage-8 supervised actor lands.
+    Producer code path is ready to plug in; consumers
+    (`paint_view`, downstream renderers) tolerate empty.
+  - **T-43 buffer paths use `slotmap::Key::data().as_ffi()`** until
+    T-50 swaps for the process-monotonic counter. Slotmap key
+    reuse violates the "paths are stable across the session"
+    property in `namespace.md` *Segment encoding rules → Resource
+    ids* during the Stage-4–Stage-5 window. T-50's task file
+    notes the shim explicitly so the fix is tied to that task.
+
 - **2026-05-07 — Inner `kind` field renames to avoid serde tag
   collision.** Locked during the post-Stage-3 interactive review.
   Three pulse / input variants previously declared an inner field

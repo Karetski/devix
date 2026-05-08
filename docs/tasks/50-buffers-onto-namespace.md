@@ -10,6 +10,17 @@ process-monotonic `u64` (slotmap stays internal). `DocStore`
 implements `Lookup<Resource = Document>` mounted at `/buf/<id>`.
 Add `Document::id_from_path(&Path) -> Option<DocId>`.
 
+## Inherited deviation
+T-43 used `slotmap::Key::data().as_ffi()` to mint `/buf/<id>` for
+the View producer. Slotmap reuses keys after deletion, so today
+`/buf/<id>` can name two different documents across a close+open
+cycle — a known violation of `namespace.md`'s "a path like
+`/buf/42` never names two different buffers in one session"
+property. T-50 closes this by introducing the process-monotonic
+counter; once the migration lands, the shim in
+`crates/devix-core/src/editor/view.rs::doc_path_for` rewires to
+the new id source.
+
 ## In scope
 - `DocId(u64)` minted from a global `AtomicU64` (model on
   `FrameId` in `crates/devix-core/src/editor/frame.rs`). Internal
