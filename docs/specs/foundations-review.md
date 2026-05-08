@@ -436,11 +436,18 @@ strict policy is meant to prevent.
     `Lookup` resolves both. `PluginRuntime::install_with_manifest`
     registers manifest's `contributes.commands` at
     `/plugin/<manifest.name>/cmd/<id>`, matched to Lua-registered
-    handles by id (orphans publish `PluginError`). Follow-up landed
-    same day: `register_keymap_contributions` /
-    `apply_keymap_overrides` resolve `/plugin/<name>/cmd/<id>` as a
-    keymap-binding command in addition to bare ids and
-    `/cmd/<id>`.
+    handles by id (orphans publish `PluginError`). Three same-day
+    follow-ups closed three deferred items:
+    (1) `register_keymap_contributions` / `apply_keymap_overrides`
+    resolve `/plugin/<name>/cmd/<id>` as a keymap-binding command;
+    (2) new `Keymap::bind_command_if_free` enables first-loaded-wins
+    on chord conflicts (plugin-vs-plugin / plugin-vs-builtin); the
+    runtime fires `PluginError` describing contested chords with the
+    existing binding intact;
+    (3) `install_with_manifest` now also reads
+    `manifest.contributes.keymaps` and binds them via
+    `BindPolicy::IfFree`, so plugins can declare chords in JSON
+    rather than the Lua-side `chord` field.
   - **T-111** cross-checks each `manifest.contributes.panes` entry
     against the runtime's Lua-side `register_pane` registrations by
     slot; orphan declarations publish `PluginError`. The declared
@@ -468,11 +475,10 @@ strict policy is meant to prevent.
     (`ContributeCommands` / `ContributeThemes` /
     `ContributeSidebarPane` / `StableViewIds` /
     `ContributeSettings` warn-and-degrade — all need T-81 full);
-    chord-conflict first-wins enforcement; runtime theme-switch UI;
-    the `devix.setting` Lua bridge; Lua → Rust `View` IR marshaling
-    for plugin panes; plugin-pane `/plugin/<name>/pane/<id>`
-    path-based addressing (waits on Stage-9 / T-91 Pane-tree
-    unification).
+    runtime theme-switch UI; the `devix.setting` Lua bridge; Lua →
+    Rust `View` IR marshaling for plugin panes; plugin-pane
+    `/plugin/<name>/pane/<id>` path-based addressing (waits on
+    Stage-9 / T-91 Pane-tree unification).
 
 - **2026-05-08 — T-81 partial close (supervised plugin thread; restart
   deferred).** `PluginRuntime::load_supervised(path, sink, bus)` wraps
