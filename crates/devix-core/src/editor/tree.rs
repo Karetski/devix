@@ -347,17 +347,46 @@ impl LayoutNode {
     }
 }
 
-/// `Pane` impl for `LayoutNode` (T-91 phase 1). Lets the registry's
-/// root be `Box<dyn Pane>` while the underlying enum lives on as the
-/// concrete impl. Subsequent T-91 phases carve `LayoutSplit` /
-/// `LayoutFrame` / `LayoutSidebar` into standalone Pane structs and
-/// retire the enum.
-impl Pane for LayoutNode {
+// ---- Per-variant Pane impls (T-91 phase 2 prep) -------------------
+//
+// Each variant struct implements `Pane` directly. `LayoutNode`'s own
+// `Pane` impl delegates to the variant. This lets walks treat any
+// node — variant struct or wrapping enum — as a Pane uniformly.
+// Phase 2 carve will retire the enum and store one of these structs
+// directly in `Box<dyn Pane>`.
+
+impl Pane for LayoutFrame {
     fn render(&self, area: Rect, ctx: &mut crate::pane::RenderCtx<'_, '_>) {
-        // Structural-render path: `ctx.layout` carries the editor
-        // borrows. The registry populates it before calling here.
         if let Some(layout) = ctx.layout {
-            self.render(area, ctx.frame, layout);
+            render_frame(self, area, ctx.frame, layout);
+        }
+    }
+
+    fn handle(
+        &mut self,
+        _ev: &Event,
+        _area: Rect,
+        _hctx: &mut crate::pane::HandleCtx<'_>,
+    ) -> Outcome {
+        Outcome::Ignored
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+impl Pane for LayoutSidebar {
+    fn render(&self, area: Rect, ctx: &mut crate::pane::RenderCtx<'_, '_>) {
+        if let Some(layout) = ctx.layout {
+            render_sidebar(self, area, ctx.frame, layout);
         }
     }
 
@@ -367,21 +396,124 @@ impl Pane for LayoutNode {
         area: Rect,
         hctx: &mut crate::pane::HandleCtx<'_>,
     ) -> Outcome {
-        self.handle_at(ev, area, hctx)
+        match self.content.as_mut() {
+            Some(content) => content.handle(ev, sidebar_inner_rect(area), hctx),
+            None => Outcome::Ignored,
+        }
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+impl Pane for LayoutSplit {
+    fn render(&self, area: Rect, ctx: &mut crate::pane::RenderCtx<'_, '_>) {
+        if self.children.is_empty() {
+            return;
+        }
+        let weights: Vec<u16> = self.children.iter().map(|(_, w)| *w).collect();
+        let rects = split_rects(area, self.axis, &weights);
+        for ((child, _), rect) in self.children.iter().zip(rects) {
+            Pane::render(child, rect, ctx);
+        }
+    }
+
+    fn handle(
+        &mut self,
+        _ev: &Event,
+        _area: Rect,
+        _hctx: &mut crate::pane::HandleCtx<'_>,
+    ) -> Outcome {
+        Outcome::Ignored
     }
 
     fn children(&self, area: Rect) -> Vec<(Rect, &dyn Pane)> {
-        self.children_at(area)
-            .into_iter()
-            .map(|(r, child)| (r, child as &dyn Pane))
+        if self.children.is_empty() {
+            return Vec::new();
+        }
+        let weights: Vec<u16> = self.children.iter().map(|(_, w)| *w).collect();
+        let rects = split_rects(area, self.axis, &weights);
+        self.children
+            .iter()
+            .zip(rects)
+            .map(|((child, _), rect)| (rect, child as &dyn Pane))
             .collect()
     }
 
     fn children_mut(&mut self, area: Rect) -> Vec<(Rect, &mut dyn Pane)> {
-        self.children_at_mut(area)
-            .into_iter()
-            .map(|(r, child)| (r, child as &mut dyn Pane))
+        if self.children.is_empty() {
+            return Vec::new();
+        }
+        let weights: Vec<u16> = self.children.iter().map(|(_, w)| *w).collect();
+        let rects = split_rects(area, self.axis, &weights);
+        self.children
+            .iter_mut()
+            .zip(rects)
+            .map(|((child, _), rect)| (rect, child as &mut dyn Pane))
             .collect()
+    }
+
+    fn is_focusable(&self) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+}
+
+/// `Pane` impl for `LayoutNode` (T-91 phase 1). Delegates to the
+/// per-variant `Pane` impls above; phase 2 will retire this wrapper
+/// once `PaneRegistry`'s root and `LayoutSplit.children` accept
+/// arbitrary `Box<dyn Pane>` directly rather than going through the
+/// enum.
+impl Pane for LayoutNode {
+    fn render(&self, area: Rect, ctx: &mut crate::pane::RenderCtx<'_, '_>) {
+        match self {
+            LayoutNode::Split(s) => Pane::render(s, area, ctx),
+            LayoutNode::Frame(f) => Pane::render(f, area, ctx),
+            LayoutNode::Sidebar(s) => Pane::render(s, area, ctx),
+        }
+    }
+
+    fn handle(
+        &mut self,
+        ev: &Event,
+        area: Rect,
+        hctx: &mut crate::pane::HandleCtx<'_>,
+    ) -> Outcome {
+        match self {
+            LayoutNode::Split(s) => Pane::handle(s, ev, area, hctx),
+            LayoutNode::Frame(f) => Pane::handle(f, ev, area, hctx),
+            LayoutNode::Sidebar(s) => Pane::handle(s, ev, area, hctx),
+        }
+    }
+
+    fn children(&self, area: Rect) -> Vec<(Rect, &dyn Pane)> {
+        match self {
+            LayoutNode::Split(s) => Pane::children(s, area),
+            LayoutNode::Frame(f) => Pane::children(f, area),
+            LayoutNode::Sidebar(s) => Pane::children(s, area),
+        }
+    }
+
+    fn children_mut(&mut self, area: Rect) -> Vec<(Rect, &mut dyn Pane)> {
+        match self {
+            LayoutNode::Split(s) => Pane::children_mut(s, area),
+            LayoutNode::Frame(f) => Pane::children_mut(f, area),
+            LayoutNode::Sidebar(s) => Pane::children_mut(s, area),
+        }
     }
 
     fn is_focusable(&self) -> bool {
