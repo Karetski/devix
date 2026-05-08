@@ -441,32 +441,37 @@ strict policy is meant to prevent.
   `Box<dyn Pane>`; typed methods recover `&LayoutNode` through
   `Pane::as_any` → `downcast_ref`.
 
-  Phase 2 partial: `Pane::children_mut` (default empty) added to the
-  trait. `LayoutSplit`, `LayoutFrame`, `LayoutSidebar` each impl
-  `Pane` directly (LayoutSplit's `Pane::render` recurses via the
-  trait, `Pane::children`/`children_mut` map its existing rect math
-  through; LayoutFrame and LayoutSidebar wrap their existing render
-  helpers). LayoutNode's `Pane` impl now delegates via match.
-  Eight `PaneRegistry` methods migrated to walk via the Pane trait:
-  `pane_paths`, `find_frame`, `find_frame_mut`, `find_sidebar_mut`,
-  `sidebar_present`, `frames`, `leaves_with_rects`,
-  `path_to_leaf`. Each downcasts at every node to either the
-  variant struct directly or to `LayoutNode`'s wrapping variant
-  (transitional dual-downcast). Mutable walks resolve the
-  borrow-checker conflict (consecutive `downcast_mut` on the same
-  `Any`) by computing a `SelfMatchVariant` enum from an immutable
-  read first, then taking exactly one mutable downcast in the
-  matched arm. *Still deferred*: change `LayoutSplit.children` from
-  `Vec<(LayoutNode, u16)>` to `Vec<(Box<dyn Pane>, u16)>` (the
-  breaking restructure that lets the enum go); attempted in this
-  session and reverted — the cascade through `children_at` return
-  types, `mutate::*`, and `editor/ops.rs` constructors is wider
-  than fit. Migrate the remaining `LayoutNode`-typed-return registry
-  methods (`at_path`, `at_path_mut`, `at_path_with_rect`,
-  `pane_at`, `pane_at_xy`); rewrite `mutate::*` to walk via
-  `Pane::children_mut`; re-wire `editor::{focus, hittest, ops,
-  view}` accordingly; delete the enum.
-  T-92 / T-94 / T-95 still gate on the completion.
+  Phase 2 partial: `Pane::children_mut` added to the trait.
+  `LayoutSplit`, `LayoutFrame`, `LayoutSidebar` each impl `Pane`
+  directly; `LayoutNode`'s `Pane` impl delegates via match.
+  **Every read-side `PaneRegistry` method** migrated to walk via
+  `Pane::children` / `children_mut`: `pane_paths`, `find_frame`,
+  `find_frame_mut`, `find_sidebar_mut`, `sidebar_present`,
+  `frames`, `leaves_with_rects`, `path_to_leaf`, `at_path`,
+  `at_path_mut`, `at_path_with_rect`, `pane_at_xy`, `pane_at(&Path)`,
+  `pane_at_mut(&Path)`, `render`. At-path-family return types
+  changed from `Option<&LayoutNode>` to `Option<&dyn Pane>`;
+  callers (`editor.rs`, `editor/hittest.rs`, `devix-tui::input`,
+  `devix-tui::application`) switch `.leaf_id()` →
+  `pane_leaf_id()` and `.handle_at()` → `Pane::handle()`.
+  `LayoutNode`'s inherent `render`, `handle_at`, `find_frame`,
+  `find_frame_mut`, `find_sidebar_mut`, `sidebar_present`, and
+  `frames` retired — dead once registry's surface migrated.
+  Mutable walks resolve the borrow-checker conflict (consecutive
+  `downcast_mut` on the same `Any`) via a `SelfMatchVariant` enum
+  computed from an immutable read first, then exactly one mutable
+  downcast in the matched arm. *Still deferred*: change
+  `LayoutSplit.children` from `Vec<(LayoutNode, u16)>` to
+  `Vec<(Box<dyn Pane>, u16)>` (the breaking restructure that lets
+  the enum go); attempted twice in this session and reverted — the
+  cascade through `children_at` return types, `mutate::*`,
+  `editor::view::walk_layout`, `editor::focus`'s
+  `compute_focus_target` / `walk_into`, and `editor/ops.rs`
+  constructors all need rewriting at once. Rewrite `mutate::*` to
+  walk via `Pane::children_mut`; rewire those four sites; delete
+  the enum and the remaining inherent walkers; migrate the
+  `tree.rs` test suite to use registry walks. T-92 / T-94 / T-95
+  still gate on the completion.
 
 - **2026-05-08 — Stage 11 partial: T-110 / T-111 / T-112 / T-113 all
   ship as partials.**
