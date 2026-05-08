@@ -447,14 +447,25 @@ strict policy is meant to prevent.
   trait, `Pane::children`/`children_mut` map its existing rect math
   through; LayoutFrame and LayoutSidebar wrap their existing render
   helpers). LayoutNode's `Pane` impl now delegates via match.
-  `PaneRegistry::pane_paths` switches to a Pane-trait-driven walk
-  generic over the concrete composite. *Still deferred*: change
-  `LayoutSplit.children` from `Vec<(LayoutNode, u16)>` to
-  `Vec<(Box<dyn Pane>, u16)>` (the breaking restructure that lets
-  the enum go), rewrite `mutate::*` as Pane-tree-walk mutations,
-  hoist `LayoutNode`'s match-based methods into `PaneRegistry`
-  helper functions over `&dyn Pane`, re-wire `editor::{focus,
-  hittest, ops, view}` accordingly, and finally delete the enum.
+  Eight `PaneRegistry` methods migrated to walk via the Pane trait:
+  `pane_paths`, `find_frame`, `find_frame_mut`, `find_sidebar_mut`,
+  `sidebar_present`, `frames`, `leaves_with_rects`,
+  `path_to_leaf`. Each downcasts at every node to either the
+  variant struct directly or to `LayoutNode`'s wrapping variant
+  (transitional dual-downcast). Mutable walks resolve the
+  borrow-checker conflict (consecutive `downcast_mut` on the same
+  `Any`) by computing a `SelfMatchVariant` enum from an immutable
+  read first, then taking exactly one mutable downcast in the
+  matched arm. *Still deferred*: change `LayoutSplit.children` from
+  `Vec<(LayoutNode, u16)>` to `Vec<(Box<dyn Pane>, u16)>` (the
+  breaking restructure that lets the enum go); attempted in this
+  session and reverted — the cascade through `children_at` return
+  types, `mutate::*`, and `editor/ops.rs` constructors is wider
+  than fit. Migrate the remaining `LayoutNode`-typed-return registry
+  methods (`at_path`, `at_path_mut`, `at_path_with_rect`,
+  `pane_at`, `pane_at_xy`); rewrite `mutate::*` to walk via
+  `Pane::children_mut`; re-wire `editor::{focus, hittest, ops,
+  view}` accordingly; delete the enum.
   T-92 / T-94 / T-95 still gate on the completion.
 
 - **2026-05-08 — Stage 11 partial: T-110 / T-111 / T-112 / T-113 all
