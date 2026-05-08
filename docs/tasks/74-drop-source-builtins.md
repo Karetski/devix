@@ -1,6 +1,6 @@
 # Task T-74 — Drop source-side built-in tables; Stage-7 regression gate
 Stage: 7
-Status: pending
+Status: complete
 Depends on: T-71, T-72, T-73
 Blocks:     all of Stage 8+
 

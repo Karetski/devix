@@ -176,39 +176,33 @@ fn ch(c: char) -> KeyCode { KeyCode::Char(c) }
 pub fn default_keymap() -> Keymap {
     let mut k = Keymap::new();
 
-    // ---- registered commands (id-bound; palette can find them) ----
-    k.bind_command(chord(ch('q'), C),                       cmd_id::APP_QUIT);
-    k.bind_command(chord(ch('s'), C),                       cmd_id::FILE_SAVE);
+    // ---- manifest-driven bind_command bindings ----
+    // T-74 retired the hand-maintained bind_command list here. The
+    // manifest at crates/devix-core/manifests/builtin.json is the
+    // single source of truth for chord → command id; this function
+    // parses it once and registers every entry.
+    let reg = crate::editor::commands::builtins::build_registry();
+    let manifest = crate::manifest_loader::parse_manifest_bytes(
+        crate::BUILTIN_MANIFEST.as_bytes(),
+        std::path::Path::new("crates/devix-core/manifests/builtin.json"),
+    )
+    .expect("BUILTIN_MANIFEST always parses");
+    crate::manifest_loader::register_keymap_contributions(&mut k, &manifest, &reg)
+        .expect("BUILTIN_MANIFEST keymap entries must register");
 
-    k.bind_command(chord(ch('z'), C),                       cmd_id::EDIT_UNDO);
-    k.bind_command(chord(ch('z'), C | S),                   cmd_id::EDIT_REDO);
-    k.bind_command(chord(ch('y'), C),                       cmd_id::EDIT_REDO);
-    k.bind_command(chord(ch('a'), C),                       cmd_id::EDIT_SELECT_ALL);
-    k.bind_command(chord(ch('c'), C),                       cmd_id::EDIT_COPY);
-    k.bind_command(chord(ch('x'), C),                       cmd_id::EDIT_CUT);
-    k.bind_command(chord(ch('v'), C),                       cmd_id::EDIT_PASTE);
-
-
-    k.bind_command(chord(ch('t'), C),                       cmd_id::TAB_NEW);
-    k.bind_command(chord(ch('w'), C),                       cmd_id::TAB_CLOSE);
-    k.bind_command(chord(ch('w'), C | S),                   cmd_id::TAB_FORCE_CLOSE);
+    // ---- supplemental keymap bindings not yet in the manifest ----
+    // Some bindings have characters reserved by the path grammar
+    // (`-`, `[`, `]`, `{`, `}`, `\`) or carry macOS Terminal.app
+    // workarounds (Ctrl+Shift+[ = '{' on shifted symbol). Until a
+    // chord encoding for these lands (likely a Minus / Bracket /
+    // Brace KeyCode variant), they keep the in-source binding form.
     k.bind_command(chord(KeyCode::Char('['), C | S),        cmd_id::TAB_PREV);
     k.bind_command(chord(KeyCode::Char(']'), C | S),        cmd_id::TAB_NEXT);
-    // macOS Terminal.app drops the SHIFT bit on Ctrl+Shift+symbol and
-    // delivers the shifted character with CTRL alone (Shift+[ = {).
     k.bind_command(chord(KeyCode::Char('{'), C),            cmd_id::TAB_PREV);
     k.bind_command(chord(KeyCode::Char('}'), C),            cmd_id::TAB_NEXT);
     k.bind_command(chord(KeyCode::PageUp, C),               cmd_id::TAB_PREV);
     k.bind_command(chord(KeyCode::PageDown, C),             cmd_id::TAB_NEXT);
-
-    k.bind_command(chord(ch('\\'), C),                      cmd_id::SPLIT_VERTICAL);
     k.bind_command(chord(ch('-'), C),                       cmd_id::SPLIT_HORIZONTAL);
-
-    k.bind_command(chord(ch('b'), C),                       cmd_id::SIDEBAR_LEFT);
-    k.bind_command(chord(ch('b'), C | A),                   cmd_id::SIDEBAR_RIGHT);
-
-    // Command palette
-    k.bind_command(chord(ch('p'), C),                       cmd_id::PALETTE_OPEN);
 
     // ---- direct actions (continuous; not registry commands) ----
     // Motion — both extend variants per chord
