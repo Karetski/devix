@@ -36,6 +36,55 @@ pub use tab::{CloseTab, ForceCloseTab, NewTab, NextTab, PrevTab};
 pub trait EditorCommand: for<'a> Action<Context<'a>> {}
 impl<T> EditorCommand for T where T: for<'a> Action<Context<'a>> {}
 
+/// Resolve a built-in command id to its Rust handler. Returns `None`
+/// for unknown ids — callers (manifest loader at T-71) treat the
+/// missing-handler case as a load-time error so a built-in manifest
+/// entry that no longer has a handler doesn't silently disappear from
+/// the registry.
+pub fn handler_for_builtin_id(id: &str) -> Option<std::sync::Arc<dyn EditorCommand>> {
+    use std::sync::Arc;
+    use crate::SidebarSlot;
+    let arc: Arc<dyn EditorCommand> = match id {
+        "palette.open" => Arc::new(palette::OpenPalette),
+        "palette.close" => Arc::new(palette::ClosePalette),
+        "palette.move_down" => Arc::new(palette::PaletteMove(1)),
+        "palette.move_up" => Arc::new(palette::PaletteMove(-1)),
+        "palette.accept" => Arc::new(palette::PaletteAccept),
+
+        "file.save" => Arc::new(file::Save),
+        "file.reload" => Arc::new(file::ReloadFromDisk),
+        "file.keep_buffer" => Arc::new(file::KeepBufferIgnoreDisk),
+
+        "edit.undo" => Arc::new(edit::Undo),
+        "edit.redo" => Arc::new(edit::Redo),
+        "edit.select_all" => Arc::new(edit::SelectAll),
+        "edit.copy" => Arc::new(clipboard::Copy),
+        "edit.cut" => Arc::new(clipboard::Cut),
+        "edit.paste" => Arc::new(clipboard::Paste),
+        "edit.add_cursor_above" => Arc::new(edit::AddCursorAbove),
+        "edit.add_cursor_below" => Arc::new(edit::AddCursorBelow),
+        "edit.collapse_selection" => Arc::new(edit::CollapseSelection),
+
+        "tab.new" => Arc::new(tab::NewTab),
+        "tab.close" => Arc::new(tab::CloseTab),
+        "tab.force_close" => Arc::new(tab::ForceCloseTab),
+        "tab.next" => Arc::new(tab::NextTab),
+        "tab.prev" => Arc::new(tab::PrevTab),
+
+        "split.vertical" => Arc::new(split::SplitVertical),
+        "split.horizontal" => Arc::new(split::SplitHorizontal),
+        "split.close" => Arc::new(split::CloseFrame),
+
+        "sidebar.toggle_left" => Arc::new(split::ToggleSidebar(SidebarSlot::Left)),
+        "sidebar.toggle_right" => Arc::new(split::ToggleSidebar(SidebarSlot::Right)),
+
+        "app.quit" => Arc::new(file::Quit),
+
+        _ => return None,
+    };
+    Some(arc)
+}
+
 pub(crate) fn modal_is<T: 'static>(ctx: &Context<'_>) -> bool {
     ctx.editor
         .modal

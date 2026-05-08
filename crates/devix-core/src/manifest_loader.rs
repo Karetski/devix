@@ -84,6 +84,60 @@ pub fn plugin_dir() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".config").join("devix").join("plugins"))
 }
 
+/// Register the built-in `contributes.commands` from `manifest`
+/// into `reg`. Each manifest entry's bare `id` resolves through the
+/// caller-supplied resolver (typically
+/// `crate::editor::commands::cmd::handler_for_builtin_id` for the
+/// built-in manifest); `label` and `category` come from the manifest.
+///
+/// Returns the count registered. Per `manifest.md`, an unknown id
+/// (no Rust handler) is a load-time error; this function returns
+/// the first such error rather than silently skipping.
+pub fn register_command_contributions<F>(
+    reg: &mut crate::editor::commands::registry::CommandRegistry,
+    manifest: &Manifest,
+    resolver: F,
+) -> Result<usize, ManifestRegisterError>
+where
+    F: Fn(&str) -> Option<std::sync::Arc<dyn crate::editor::commands::cmd::EditorCommand>>,
+{
+    let mut count = 0usize;
+    for spec in &manifest.contributes.commands {
+        let action = resolver(&spec.id).ok_or_else(|| {
+            ManifestRegisterError::NoHandlerForCommand(spec.id.clone())
+        })?;
+        let id = crate::editor::commands::registry::CommandId(intern_id(&spec.id));
+        let label = intern_id(&spec.label);
+        let category = spec.category.as_ref().map(|c| intern_id(c));
+        reg.register(crate::editor::commands::registry::Command {
+            id,
+            label,
+            category,
+            action,
+        });
+        count += 1;
+    }
+    Ok(count)
+}
+
+/// Errors registering a manifest's contributions into the live
+/// registries. Distinct from `ManifestLoadError` (which covers
+/// I/O / parse / schema validation); registration errors mean the
+/// manifest validated but referenced something the host can't
+/// satisfy (e.g., a command id with no Rust handler).
+#[derive(Debug, thiserror::Error)]
+pub enum ManifestRegisterError {
+    #[error("no Rust handler registered for built-in command `{0}`")]
+    NoHandlerForCommand(String),
+}
+
+/// Intern a `String` as `&'static str`. Used to satisfy `CommandId`'s
+/// `&'static str` shape from a runtime-loaded manifest. Strings stay
+/// alive for the process lifetime; built-ins are loaded once.
+fn intern_id(s: &str) -> &'static str {
+    Box::leak(s.to_string().into_boxed_str())
+}
+
 /// Discover every plugin under `dir`. Each subdirectory containing
 /// a `manifest.json` is a plugin candidate. Returns the list of
 /// candidate manifest paths in alphabetical (loader-deterministic)

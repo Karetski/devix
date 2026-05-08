@@ -1,6 +1,6 @@
 # Task T-71 — Load built-in commands from manifest
 Stage: 7
-Status: pending
+Status: complete
 Depends on: T-53, T-70
 Blocks:     T-74
 
