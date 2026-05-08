@@ -426,6 +426,29 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-08 — T-91 phase 1 (Editor.panes.root: Box<dyn Pane>).**
+  `RenderCtx` widens with `layout: Option<&'a LayoutCtx<'a>>` —
+  structural render populates Some, chrome / modal / plugin panes
+  pass None and ignore. Decision locked over two alternatives
+  (parallel render paths; new sub-trait `LayoutPane` extending
+  `Pane` with a `paint(area, frame, &LayoutCtx)` method); user
+  picked widening for the simplest single-trait surface. Trade-off
+  acknowledged: `RenderCtx` now references a non-protocol borrow
+  type (`LayoutCtx`) that's defined in `devix-core`. Acceptable
+  given `RenderCtx` itself lives in `devix-core` (not the protocol
+  crate) and never crosses the wire.
+
+  `LayoutNode` `impl Pane` (render via `ctx.layout`, handle via
+  `handle_at`, children via `children_at`, `as_any` /
+  `as_any_mut` returning `Some(self)`). `PaneRegistry.root` shifts
+  from `LayoutNode` to `Box<dyn Pane>`; typed methods recover
+  `&LayoutNode` through `Pane::as_any` → `downcast_ref`. *Phase 2
+  deferred*: carve `LayoutSplit` / `LayoutFrame` / `LayoutSidebar`
+  into standalone Pane structs, rewrite `mutate::*` as Pane-tree
+  mutations, delete the enum, re-wire `editor::{focus, hittest,
+  ops, view}` to Pane-tree walks. T-92 / T-94 / T-95 still gate
+  on phase 2.
+
 - **2026-05-08 — Stage 11 partial: T-110 / T-111 / T-112 / T-113 all
   ship as partials.**
   - **T-110** widens `CommandId` from tuple-struct `&'static str` to
