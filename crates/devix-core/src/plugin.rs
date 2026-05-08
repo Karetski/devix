@@ -56,6 +56,7 @@ use mlua::{Function, Lua, LuaOptions, RegistryKey, StdLib, Table, UserData,
 use tokio::sync::mpsc::{
     UnboundedReceiver, UnboundedSender, error::TryRecvError, unbounded_channel,
 };
+use tokio::sync::oneshot;
 
 /// One command contributed by a Lua plugin. Pure data — the Lua callback
 /// itself stays inside the host, keyed by `handle`.
@@ -116,6 +117,20 @@ pub enum PluginMsg {
 pub enum PluginInput {
     Key { pane_id: u64, event: KeyEvent },
     Click { pane_id: u64, x: u16, y: u16, button: MouseButton },
+}
+
+/// Replace any reserved-segment chars in `s` with `_` so plugin name
+/// stems (filenames) become valid path segments per `namespace.md`.
+fn sanitize_plugin_segment(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// Per-pane callback handles. Keys into [`PluginHost::callbacks`].
@@ -687,101 +702,207 @@ pub struct PluginRuntime {
     /// runtime so registered commands stay valid.
     #[allow(dead_code)]
     leaked_strings: Vec<&'static str>,
-    /// Held only to keep the worker thread alive for the lifetime of
-    /// the runtime; dropped on shutdown so the receiver gets `None` and
-    /// the loop exits.
+    /// Shutdown channel for clean teardown. Senders held by the
+    /// editor (e.g., installed pane keeps `input_tx`) prevent the
+    /// loop's `tokio::select!` from observing channel close, so the
+    /// supervised body needs an explicit signal. Sent on
+    /// `PluginRuntime::drop` before the supervised child is joined.
+    shutdown_tx: Option<oneshot::Sender<()>>,
+    /// Supervised plugin worker thread (T-81). On panic the supervisor
+    /// publishes `Pulse::PluginError` on the bus passed at load and
+    /// stops; on shutdown (drop sends `shutdown_tx`) the factory
+    /// returns cleanly and the supervisor exits with no escalation.
+    /// Held only to keep the supervised thread alive for the lifetime
+    /// of the runtime.
     #[allow(dead_code)]
-    join: Option<std::thread::JoinHandle<()>>,
+    supervised: Option<crate::supervise::SupervisedChild>,
+}
+
+impl Drop for PluginRuntime {
+    fn drop(&mut self) {
+        // Signal the supervised loop to exit before any field drops
+        // run. Once the factory returns clean, `SupervisedChild::drop`
+        // joins the supervisor thread immediately. Without this signal
+        // the editor-held `input_tx` clone would keep the select!
+        // alive forever and the join would hang.
+        if let Some(tx) = self.shutdown_tx.take() {
+            let _ = tx.send(());
+        }
+    }
 }
 
 impl PluginRuntime {
     /// Load without a push-sink. Messages buffer on an internal
     /// queue; consumers drain via [`PluginRuntime::drain_messages`].
-    /// Kept for tests; production uses [`load_with_sink`].
+    /// Kept for tests; production uses [`load_supervised`].
     pub fn load(path: &Path) -> Result<Self> {
-        Self::load_full(path, None)
+        Self::load_full(path, None, None)
     }
 
     /// Load with a push-callback. Every emitted [`PluginMsg`] is handed
     /// directly to `sink` from the plugin worker thread; nothing is
-    /// buffered on this side. Production path.
+    /// buffered on this side. PluginErrors land on a fresh bus that
+    /// nothing else listens to — for the editor-bus path use
+    /// [`load_supervised`] instead.
     pub fn load_with_sink(path: &Path, sink: MsgSink) -> Result<Self> {
-        Self::load_full(path, Some(sink))
+        Self::load_full(path, Some(sink), None)
+    }
+
+    /// Load with a push-callback and a bus to publish lifecycle pulses
+    /// (`Pulse::PluginLoaded` / `Pulse::PluginError`) on. T-81 entry
+    /// point — the supervisor wraps the plugin worker thread on this
+    /// bus so a Lua-side panic escalates as `PluginError` instead of
+    /// silently killing the runtime.
+    pub fn load_supervised(
+        path: &Path,
+        sink: MsgSink,
+        bus: crate::PulseBus,
+    ) -> Result<Self> {
+        Self::load_full(path, Some(sink), Some(bus))
     }
 
     fn load_full(
         path: &Path,
         msg_sink: Option<MsgSink>,
+        bus: Option<crate::PulseBus>,
     ) -> Result<Self> {
-        let (invoke_tx, mut invoke_rx) = unbounded_channel::<u64>();
-        let (input_tx, mut input_rx) = unbounded_channel::<PluginInput>();
+        let (invoke_tx, invoke_rx) = unbounded_channel::<u64>();
+        let (input_tx, input_rx) = unbounded_channel::<PluginInput>();
         let (msg_tx, msg_rx) = unbounded_channel::<PluginMsg>();
         let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<Contributions>>();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
         let path = path.to_path_buf();
-        let join = std::thread::Builder::new()
-            .name("devix-plugin".into())
-            .spawn(move || {
-                let runtime = match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(rt) => rt,
+        // Bus the supervisor escalates on. When the caller didn't pass
+        // one, use a fresh local bus — `Pulse::PluginError` then falls
+        // on the floor instead of bubbling into the editor (acceptable
+        // for tests; production uses `load_supervised`).
+        let bus = bus.unwrap_or_else(crate::PulseBus::new);
+
+        // Single-shot factory: takes the captured channels on the
+        // first call (after which it returns cleanly with no work).
+        // The supervisor calls the factory in a loop, but with
+        // `max_restarts: 0` a panic escalates to `Pulse::PluginError`
+        // and the loop exits without reusing the consumed receivers.
+        let path_for_factory = path.clone();
+        let mut factory_state = Some((
+            path_for_factory,
+            msg_sink,
+            init_tx,
+            invoke_rx,
+            input_rx,
+            msg_tx,
+            shutdown_rx,
+        ));
+        let factory = move || {
+            let Some((
+                path,
+                msg_sink,
+                init_tx,
+                mut invoke_rx,
+                mut input_rx,
+                msg_tx,
+                shutdown_rx,
+            )) = factory_state.take()
+            else {
+                return;
+            };
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    let _ = init_tx.send(Err(anyhow!(e)));
+                    return;
+                }
+            };
+            runtime.block_on(async move {
+                let host = match PluginHost::new() {
+                    Ok(h) => h,
                     Err(e) => {
-                        let _ = init_tx.send(Err(anyhow!(e)));
+                        let _ = init_tx.send(Err(e));
                         return;
                     }
                 };
-                runtime.block_on(async move {
-                    let host = match PluginHost::new() {
-                        Ok(h) => h,
-                        Err(e) => {
-                            let _ = init_tx.send(Err(e));
-                            return;
-                        }
-                    };
-                    let contributions = match host.load_file(&path) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            let _ = init_tx.send(Err(e));
-                            return;
-                        }
-                    };
-                    forward_messages(&host, &msg_tx, msg_sink.as_ref());
-                    if init_tx.send(Ok(contributions)).is_err() {
+                let contributions = match host.load_file(&path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = init_tx.send(Err(e));
                         return;
                     }
-                    loop {
-                        tokio::select! {
-                            maybe_handle = invoke_rx.recv() => {
-                                match maybe_handle {
-                                    Some(handle) => host.invoke(handle),
-                                    None => break,
-                                }
-                            }
-                            maybe_input = input_rx.recv() => {
-                                match maybe_input {
-                                    Some(input) => host.dispatch_input(input),
-                                    None => break,
-                                }
+                };
+                forward_messages(&host, &msg_tx, msg_sink.as_ref());
+                if init_tx.send(Ok(contributions)).is_err() {
+                    return;
+                }
+                let mut shutdown_rx = shutdown_rx;
+                loop {
+                    tokio::select! {
+                        _ = &mut shutdown_rx => break,
+                        maybe_handle = invoke_rx.recv() => {
+                            match maybe_handle {
+                                Some(handle) => host.invoke(handle),
+                                None => break,
                             }
                         }
-                        forward_messages(&host, &msg_tx, msg_sink.as_ref());
+                        maybe_input = input_rx.recv() => {
+                            match maybe_input {
+                                Some(input) => host.dispatch_input(input),
+                                None => break,
+                            }
+                        }
                     }
-                });
-            })
-            .context("spawning plugin host thread")?;
+                    forward_messages(&host, &msg_tx, msg_sink.as_ref());
+                }
+            });
+        };
+
+        // Per-task: max_restarts=0 escalates immediately on panic with
+        // PluginError. Full restart-with-fresh-channels semantics need
+        // a channel-topology refactor (deferred from T-81).
+        let policy = crate::supervise::RestartPolicy {
+            max_restarts: 0,
+            window: std::time::Duration::from_secs(30),
+        };
+        let supervised = crate::supervise::supervise(
+            "plugin",
+            bus.clone(),
+            policy,
+            factory,
+        )
+        .context("spawning supervised plugin host thread")?;
 
         let contributions = init_rx
             .recv()
             .context("plugin host thread exited before reporting load result")??;
+
+        // Plugin lifecycle (T-81): announce the load on the bus the
+        // caller cares about. Plugin name is taken from the source
+        // file's stem; production uses the manifest's name when the
+        // manifest-driven loader (T-110) takes over.
+        let plugin_segment = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(sanitize_plugin_segment)
+            .unwrap_or_else(|| "plugin".to_string());
+        if let Ok(plugin_path) =
+            devix_protocol::path::Path::parse(&format!("/plugin/{}", plugin_segment))
+        {
+            bus.publish(devix_protocol::pulse::Pulse::PluginLoaded {
+                plugin: plugin_path,
+                version: "0.0.0".to_string(),
+            });
+        }
+
         Ok(Self {
             invoke_tx,
             input_tx,
             msg_rx,
             contributions,
             leaked_strings: Vec::new(),
-            join: Some(join),
+            shutdown_tx: Some(shutdown_tx),
+            supervised: Some(supervised),
         })
     }
 
@@ -1276,6 +1397,35 @@ mod tests {
         let p = dir.join(format!("{name}.lua"));
         std::fs::write(&p, contents).unwrap();
         p
+    }
+
+    #[test]
+    fn supervised_load_publishes_plugin_loaded_pulse() {
+        use devix_protocol::pulse::{Pulse, PulseFilter, PulseKind};
+        let p = write_temp(
+            "supervised",
+            r#"
+                devix.register_action({
+                    id = "noop",
+                    label = "noop",
+                    run = function() end,
+                })
+            "#,
+        );
+        let bus = crate::PulseBus::new();
+        let captured =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::<Pulse>::new()));
+        let cap = captured.clone();
+        bus.subscribe(PulseFilter::kind(PulseKind::PluginLoaded), move |pulse| {
+            cap.lock().unwrap().push(pulse.clone());
+        });
+        let sink: MsgSink = std::sync::Arc::new(|_| {});
+        let _rt = PluginRuntime::load_supervised(&p, sink, bus.clone()).unwrap();
+        let pulses = captured.lock().unwrap();
+        assert_eq!(pulses.len(), 1, "PluginLoaded fires once on supervised load");
+        if let Pulse::PluginLoaded { plugin, .. } = &pulses[0] {
+            assert_eq!(plugin.as_str(), "/plugin/supervised");
+        }
     }
 
     #[test]

@@ -69,7 +69,10 @@ fn main() -> Result<()> {
                 }
                 let _ = wake_sink.wake();
             });
-            PluginRuntime::load_with_sink(&p, msg_sink).ok()
+            // T-81 supervised path: plugin worker thread runs under the
+            // supervisor; a panic surfaces as Pulse::PluginError on the
+            // editor's bus instead of silently killing the runtime.
+            PluginRuntime::load_supervised(&p, msg_sink, editor.bus.clone()).ok()
         }
         None => None,
     };
