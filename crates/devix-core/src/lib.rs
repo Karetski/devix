@@ -36,6 +36,7 @@ pub mod pane;
 pub mod plugin;
 pub mod supervise;
 pub mod theme;
+pub mod theme_store;
 pub mod walk;
 pub mod widgets;
 
