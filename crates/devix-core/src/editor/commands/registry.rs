@@ -18,20 +18,52 @@ use devix_protocol::path::Path;
 
 use crate::editor::commands::cmd::EditorCommand;
 
-/// A command id. Wire form on paths is `/cmd/<dotted-id>` per
-/// `docs/specs/namespace.md` § *Migration table*; the dotted form
-/// (`edit.copy`, `palette.open`) is preserved as a single segment.
+/// A command id. Wire form on paths is `/cmd/<dotted-id>` for
+/// built-ins and `/plugin/<name>/cmd/<id>` for plugin contributions
+/// per `docs/specs/namespace.md` § *Migration table*. The dotted
+/// form (`edit.copy`, `palette.open`) is preserved as a single
+/// segment for built-ins.
+///
+/// T-110 widened this from a tuple-struct over `&'static str` so
+/// plugin-contributed commands resolve at their spec'd plugin
+/// namespace path. Use `CommandId::builtin(id)` for built-ins (the
+/// previous tuple-struct constructor's role) and
+/// `CommandId::plugin(plugin, id)` for plugin contributions.
 #[derive(Copy, Clone, Hash, Eq, PartialEq, Debug)]
-pub struct CommandId(pub &'static str);
+pub struct CommandId {
+    /// `Some(<plugin-name>)` for plugin-contributed commands;
+    /// `None` for built-ins. Equality is on `(plugin, id)` pair so
+    /// `id == "refresh"` from two different plugins (or a built-in
+    /// `refresh`) coexist without collision.
+    pub plugin: Option<&'static str>,
+    pub id: &'static str,
+}
 
 impl CommandId {
-    /// Encode this id into its canonical path (`/cmd/<dotted-id>`).
-    pub fn to_path(self) -> Path {
-        Path::parse(&format!("/cmd/{}", self.0)).expect("/cmd/<dotted-id> is canonical")
+    /// Built-in command id constructor. Lives at `/cmd/<id>`.
+    pub const fn builtin(id: &'static str) -> Self {
+        Self { plugin: None, id }
     }
 
-    /// Decode a `/cmd/<dotted-id>` path back into a command-id
-    /// segment slice. Returns `None` for any other shape.
+    /// Plugin-contributed command id constructor. Lives at
+    /// `/plugin/<plugin>/cmd/<id>`.
+    pub const fn plugin(plugin: &'static str, id: &'static str) -> Self {
+        Self { plugin: Some(plugin), id }
+    }
+
+    /// Encode this id into its canonical path.
+    pub fn to_path(self) -> Path {
+        match self.plugin {
+            None => Path::parse(&format!("/cmd/{}", self.id))
+                .expect("/cmd/<dotted-id> is canonical"),
+            Some(name) => Path::parse(&format!("/plugin/{}/cmd/{}", name, self.id))
+                .expect("/plugin/<name>/cmd/<id> is canonical"),
+        }
+    }
+
+    /// Decode a `/cmd/<dotted-id>` path back into the bare
+    /// command-id segment. Returns `None` for any other shape.
+    /// Plugin paths are decoded via `plugin_segments_from_path`.
     pub fn segment_from_path(path: &Path) -> Option<&str> {
         let mut segs = path.segments();
         if segs.next()? != "cmd" {
@@ -42,6 +74,24 @@ impl CommandId {
             return None;
         }
         Some(id_seg)
+    }
+
+    /// Decode a `/plugin/<name>/cmd/<id>` path into its `(plugin,
+    /// id)` pair. Returns `None` for any other shape.
+    pub fn plugin_segments_from_path(path: &Path) -> Option<(&str, &str)> {
+        let mut segs = path.segments();
+        if segs.next()? != "plugin" {
+            return None;
+        }
+        let plugin = segs.next()?;
+        if segs.next()? != "cmd" {
+            return None;
+        }
+        let id = segs.next()?;
+        if segs.next().is_some() {
+            return None;
+        }
+        Some((plugin, id))
     }
 }
 
@@ -99,15 +149,24 @@ impl Lookup for CommandRegistry {
     type Resource = dyn EditorCommand;
 
     fn lookup(&self, path: &Path) -> Option<&dyn EditorCommand> {
-        let segment = CommandId::segment_from_path(path)?;
-        // Look up by dotted-segment string. Iterate `by_id` since
-        // CommandId wraps `&'static str` (no fast borrow-as-str
-        // hashmap key path); v0 catalog is small enough that the
-        // linear scan is a non-issue.
-        for (id, cmd) in &self.by_id {
-            if id.0 == segment {
-                return Some(&*cmd.action);
+        // Match either built-in (`/cmd/<id>`) or plugin
+        // (`/plugin/<name>/cmd/<id>`) shape. Linear scan; v0 catalog
+        // size makes the hashmap-key-borrow gymnastics unnecessary.
+        if let Some(segment) = CommandId::segment_from_path(path) {
+            for (id, cmd) in &self.by_id {
+                if id.plugin.is_none() && id.id == segment {
+                    return Some(&*cmd.action);
+                }
             }
+            return None;
+        }
+        if let Some((plugin, segment)) = CommandId::plugin_segments_from_path(path) {
+            for (id, cmd) in &self.by_id {
+                if id.plugin == Some(plugin) && id.id == segment {
+                    return Some(&*cmd.action);
+                }
+            }
+            return None;
         }
         None
     }
@@ -136,19 +195,19 @@ mod tests {
     fn register_and_resolve() {
         let mut reg = CommandRegistry::new();
         reg.register(Command {
-            id: CommandId("editor.quit"),
+            id: CommandId::builtin("editor.quit"),
             label: "Quit",
             category: Some("App"),
             action: Arc::new(Quit),
         });
         assert_eq!(reg.len(), 1);
-        assert!(reg.resolve(CommandId("editor.quit")).is_some());
-        assert!(reg.resolve(CommandId("missing")).is_none());
+        assert!(reg.resolve(CommandId::builtin("editor.quit")).is_some());
+        assert!(reg.resolve(CommandId::builtin("missing")).is_none());
     }
 
     #[test]
     fn command_id_round_trips_through_path() {
-        let id = CommandId("edit.copy");
+        let id = CommandId::builtin("edit.copy");
         let path = id.to_path();
         assert_eq!(path.as_str(), "/cmd/edit.copy");
         assert_eq!(CommandId::segment_from_path(&path), Some("edit.copy"));
@@ -164,7 +223,7 @@ mod tests {
     fn registry_lookup_returns_action_via_path() {
         let mut reg = CommandRegistry::new();
         reg.register(Command {
-            id: CommandId("editor.quit"),
+            id: CommandId::builtin("editor.quit"),
             label: "Quit",
             category: Some("App"),
             action: Arc::new(Quit),
@@ -182,13 +241,13 @@ mod tests {
     fn re_register_preserves_order() {
         let mut reg = CommandRegistry::new();
         reg.register(Command {
-            id: CommandId("a"), label: "A", category: None, action: Arc::new(Quit),
+            id: CommandId::builtin("a"), label: "A", category: None, action: Arc::new(Quit),
         });
         reg.register(Command {
-            id: CommandId("b"), label: "B", category: None, action: Arc::new(Quit),
+            id: CommandId::builtin("b"), label: "B", category: None, action: Arc::new(Quit),
         });
         reg.register(Command {
-            id: CommandId("a"), label: "A2", category: None, action: Arc::new(Quit),
+            id: CommandId::builtin("a"), label: "A2", category: None, action: Arc::new(Quit),
         });
         let labels: Vec<&str> = reg.iter().map(|c| c.label).collect();
         assert_eq!(labels, vec!["A2", "B"]);

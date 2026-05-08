@@ -287,7 +287,7 @@ mod path_tests {
     fn binding_command_populates_bound_paths_cache() {
         let mut k = Keymap::new();
         let chord = Chord::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
-        k.bind_command(chord, CommandId("editor.save"));
+        k.bind_command(chord, CommandId::builtin("editor.save"));
         let p = Path::parse("/keymap/ctrl-s").unwrap();
         let dest = k.lookup(&p).unwrap();
         assert_eq!(dest.as_str(), "/cmd/editor.save");
@@ -307,7 +307,7 @@ mod path_tests {
         let mut k = Keymap::new();
         k.bind_command(
             Chord::new(KeyCode::Char('p'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
-            CommandId("palette.open"),
+            CommandId::builtin("palette.open"),
         );
         let paths: Vec<String> = k.paths().map(|p| p.as_str().to_string()).collect();
         assert_eq!(paths, vec!["/keymap/ctrl-shift-p"]);

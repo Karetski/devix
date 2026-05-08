@@ -953,7 +953,7 @@ impl PluginRuntime {
             self.leaked_strings.push(id_static);
             self.leaked_strings.push(label_static);
 
-            let id = CommandId(id_static);
+            let id = CommandId::builtin(id_static);
             let action = make_command_action(spec, sender.clone());
             commands.register(Command {
                 id,
@@ -985,6 +985,103 @@ impl PluginRuntime {
             };
             editor.install_sidebar_pane(slot, Box::new(pane));
         }
+    }
+
+    /// Install this runtime's contributions into the editor under the
+    /// manifest's plugin namespace (T-110). Each
+    /// `manifest.contributes.commands` entry registers at
+    /// `/plugin/<manifest.name>/cmd/<id>`, matched to the runtime's
+    /// in-Lua-registered handle by id. Manifest-declared commands
+    /// without a corresponding `register_action` call publish
+    /// `Pulse::PluginError` and are skipped. Returns the number of
+    /// commands actually wired.
+    ///
+    /// Keymap chord bindings still come from the runtime's
+    /// `CommandSpec.chord` (set at register-time from Lua); the
+    /// manifest's `contributes.keymaps` plugin-path resolution is
+    /// deferred (T-110 follow-up).
+    pub fn install_with_manifest(
+        &mut self,
+        commands: &mut CommandRegistry,
+        keymap: &mut Keymap,
+        editor: &mut Editor,
+        manifest: &devix_protocol::manifest::Manifest,
+        bus: &crate::PulseBus,
+    ) -> usize {
+        let plugin_name: &'static str = leak_str(&manifest.name);
+        self.leaked_strings.push(plugin_name);
+
+        let plugin_path = devix_protocol::path::Path::parse(&format!(
+            "/plugin/{}",
+            manifest.name
+        ))
+        .ok();
+        let sender = self.invoke_tx.clone();
+
+        let mut count = 0usize;
+        for decl in &manifest.contributes.commands {
+            // Match the manifest declaration to a Lua-registered
+            // handle by id.
+            let runtime_spec = self
+                .contributions
+                .commands
+                .iter()
+                .find(|c| c.id == decl.id);
+            let Some(runtime_spec) = runtime_spec else {
+                if let Some(ref pp) = plugin_path {
+                    bus.publish(devix_protocol::pulse::Pulse::PluginError {
+                        plugin: pp.clone(),
+                        message: format!(
+                            "manifest declares command `{}` but the plugin's Lua \
+                             entry never registered a handler with that id",
+                            decl.id,
+                        ),
+                    });
+                }
+                continue;
+            };
+
+            let id_static: &'static str = leak_str(&decl.id);
+            let label_static: &'static str = leak_str(&decl.label);
+            self.leaked_strings.push(id_static);
+            self.leaked_strings.push(label_static);
+
+            let id = CommandId::plugin(plugin_name, id_static);
+            let action = make_command_action(runtime_spec, sender.clone());
+            commands.register(Command {
+                id,
+                label: label_static,
+                category: Some("Plugin"),
+                action,
+            });
+            if let Some(chord) = runtime_spec.chord {
+                keymap.bind_command(chord, id);
+            }
+            count += 1;
+        }
+
+        // Panes: install onto the editor's structural tree (same as
+        // `install`). T-111 will key these by manifest declaration
+        // too; for now all Lua-registered panes flow through.
+        let pane_specs: Vec<(SidebarSlot, PaneSpec)> = self
+            .contributions
+            .panes
+            .iter()
+            .map(|p| (p.slot, p.clone()))
+            .collect();
+        for (slot, spec) in pane_specs {
+            let pane = LuaPane {
+                pane_id: spec.pane_id,
+                lines: spec.lines.clone(),
+                scroll: spec.scroll.clone(),
+                visible_rows: spec.visible_rows.clone(),
+                has_on_key: spec.has_on_key.clone(),
+                has_on_click: spec.has_on_click.clone(),
+                input_tx: self.input_tx.clone(),
+            };
+            editor.install_sidebar_pane(slot, Box::new(pane));
+        }
+        count
     }
 
     /// Pane handle for `slot`, if the plugin contributed one. The
@@ -1397,6 +1494,136 @@ mod tests {
         let p = dir.join(format!("{name}.lua"));
         std::fs::write(&p, contents).unwrap();
         p
+    }
+
+    #[test]
+    fn manifest_driven_commands_register_at_plugin_namespace() {
+        use devix_protocol::manifest::{
+            CommandSpec as ManifestCommandSpec, Contributes, Engines, Manifest,
+        };
+        use devix_protocol::path::Path as DevixPath;
+        use devix_protocol::Lookup;
+
+        let p = write_temp(
+            "manifest_driven",
+            r#"
+                devix.register_action({
+                    id = "say-hello",
+                    label = "Say Hello",
+                    run = function() devix.status("hello-fired") end,
+                })
+            "#,
+        );
+
+        let manifest = Manifest {
+            name: "myplug".to_string(),
+            version: "0.1.0".to_string(),
+            engines: Engines {
+                protocol_version: devix_protocol::protocol::ProtocolVersion::new(0, 1),
+                pulse_bus: devix_protocol::protocol::ProtocolVersion::new(0, 1),
+                manifest: devix_protocol::protocol::ProtocolVersion::new(0, 1),
+            },
+            entry: None,
+            contributes: Contributes {
+                commands: vec![ManifestCommandSpec {
+                    id: "say-hello".to_string(),
+                    label: "Say Hello".to_string(),
+                    category: Some("Test".to_string()),
+                    lua_handle: None,
+                }],
+                ..Default::default()
+            },
+            subscribe: Vec::new(),
+        };
+
+        let bus = crate::PulseBus::new();
+        let mut runtime = PluginRuntime::load(&p).unwrap();
+        let mut commands = CommandRegistry::new();
+        let mut keymap = Keymap::new();
+        let mut editor = Editor::open(None).unwrap();
+        let count = runtime.install_with_manifest(
+            &mut commands,
+            &mut keymap,
+            &mut editor,
+            &manifest,
+            &bus,
+        );
+        assert_eq!(count, 1, "one manifest-declared command registered");
+
+        let plugin_cmd =
+            DevixPath::parse("/plugin/myplug/cmd/say-hello").unwrap();
+        assert!(
+            commands.lookup(&plugin_cmd).is_some(),
+            "command lookups against /plugin/<name>/cmd/<id> resolve",
+        );
+    }
+
+    #[test]
+    fn manifest_declares_unknown_command_id_publishes_plugin_error() {
+        use devix_protocol::manifest::{
+            CommandSpec as ManifestCommandSpec, Contributes, Engines, Manifest,
+        };
+        use devix_protocol::pulse::{Pulse, PulseFilter, PulseKind};
+
+        let p = write_temp(
+            "manifest_orphan",
+            r#"
+                devix.register_action({
+                    id = "actually-here",
+                    label = "Here",
+                    run = function() end,
+                })
+            "#,
+        );
+
+        let manifest = Manifest {
+            name: "orphan".to_string(),
+            version: "0.1.0".to_string(),
+            engines: Engines {
+                protocol_version: devix_protocol::protocol::ProtocolVersion::new(0, 1),
+                pulse_bus: devix_protocol::protocol::ProtocolVersion::new(0, 1),
+                manifest: devix_protocol::protocol::ProtocolVersion::new(0, 1),
+            },
+            entry: None,
+            contributes: Contributes {
+                commands: vec![ManifestCommandSpec {
+                    id: "missing-from-lua".to_string(),
+                    label: "Missing".to_string(),
+                    category: None,
+                    lua_handle: None,
+                }],
+                ..Default::default()
+            },
+            subscribe: Vec::new(),
+        };
+
+        let bus = crate::PulseBus::new();
+        let captured =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::<Pulse>::new()));
+        let cap = captured.clone();
+        bus.subscribe(PulseFilter::kind(PulseKind::PluginError), move |pulse| {
+            cap.lock().unwrap().push(pulse.clone());
+        });
+
+        let mut runtime = PluginRuntime::load(&p).unwrap();
+        let mut commands = CommandRegistry::new();
+        let mut keymap = Keymap::new();
+        let mut editor = Editor::open(None).unwrap();
+        let count = runtime.install_with_manifest(
+            &mut commands,
+            &mut keymap,
+            &mut editor,
+            &manifest,
+            &bus,
+        );
+        assert_eq!(count, 0, "manifest declares an id with no matching Lua handler — skipped");
+
+        let pulses = captured.lock().unwrap();
+        assert_eq!(pulses.len(), 1, "PluginError fired for the orphan declaration");
+        if let Pulse::PluginError { plugin, message } = &pulses[0] {
+            assert_eq!(plugin.as_str(), "/plugin/orphan");
+            assert!(message.contains("missing-from-lua"));
+        }
     }
 
     #[test]

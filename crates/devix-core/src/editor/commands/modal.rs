@@ -235,7 +235,7 @@ mod tests {
             ("app.quit", "Quit"),
         ] {
             r.register(Command {
-                id: CommandId(id),
+                id: CommandId::builtin(id),
                 label,
                 category: None,
                 action: Arc::new(Quit),
@@ -248,7 +248,7 @@ mod tests {
     fn empty_query_lists_all_in_order() {
         let p = PaletteState::from_registry(&reg());
         assert_eq!(p.matches().len(), 5);
-        assert_eq!(p.selected_command_id(), Some(CommandId("editor.save")));
+        assert_eq!(p.selected_command_id(), Some(CommandId::builtin("editor.save")));
     }
 
     #[test]
@@ -258,7 +258,7 @@ mod tests {
         assert!(p.matches().len() >= 3);
         for i in 0..p.matches().len() {
             let id = p.matched_command_id(i).unwrap();
-            assert!(id.0.starts_with("tab.") || id.0.contains("tab"));
+            assert!(id.id.starts_with("tab.") || id.id.contains("tab"));
         }
     }
 

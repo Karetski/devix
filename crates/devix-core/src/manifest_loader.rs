@@ -106,7 +106,7 @@ where
         let action = resolver(&spec.id).ok_or_else(|| {
             ManifestRegisterError::NoHandlerForCommand(spec.id.clone())
         })?;
-        let id = crate::editor::commands::registry::CommandId(intern_id(&spec.id));
+        let id = crate::editor::commands::registry::CommandId::builtin(intern_id(&spec.id));
         let label = intern_id(&spec.label);
         let category = spec.category.as_ref().map(|c| intern_id(c));
         reg.register(crate::editor::commands::registry::Command {
@@ -190,7 +190,7 @@ fn command_id_in_registry(
     use devix_protocol::Lookup;
     let path = devix_protocol::path::Path::parse(&format!("/cmd/{}", id)).ok()?;
     if commands.lookup(&path).is_some() {
-        Some(crate::editor::commands::registry::CommandId(intern_id(id)))
+        Some(crate::editor::commands::registry::CommandId::builtin(intern_id(id)))
     } else {
         None
     }

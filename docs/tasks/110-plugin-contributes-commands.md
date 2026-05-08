@@ -1,6 +1,6 @@
 # Task T-110 — Plugin contributes commands via manifest
 Stage: 11
-Status: pending
+Status: partial — manifest commands register at /plugin/<name>/cmd/<id>; capability negotiation + keymap-from-manifest plugin-path deferred
 Depends on: T-33, T-71, T-81, T-104
 Blocks:     T-111, T-112, T-113
 
@@ -32,10 +32,48 @@ function.
 - `crates/devix-core/src/plugin/mod.rs`: LuaAction integration
 
 ## Acceptance criteria
-- [ ] A test plugin's command registers and invokes its Lua handle.
-- [ ] Plugin command paths use `/plugin/<name>/cmd/<id>`.
-- [ ] `cargo build --workspace` passes.
-- [ ] `cargo test --workspace` passes.
+- [x] A test plugin's command registers and invokes its Lua handle.
+- [x] Plugin command paths use `/plugin/<name>/cmd/<id>`.
+- [x] `cargo build --workspace` passes.
+- [x] `cargo test --workspace` passes.
+
+## Notes (2026-05-08) — partial close
+- `CommandId` widened from tuple-struct `&'static str` to typed
+  struct `{ plugin: Option<&'static str>, id: &'static str }` with
+  `CommandId::builtin(id)` and `CommandId::plugin(plugin, id)`
+  constructors. `to_path()` produces the spec'd shape per kind.
+  `CommandRegistry`'s `Lookup` impl resolves both `/cmd/<id>` and
+  `/plugin/<name>/cmd/<id>` paths.
+- `PluginRuntime::install_with_manifest(commands, keymap, editor,
+  manifest, bus)` installs manifest-declared commands at
+  `/plugin/<manifest.name>/cmd/<id>`, matching each declaration to a
+  Lua-registered handle by id. Manifest declarations without a
+  matching Lua handler publish `Pulse::PluginError` and are skipped.
+- `main.rs` now discovers plugins under `plugin_dir()` (every
+  subdirectory containing `manifest.json`), loads each under the
+  supervisor (T-81 partial), and wires its declared commands. The
+  legacy `DEVIX_PLUGIN` single-file path stays alive for backward
+  compatibility (registers at `/cmd/<id>`).
+- *Deferred* from full T-110 spec:
+  - **Capability negotiation** (`ContributeCommands` warn-and-degrade
+    per `protocol.md` Q2). Capabilities aren't yet exchanged between
+    host and plugin; this lands when T-81 introduces the protocol
+    envelope on the plugin side.
+  - **Keymap-from-manifest with plugin paths**. The manifest schema
+    accepts `command: "/plugin/<name>/cmd/<id>"` per
+    `manifest.md`, but `register_keymap_contributions` only
+    resolves `/cmd/<id>` shape today. Wiring the plugin-path branch
+    is small but interacts with the registry's path-shape resolution
+    (now in place); deferred so this T-110 partial can land
+    cohesively.
+  - **First-loaded-wins on chord conflicts**: not enforced
+    explicitly; current behavior is "later registration overwrites".
+    Same enforcement question lives next to the keymap-manifest
+    work.
+- Tests: `manifest_driven_commands_register_at_plugin_namespace`
+  asserts `/plugin/<name>/cmd/<id>` resolves through the registry's
+  `Lookup`; `manifest_declares_unknown_command_id_publishes_plugin_error`
+  asserts the orphan-declaration error path.
 
 ## Spec references
 - `docs/specs/manifest.md` — *contributes.commands*, *Manifest

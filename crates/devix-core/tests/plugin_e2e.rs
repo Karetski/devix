@@ -82,7 +82,7 @@ fn hello_command_round_trips_through_registry_and_keymap() {
     let spec = runtime.contributions().commands[0].clone();
     let id_static: &'static str = Box::leak(spec.id.clone().into_boxed_str());
     let label_static: &'static str = Box::leak(spec.label.clone().into_boxed_str());
-    let cid = CommandId(id_static);
+    let cid = CommandId::builtin(id_static);
     commands.register(Command {
         id: cid,
         label: label_static,
