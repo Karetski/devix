@@ -18,7 +18,6 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use crate::{Pane, Rect};
-use slotmap::SlotMap;
 
 use crate::editor::cursor::{Cursor, CursorId};
 use crate::editor::document::{DocId, Document};
@@ -73,7 +72,7 @@ pub enum TabStripHit {
 
 pub struct Editor {
     pub documents: crate::editor::document::DocStore,
-    pub cursors: SlotMap<CursorId, Cursor>,
+    pub cursors: crate::editor::cursor::CursorStore,
     /// Structural Pane tree — the layout source of truth, and **also**
     /// the only place per-frame state lives now. `LayoutFrame` owns its
     /// `tabs`/`active_tab`/`tab_strip_scroll`/`recenter_active`
@@ -109,7 +108,7 @@ impl Editor {
     /// `path` is opened if Some; otherwise an empty scratch buffer is used.
     pub fn open(path: Option<PathBuf>) -> Result<Self> {
         let mut documents = crate::editor::document::DocStore::new();
-        let mut cursors: SlotMap<CursorId, Cursor> = SlotMap::with_key();
+        let mut cursors = crate::editor::cursor::CursorStore::new();
         let mut doc_index = HashMap::new();
 
         let doc_id = match path {

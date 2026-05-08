@@ -17,7 +17,6 @@
 //! Render takes editor borrows as a real `&LayoutCtx<'_>` argument.
 
 use ratatui::Frame;
-use slotmap::SlotMap;
 
 use crate::{
     Axis, Event, HandleCtx, Outcome, Pane, Rect, RenderCtx, SidebarPane as SidebarChrome,
@@ -113,7 +112,7 @@ impl LayoutSidebar {
 /// every recursive `LayoutNode::render` call.
 pub struct LayoutCtx<'a> {
     pub documents: &'a crate::editor::document::DocStore,
-    pub cursors: &'a SlotMap<CursorId, Cursor>,
+    pub cursors: &'a crate::editor::cursor::CursorStore,
     pub theme: &'a Theme,
     pub render_cache: &'a RenderCache,
     pub focused_leaf: Option<LeafRef>,

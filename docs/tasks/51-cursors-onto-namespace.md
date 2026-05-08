@@ -1,6 +1,6 @@
 # Task T-51 — Migrate cursors onto namespace (`/cur/<id>`)
 Stage: 5
-Status: pending
+Status: complete
 Depends on: T-30, T-50
 Blocks:     T-57
 
