@@ -132,41 +132,6 @@ fn chord_to_keymap_path(chord: Chord) -> Option<Path> {
     Path::parse(&format!("/keymap/{}", segment)).ok()
 }
 
-#[cfg(test)]
-mod path_tests {
-    use super::*;
-
-    #[test]
-    fn binding_command_populates_bound_paths_cache() {
-        let mut k = Keymap::new();
-        let chord = Chord::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
-        k.bind_command(chord, CommandId("editor.save"));
-        let p = Path::parse("/keymap/ctrl-s").unwrap();
-        let dest = k.lookup(&p).unwrap();
-        assert_eq!(dest.as_str(), "/cmd/editor.save");
-    }
-
-    #[test]
-    fn binding_action_does_not_populate_paths() {
-        let mut k = Keymap::new();
-        let chord = Chord::new(KeyCode::Char('h'), KeyModifiers::NONE);
-        k.bind_action(chord, Arc::new(cmd::Quit));
-        let paths: Vec<Path> = k.paths().collect();
-        assert!(paths.is_empty());
-    }
-
-    #[test]
-    fn paths_enumerates_canonical_kebab_chords() {
-        let mut k = Keymap::new();
-        k.bind_command(
-            Chord::new(KeyCode::Char('p'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
-            CommandId("palette.open"),
-        );
-        let paths: Vec<String> = k.paths().map(|p| p.as_str().to_string()).collect();
-        assert_eq!(paths, vec!["/keymap/ctrl-shift-p"]);
-    }
-}
-
 fn crossterm_chord_to_protocol(chord: Chord) -> Option<devix_protocol::input::Chord> {
     use crossterm::event::KeyCode as CtCode;
     use devix_protocol::input::{Chord as PChord, KeyCode as PKey, Modifiers as PMods};
@@ -318,4 +283,39 @@ pub fn chord_from_key(code: KeyCode, mods: KeyModifiers) -> Chord {
         other => other,
     };
     Chord::new(code, mods)
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+
+    #[test]
+    fn binding_command_populates_bound_paths_cache() {
+        let mut k = Keymap::new();
+        let chord = Chord::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        k.bind_command(chord, CommandId("editor.save"));
+        let p = Path::parse("/keymap/ctrl-s").unwrap();
+        let dest = k.lookup(&p).unwrap();
+        assert_eq!(dest.as_str(), "/cmd/editor.save");
+    }
+
+    #[test]
+    fn binding_action_does_not_populate_paths() {
+        let mut k = Keymap::new();
+        let chord = Chord::new(KeyCode::Char('h'), KeyModifiers::NONE);
+        k.bind_action(chord, Arc::new(cmd::Quit));
+        let paths: Vec<Path> = k.paths().collect();
+        assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn paths_enumerates_canonical_kebab_chords() {
+        let mut k = Keymap::new();
+        k.bind_command(
+            Chord::new(KeyCode::Char('p'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            CommandId("palette.open"),
+        );
+        let paths: Vec<String> = k.paths().map(|p| p.as_str().to_string()).collect();
+        assert_eq!(paths, vec!["/keymap/ctrl-shift-p"]);
+    }
 }

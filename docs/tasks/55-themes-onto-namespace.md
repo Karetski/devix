@@ -1,6 +1,6 @@
 # Task T-55 — Migrate themes onto namespace (`/theme/<scope>`)
 Stage: 5
-Status: pending
+Status: complete
 Depends on: T-30, T-41
 Blocks:     T-57, T-73
 

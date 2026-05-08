@@ -12,6 +12,8 @@
 
 use std::collections::HashMap;
 
+use devix_protocol::Lookup;
+use devix_protocol::path::Path;
 use ratatui::style::{Color, Modifier, Style};
 
 #[derive(Clone, Debug)]
@@ -61,6 +63,60 @@ impl Theme {
             }
         }
     }
+
+    /// Borrow form of `style_for` for the `Lookup` trait. Returns
+    /// the most-specific registered scope's `Style` reference.
+    fn style_ref_for(&self, scope: &str) -> Option<&Style> {
+        let mut cur: &str = scope;
+        loop {
+            if let Some(s) = self.scopes.get(cur) {
+                return Some(s);
+            }
+            match cur.rfind('.') {
+                Some(i) => cur = &cur[..i],
+                None => return None,
+            }
+        }
+    }
+}
+
+impl Lookup for Theme {
+    /// Resource is ratatui's `Style` — the in-memory shape Theme
+    /// stores today. T-73 lands the protocol-shape `ThemePalette`
+    /// for the wire form via `Pulse::ThemeChanged`; this trait
+    /// returns the local style so renderers consume it directly.
+    type Resource = Style;
+
+    fn lookup(&self, path: &Path) -> Option<&Style> {
+        let scope = scope_from_path(path)?;
+        self.style_ref_for(scope)
+    }
+
+    fn lookup_mut(&mut self, _path: &Path) -> Option<&mut Style> {
+        // Theme is a registry; updates land via with_scope or
+        // future register APIs, not lookup_mut.
+        None
+    }
+
+    fn paths(&self) -> Box<dyn Iterator<Item = Path> + '_> {
+        Box::new(self.scopes.keys().filter_map(|scope| {
+            Path::parse(&format!("/theme/{}", scope)).ok()
+        }))
+    }
+}
+
+/// Decode a `/theme/<scope>` path back to its scope segment. Returns
+/// `None` for any other shape.
+fn scope_from_path(path: &Path) -> Option<&str> {
+    let mut segs = path.segments();
+    if segs.next()? != "theme" {
+        return None;
+    }
+    let scope = segs.next()?;
+    if segs.next().is_some() {
+        return None;
+    }
+    Some(scope)
 }
 
 impl Default for Theme {
@@ -164,5 +220,28 @@ mod tests {
         assert!(t.style_for("string").is_some());
         assert!(t.style_for("function").is_some());
         assert!(t.style_for("comment").is_some());
+    }
+
+    #[test]
+    fn lookup_resolves_path_form() {
+        let t = Theme::default();
+        let p = Path::parse("/theme/keyword").unwrap();
+        assert!(t.lookup(&p).is_some());
+        let p = Path::parse("/theme/keyword.unusual").unwrap();
+        assert!(t.lookup(&p).is_some());
+        let p = Path::parse("/cmd/edit.copy").unwrap();
+        assert!(t.lookup(&p).is_none());
+        let p = Path::parse("/theme/a/b").unwrap();
+        assert!(t.lookup(&p).is_none());
+    }
+
+    #[test]
+    fn paths_enumerates_registered_scopes() {
+        let theme = Theme::new(Style::default(), Style::default())
+            .with_scope("keyword", Style::default().fg(Color::Red))
+            .with_scope("string", Style::default().fg(Color::Green));
+        let mut paths: Vec<String> = theme.paths().map(|p| p.as_str().to_string()).collect();
+        paths.sort();
+        assert_eq!(paths, vec!["/theme/keyword", "/theme/string"]);
     }
 }
