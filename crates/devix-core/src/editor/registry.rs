@@ -112,7 +112,15 @@ impl PaneRegistry {
     }
 
     pub fn render(&self, area: Rect, frame: &mut Frame<'_>, ctx: &LayoutCtx<'_>) {
-        self.as_layout().render(area, frame, ctx);
+        // T-91 phase 2: structural render goes through `Pane::render`
+        // with `ctx.layout = Some(ctx)`. The per-variant `Pane` impls
+        // (`LayoutSplit`, `LayoutFrame`, `LayoutSidebar`) recurse via
+        // the trait without consulting the enum kind.
+        let mut rctx = crate::pane::RenderCtx {
+            frame,
+            layout: Some(ctx),
+        };
+        self.root.render(area, &mut rctx);
     }
 
     /// Resolve a `/pane(/<i>)*` path to the corresponding `&dyn Pane`.
