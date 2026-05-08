@@ -63,19 +63,21 @@ impl PaneRegistry {
     }
 
     pub fn find_frame_mut(&mut self, fid: FrameId) -> Option<&mut LayoutFrame> {
-        self.as_layout_mut().find_frame_mut(fid)
+        pane_find_frame_mut(self.root.as_mut(), fid)
     }
 
     pub fn find_sidebar_mut(&mut self, slot: SidebarSlot) -> Option<&mut LayoutSidebar> {
-        self.as_layout_mut().find_sidebar_mut(slot)
+        pane_find_sidebar_mut(self.root.as_mut(), slot)
     }
 
     pub fn sidebar_present(&self, slot: SidebarSlot) -> bool {
-        self.as_layout().sidebar_present(slot)
+        pane_sidebar_present(self.root.as_ref(), slot)
     }
 
     pub fn frames(&self) -> Vec<FrameId> {
-        self.as_layout().frames()
+        let mut out = Vec::new();
+        pane_collect_frames(self.root.as_ref(), &mut out);
+        out
     }
 
     pub fn at_path(&self, path: &[usize]) -> Option<&LayoutNode> {
@@ -204,12 +206,11 @@ fn walk_pane_paths_via_trait(
     }
 }
 
-/// Pane-trait-driven `find_frame`. Walks the Pane tree via
-/// `Pane::children`, downcasting each node to either `LayoutFrame`
-/// directly or to a `LayoutNode::Frame` variant (the current
-/// transitional state where the enum still wraps the variant).
-/// Once T-91 phase 2 retires the enum, only the direct downcast
-/// remains.
+/// Pane-trait-driven walks (T-91 phase 2). Each helper walks the
+/// tree via `Pane::children` / `children_mut`, downcasting at each
+/// node to either the direct variant struct or the `LayoutNode`
+/// enum's matching variant (the current transitional state). Once
+/// the enum is retired, only the direct downcasts remain.
 fn pane_find_frame<'a>(node: &'a dyn Pane, fid: FrameId) -> Option<&'a LayoutFrame> {
     if let Some(any) = node.as_any() {
         if let Some(frame) = any.downcast_ref::<LayoutFrame>() {
@@ -231,4 +232,126 @@ fn pane_find_frame<'a>(node: &'a dyn Pane, fid: FrameId) -> Option<&'a LayoutFra
         }
     }
     None
+}
+
+enum SelfMatchVariant {
+    Direct,
+    Wrapped,
+    None,
+}
+
+fn pane_find_frame_mut<'a>(
+    node: &'a mut dyn Pane,
+    fid: FrameId,
+) -> Option<&'a mut LayoutFrame> {
+    let kind = {
+        if let Some(any) = node.as_any() {
+            if any.downcast_ref::<LayoutFrame>().is_some_and(|f| f.frame == fid) {
+                SelfMatchVariant::Direct
+            } else if matches!(
+                any.downcast_ref::<LayoutNode>(),
+                Some(LayoutNode::Frame(f)) if f.frame == fid
+            ) {
+                SelfMatchVariant::Wrapped
+            } else {
+                SelfMatchVariant::None
+            }
+        } else {
+            SelfMatchVariant::None
+        }
+    };
+    match kind {
+        SelfMatchVariant::Direct => {
+            return node.as_any_mut()?.downcast_mut::<LayoutFrame>();
+        }
+        SelfMatchVariant::Wrapped => {
+            return match node.as_any_mut()?.downcast_mut::<LayoutNode>()? {
+                LayoutNode::Frame(f) => Some(f),
+                _ => None,
+            };
+        }
+        SelfMatchVariant::None => {}
+    }
+    for (_, child) in node.children_mut(Rect::default()) {
+        if let Some(found) = pane_find_frame_mut(child, fid) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn pane_find_sidebar_mut<'a>(
+    node: &'a mut dyn Pane,
+    slot: SidebarSlot,
+) -> Option<&'a mut LayoutSidebar> {
+    let kind = {
+        if let Some(any) = node.as_any() {
+            if any.downcast_ref::<LayoutSidebar>().is_some_and(|s| s.slot == slot) {
+                SelfMatchVariant::Direct
+            } else if matches!(
+                any.downcast_ref::<LayoutNode>(),
+                Some(LayoutNode::Sidebar(s)) if s.slot == slot
+            ) {
+                SelfMatchVariant::Wrapped
+            } else {
+                SelfMatchVariant::None
+            }
+        } else {
+            SelfMatchVariant::None
+        }
+    };
+    match kind {
+        SelfMatchVariant::Direct => {
+            return node.as_any_mut()?.downcast_mut::<LayoutSidebar>();
+        }
+        SelfMatchVariant::Wrapped => {
+            return match node.as_any_mut()?.downcast_mut::<LayoutNode>()? {
+                LayoutNode::Sidebar(s) => Some(s),
+                _ => None,
+            };
+        }
+        SelfMatchVariant::None => {}
+    }
+    for (_, child) in node.children_mut(Rect::default()) {
+        if let Some(found) = pane_find_sidebar_mut(child, slot) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn pane_sidebar_present(node: &dyn Pane, slot: SidebarSlot) -> bool {
+    if let Some(any) = node.as_any() {
+        if let Some(sb) = any.downcast_ref::<LayoutSidebar>() {
+            if sb.slot == slot {
+                return true;
+            }
+        } else if let Some(LayoutNode::Sidebar(sb)) =
+            any.downcast_ref::<LayoutNode>()
+        {
+            if sb.slot == slot {
+                return true;
+            }
+        }
+    }
+    let zero = Rect::default();
+    node.children(zero)
+        .into_iter()
+        .any(|(_, child)| pane_sidebar_present(child, slot))
+}
+
+fn pane_collect_frames(node: &dyn Pane, out: &mut Vec<FrameId>) {
+    if let Some(any) = node.as_any() {
+        if let Some(frame) = any.downcast_ref::<LayoutFrame>() {
+            out.push(frame.frame);
+        } else if let Some(LayoutNode::Frame(frame)) =
+            any.downcast_ref::<LayoutNode>()
+        {
+            out.push(frame.frame);
+        }
+    }
+    let zero = Rect::default();
+    for (_, child) in node.children(zero) {
+        pane_collect_frames(child, out);
+    }
 }
