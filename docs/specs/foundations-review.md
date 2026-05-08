@@ -426,6 +426,47 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-08 — T-81 full close: plugin host module reorg + channel-refresh restart.**
+
+  Two phases land together. Phase 1: the 2,300-line `plugin.rs`
+  splits into `plugin/{mod,host,bridge,pane_handle,runtime}.rs` per
+  `crates.md` *crates/plugin/src/*. Each file owns one concern
+  (Lua VM, editor-side action wrapper, pane userdata + wrappers,
+  supervised worker), with `mod.rs` carrying shared types and
+  helpers. MLIR principle realized at the plugin runtime: each
+  module is one open primitive.
+
+  Phase 2: editor-held senders (`InvokeSender` / `InputSender`)
+  become `Arc<Mutex<UnboundedSender<…>>>`. Each spawn of the
+  factory closure creates fresh `(tx, rx)` pairs locally, locks
+  the editor-held `Arc`, and swaps the inner sender. Editor
+  captures (`LuaAction.sender`, `LuaPane.input_tx`) hold the `Arc`
+  directly, so they auto-pick-up the new sender on restart without
+  recompiling. `send_invoke` / `send_input` perform lock + send
+  under Erlang semantics: silent no-op on poisoned lock or closed
+  receiver. `shutdown_tx` becomes `Arc<Mutex<Option<oneshot::Sender>>>`
+  for the same reason — `Drop` signals the *current* worker.
+  `RestartPolicy::max_restarts` lifts from `0` to `3` (a real
+  restart budget within a 30s window).
+
+  **Determinism note.** Because the Lua entry is re-executed on
+  each spawn against a fresh `next_handle` counter, action handle
+  N in the respawned host refers to the same Lua function as
+  handle N in the dead host — provided the entry script is
+  deterministic (no env-dependent registration). The editor's
+  `PluginCommandAction(handle=N, …)` keeps working transparently
+  with no re-registration cycle in `CommandRegistry`.
+
+  **Known limitation.** Pane content shared via
+  `Arc<Mutex<Vec<String>>>` doesn't refresh on restart: the new
+  host's `register_pane` allocates a fresh `Arc`, but the editor's
+  installed `LuaPane` still points at the dead host's `Arc`.
+  Mutations from the new host are invisible to the rendered pane
+  until the editor reinstalls the pane. Auto pane reinstall is
+  the next sprint's concern; this close ships the channel-refresh
+  topology and the module structure that the reinstall protocol
+  needs.
+
 - **2026-05-08 — Stage-11 partial: T-112 ships; T-113 infra ships
   (Lua bridge gated on T-81 full).**
 
