@@ -87,13 +87,27 @@ What's still deferred:
    establish — long-line truncation, multi-cursor reverse cells,
    selection paint over selection-with-multi-cursor edge cases
    each have surface area easier to spot in a real terminal.
-2. **Selection + extra-cursor paint.** The producer carries
-   `selection: Vec<SelectionMark>` per spec but `paint_view`
-   doesn't yet draw selection overlays — the legacy renderer's
-   `paint_selection` + `paint_extra_cursors` need equivalent passes
-   in `paint_buffer`. Trivial to add; deferred until the byte-parity
-   gate is a hard requirement.
-3. **Manual TTY sanity.** Edit/split/sidebar-toggle/palette/plugin
+2. ~~**Selection + extra-cursor paint.**~~ *Resolved 2026-05-08*:
+   the producer's `editor::view::build_active_buffer` populates
+   `selection: Vec<SelectionMark>` (one per range, zero-extent for
+   multicursor secondaries); `view_paint::paint_buffer` adds
+   `paint_selection_overlay` (reverse-video over the cells in each
+   non-empty mark, multi-line marks paint to the row's right edge)
+   and `paint_extra_cursor_marks` (reverse cells on every
+   zero-extent mark whose coordinate ≠ `cursor`). Mirrors the
+   legacy `editor::buffer::paint_selection` + `paint_extra_cursors`.
+   Two unit tests in `view_paint::tests` exercise the passes.
+3. **Plugin pane content not in View IR.** The View producer's
+   `walk_sidebar` returns `View::Sidebar { content: View::Empty,
+   .. }`. Switching `Application::render` to `paint_view` would
+   render every plugin sidebar (file-tree, etc.) as empty —
+   regression. Plugin panes that pushed View IR via T-111's
+   `pane:set_view` are also not threaded through `walk_sidebar`.
+   Closing T-95 fully needs `walk_sidebar` to consult the plugin
+   runtime's installed pane (either via a `Pane::view(area) ->
+   View` trait method, or a plugin-runtime side bridge that emits
+   `View::Text` from `register_pane`'s `lines = {…}`).
+4. **Manual TTY sanity.** Edit/split/sidebar-toggle/palette/plugin
    pane/theme-switch end-to-end pass.
 
 T-95 full close (legacy retirement) lands in a focused sprint with

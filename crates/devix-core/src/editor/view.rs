@@ -25,8 +25,8 @@
 use devix_protocol::path::{Path, PathError};
 use devix_protocol::protocol::RequestError;
 use devix_protocol::view::{
-    Axis as ViewAxis, BufferLine, CursorMark, GutterMode, SidebarSlot as ViewSidebarSlot, Style,
-    TabItem, TextSpan, View, ViewNodeId,
+    Axis as ViewAxis, BufferLine, CursorMark, GutterMode, SelectionMark,
+    SidebarSlot as ViewSidebarSlot, Style, TabItem, TextSpan, View, ViewNodeId,
 };
 
 use crate::Pane;
@@ -150,6 +150,7 @@ fn build_active_buffer(frame: &LayoutFrame, editor: &Editor) -> View {
         return View::Empty;
     };
     let cursor_mark = char_to_line_col(doc, head.head);
+    let selection = build_selection_marks(doc, &cursor.selection);
     let (lines, gutter_width) = materialize_visible_lines(
         editor,
         cursor.doc,
@@ -161,7 +162,7 @@ fn build_active_buffer(frame: &LayoutFrame, editor: &Editor) -> View {
         path: doc_path,
         scroll_top_line: cursor.scroll.0,
         cursor: Some(cursor_mark),
-        selection: Vec::new(),
+        selection,
         highlights: Vec::new(),
         gutter: GutterMode::LineNumbers,
         lines,
@@ -169,6 +170,31 @@ fn build_active_buffer(frame: &LayoutFrame, editor: &Editor) -> View {
         active: true,
         transition: None,
     }
+}
+
+/// Materialize every range in `selection` as a `SelectionMark` in
+/// (line, col) form. Includes empty ranges — multicursor secondaries
+/// appear as zero-extent marks per `frontend.md` § *View::Buffer*.
+/// `paint_view::paint_buffer` consumes the list to overlay selection
+/// background + extra-cursor reverse cells.
+fn build_selection_marks(doc: &Document, selection: &devix_text::Selection) -> Vec<SelectionMark> {
+    let buf = &doc.buffer;
+    selection
+        .ranges()
+        .iter()
+        .map(|r| {
+            let s_line = buf.line_of_char(r.start());
+            let s_col = r.start().saturating_sub(buf.line_start(s_line));
+            let e_line = buf.line_of_char(r.end());
+            let e_col = r.end().saturating_sub(buf.line_start(e_line));
+            SelectionMark {
+                start_line: s_line as u32,
+                start_col: s_col as u32,
+                end_line: e_line as u32,
+                end_col: e_col as u32,
+            }
+        })
+        .collect()
 }
 
 fn walk_sidebar(

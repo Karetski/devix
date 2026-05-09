@@ -426,6 +426,43 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-08 — T-95 partial: selection + extra-cursor paint passes
+  in paint_view.**
+
+  The View producer (`editor::view::build_active_buffer`) now
+  materializes `View::Buffer.selection` from `cursor.selection.ranges()`
+  via a `build_selection_marks` helper — one `SelectionMark` per
+  range, in (line, col) form, with zero-extent marks for
+  multicursor secondaries (per `frontend.md` § *View::Buffer*).
+
+  `view_paint::paint_buffer` consumes the new field via two new
+  passes:
+
+  - `paint_selection_overlay` walks the materialized window and
+    paints `Modifier::REVERSED` over every cell inside a non-empty
+    mark. Single-line marks paint `[start_col, end_col)` on
+    `start_line`; multi-line marks paint
+    `start_col..line_end` on the first line, the full row on
+    intermediate lines, and `0..end_col` on the last line. Mirrors
+    the legacy `editor::buffer::paint_selection`.
+  - `paint_extra_cursor_marks` paints a reverse cell for every
+    zero-extent mark whose `(line, col)` differs from the primary
+    `cursor` field. The primary's coordinate is suppressed because
+    `set_cursor_position` paints it instead. Mirrors the legacy
+    `paint_extra_cursors`.
+
+  Tests:
+  `view_paint::tests::buffer_paints_selection_background` and
+  `buffer_paints_extra_cursor_marks` exercise the new behaviour.
+
+  Still deferred for the T-95 full close: the producer's
+  `walk_sidebar` returns `View::Sidebar { content: View::Empty }`,
+  so `Application::render` cannot switch to `paint_view` without
+  losing plugin-pane content. The renderer-switch gate now waits
+  on plugin-pane → View IR integration (a `Pane::view(area) ->
+  View` trait method or an equivalent walker hook), not just on
+  selection passes.
+
 - **2026-05-08 — T-80 full close: HighlightActor wires onto Editor.**
 
   Editor gains three highlight fields: `highlight_cache:
