@@ -426,6 +426,31 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-08 — T-110 follow-up: engines version negotiation gate.**
+
+  `devix-protocol::protocol` gains three constants —
+  `HOST_PROTOCOL_VERSION`, `HOST_PULSE_BUS_VERSION`,
+  `HOST_MANIFEST_VERSION` (all `ProtocolVersion::new(0, 1)` in v0)
+  — which are the canonical statement of the host's advertised
+  versions. `PluginRuntime::install_with_manifest` consults them
+  through a new private `engines_compatible(manifest, plugin_path,
+  bus)` helper at the top of the install path: any major-version
+  mismatch on `engines.devix` / `engines.pulse_bus` /
+  `engines.manifest` publishes `Pulse::PluginError` (one per
+  offending surface) and short-circuits the install — every
+  contribution is skipped, including capability-gated ones, so a
+  major-mismatched plugin can't sneak in via a partial path.
+
+  Minor mismatches are *not* refused: the negotiated value is
+  `min(declared, host)` per *Versioning alignment*, but capability
+  bits gate visibility of new features rather than raw minor
+  numbers (a plugin asking for `pulse_bus = 0.5` against a host
+  `0.1` simply doesn't see pulses added in `0.2`–`0.5`, which is
+  the same outcome as if it had asked for `0.1`).
+
+  Test:
+  `plugin::tests::engines_major_mismatch_refuses_install`.
+
 - **2026-05-08 — T-95 partial: selection + extra-cursor paint passes
   in paint_view.**
 

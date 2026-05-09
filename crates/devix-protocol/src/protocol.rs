@@ -309,6 +309,20 @@ pub enum PathKind {
     Plugin,
 }
 
+/// Host's negotiated wire-protocol version. Plugins declare a
+/// required version in `engines.devix`; hosts negotiate the lower
+/// of the two minor versions when the majors match, refuse to load
+/// when majors mismatch (per `foundations-review.md` §
+/// *Versioning alignment*).
+pub const HOST_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(0, 1);
+/// Host's pulse-bus catalog version. Plugins declare a required
+/// version in `engines.pulse_bus`; same negotiation rules as
+/// `HOST_PROTOCOL_VERSION`.
+pub const HOST_PULSE_BUS_VERSION: ProtocolVersion = ProtocolVersion::new(0, 1);
+/// Host's manifest schema version. Plugins declare a required
+/// version in `engines.manifest`; same negotiation rules.
+pub const HOST_MANIFEST_VERSION: ProtocolVersion = ProtocolVersion::new(0, 1);
+
 // -- Hello / Welcome --------------------------------------------------------
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -527,6 +527,20 @@ impl PluginRuntime {
             manifest.name
         ))
         .ok();
+
+        // Engines version negotiation per `foundations-review.md`
+        // § *Versioning alignment*. Three independently-versioned
+        // surfaces (protocol, pulse bus, manifest) — each compared
+        // against the host's. Major mismatch is fatal: skip every
+        // contribution and publish `Pulse::PluginError`. Minor: the
+        // negotiated value is `min(declared_minor, host_minor)`,
+        // but enforcement is implicit — features added in higher
+        // minors aren't visible to a plugin asking for a lower
+        // minor (T-110 keeps capability bits as the visibility
+        // gate; this check only refuses majors).
+        if !engines_compatible(manifest, &plugin_path, bus) {
+            return 0;
+        }
         let sender = self.invoke_tx.clone();
 
         // Capability gate (T-110, warn-and-degrade per `protocol.md` Q2).
@@ -734,6 +748,48 @@ impl PluginRuntime {
         }
         false
     }
+}
+
+/// Compare a manifest's `engines` block against the host's wire
+/// versions. Returns `true` when every surface's major version
+/// matches the host's. Major mismatches publish a single
+/// `Pulse::PluginError` per offending surface and return `false`
+/// so the caller can skip every contribution. Minor mismatches are
+/// allowed silently — the negotiated value is `min(declared_minor,
+/// host_minor)`, but capability bits gate visibility of new
+/// features rather than version numbers.
+fn engines_compatible(
+    manifest: &devix_protocol::manifest::Manifest,
+    plugin_path: &Option<devix_protocol::path::Path>,
+    bus: &crate::PulseBus,
+) -> bool {
+    use devix_protocol::protocol::{
+        HOST_MANIFEST_VERSION, HOST_PROTOCOL_VERSION, HOST_PULSE_BUS_VERSION, ProtocolVersion,
+    };
+    let mut ok = true;
+    let mut emit_mismatch = |surface: &str, declared: ProtocolVersion, host: ProtocolVersion| {
+        ok = false;
+        if let Some(pp) = plugin_path {
+            bus.publish(devix_protocol::pulse::Pulse::PluginError {
+                plugin: pp.clone(),
+                message: format!(
+                    "engines.{} major version mismatch: plugin declares {}.{}, host \
+                     supports {}.{}",
+                    surface, declared.major, declared.minor, host.major, host.minor,
+                ),
+            });
+        }
+    };
+    if manifest.engines.protocol_version.major != HOST_PROTOCOL_VERSION.major {
+        emit_mismatch("devix", manifest.engines.protocol_version, HOST_PROTOCOL_VERSION);
+    }
+    if manifest.engines.pulse_bus.major != HOST_PULSE_BUS_VERSION.major {
+        emit_mismatch("pulse_bus", manifest.engines.pulse_bus, HOST_PULSE_BUS_VERSION);
+    }
+    if manifest.engines.manifest.major != HOST_MANIFEST_VERSION.major {
+        emit_mismatch("manifest", manifest.engines.manifest, HOST_MANIFEST_VERSION);
+    }
+    ok
 }
 
 /// The host's negotiated capability set. Today every bit is set —

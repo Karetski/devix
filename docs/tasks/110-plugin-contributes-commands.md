@@ -71,6 +71,27 @@ function.
     asserts (a) the registry stays empty, (b) `Pulse::PluginError`
     fires.
 
+- **2026-05-08 follow-up (engines version negotiation).**
+  - `devix-protocol::protocol` exports
+    `HOST_PROTOCOL_VERSION` / `HOST_PULSE_BUS_VERSION` /
+    `HOST_MANIFEST_VERSION` constants (all `0.1` in v0). They are
+    the single source of truth for the host's wire-version advert.
+  - `install_with_manifest` checks `manifest.engines.{devix,
+    pulse_bus, manifest}.major` against the matching host version
+    *before* any contribution work. Major mismatch publishes
+    `Pulse::PluginError` (one per offending surface) and skips the
+    full install (returns 0). Minor mismatch is silent — the
+    negotiated value is `min(declared, host)` per
+    `foundations-review.md` § *Versioning alignment*, but
+    capability bits gate visibility of new features rather than
+    raw minor numbers, so no enforcement is needed at the version
+    layer.
+  - Test:
+    `engines_major_mismatch_refuses_install` pins a manifest with
+    `engines.devix = "5.0"` against the host's `0.1`; asserts no
+    contributions register and `Pulse::PluginError` fires citing
+    `engines.devix`.
+
 - *Originally deferred* (kept for history):
   - Capability negotiation — closed in the follow-up above.
   - **Keymap-from-manifest with plugin paths**. The manifest schema

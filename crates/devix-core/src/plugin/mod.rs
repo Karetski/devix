@@ -470,6 +470,86 @@ mod tests {
         p
     }
 
+    /// T-110 — engines major-version mismatch refuses every
+    /// contribution and publishes `Pulse::PluginError`. Plugin
+    /// declares `engines.devix = "5.0"`; host is `0.1`; majors
+    /// differ → mismatch.
+    #[test]
+    fn engines_major_mismatch_refuses_install() {
+        use devix_protocol::manifest::{
+            CommandSpec as ManifestCommandSpec, Contributes, Engines, Manifest,
+        };
+        use devix_protocol::path::Path as DevixPath;
+        use devix_protocol::protocol::ProtocolVersion;
+        use devix_protocol::pulse::{Pulse, PulseFilter, PulseKind};
+        use devix_protocol::Lookup;
+
+        let p = write_temp(
+            "future_plug",
+            r#"
+                devix.register_action({
+                    id = "from-future",
+                    label = "Future",
+                    run = function() end,
+                })
+            "#,
+        );
+
+        let manifest = Manifest {
+            name: "future-plug".into(),
+            version: "1.0.0".into(),
+            engines: Engines {
+                protocol_version: ProtocolVersion::new(5, 0),
+                pulse_bus: ProtocolVersion::new(0, 1),
+                manifest: ProtocolVersion::new(0, 1),
+            },
+            entry: None,
+            contributes: Contributes {
+                commands: vec![ManifestCommandSpec {
+                    id: "from-future".into(),
+                    label: "Future".into(),
+                    category: None,
+                    lua_handle: None,
+                }],
+                ..Default::default()
+            },
+            subscribe: Vec::new(),
+        };
+
+        let bus = crate::PulseBus::new();
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Pulse>::new()));
+        let cap = captured.clone();
+        bus.subscribe(PulseFilter::kind(PulseKind::PluginError), move |p| {
+            cap.lock().unwrap().push(p.clone());
+        });
+
+        let mut runtime = PluginRuntime::load(&p).unwrap();
+        let mut commands = CommandRegistry::new();
+        let mut keymap = Keymap::new();
+        let mut editor = Editor::open(None).unwrap();
+        let count = runtime.install_with_manifest(
+            &mut commands,
+            &mut keymap,
+            &mut editor,
+            &manifest,
+            &bus,
+        );
+        assert_eq!(count, 0, "no contributions install with major-version mismatch");
+        let plugin_cmd =
+            DevixPath::parse("/plugin/future-plug/cmd/from-future").unwrap();
+        assert!(
+            commands.lookup(&plugin_cmd).is_none(),
+            "command not registered when engines refuse",
+        );
+        let pulses = captured.lock().unwrap();
+        assert!(
+            pulses.iter().any(|p| {
+                matches!(p, Pulse::PluginError { message, .. } if message.contains("engines.devix"))
+            }),
+            "PluginError fires explaining engines.devix mismatch (got {pulses:?})",
+        );
+    }
+
     #[test]
     fn manifest_driven_commands_register_at_plugin_namespace() {
         use devix_protocol::manifest::{
