@@ -229,7 +229,7 @@ impl PluginRuntime {
         // then falls on the floor instead of bubbling into the
         // editor (acceptable for tests; production uses
         // `load_supervised`).
-        let bus = bus.unwrap_or_else(crate::PulseBus::new);
+        let bus = bus.unwrap_or_default();
 
         // The setting-callbacks list is shared between the host (where
         // `devix.on_setting_changed(cb)` registers handles) and the

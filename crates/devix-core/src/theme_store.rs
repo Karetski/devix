@@ -108,8 +108,10 @@ mod tests {
 
     fn manifest_with_theme(name: &str, theme_id: &str, scope_color: Color) -> Manifest {
         let mut scopes = HashMap::new();
-        let mut style = Style::default();
-        style.fg = Some(scope_color);
+        let style = Style {
+            fg: Some(scope_color),
+            ..Default::default()
+        };
         scopes.insert("keyword".to_string(), style);
         Manifest {
             name: name.to_string(),

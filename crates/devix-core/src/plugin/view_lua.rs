@@ -258,7 +258,7 @@ fn paint_stack(
         let span = if i + 1 == children.len() {
             extent.saturating_sub(consumed)
         } else {
-            (extent.saturating_mul(w) / total).max(0)
+            extent.saturating_mul(w) / total
         };
         let span_u16 = span.min(u16::MAX as u32) as u16;
         let child_area = match axis {

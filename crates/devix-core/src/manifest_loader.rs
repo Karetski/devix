@@ -563,18 +563,16 @@ mod tests {
             action: Arc::new(Quit),
         });
 
-        let json = format!(
-            r#"{{
+        let json = r#"{
                 "name": "acme",
                 "version": "0.1.0",
-                "engines": {{ "devix": "0.1", "pulse_bus": "0.1", "manifest": "0.1" }},
-                "contributes": {{
+                "engines": { "devix": "0.1", "pulse_bus": "0.1", "manifest": "0.1" },
+                "contributes": {
                     "keymaps": [
-                        {{ "key": "ctrl-d", "command": "/plugin/acme/cmd/do-thing" }}
+                        { "key": "ctrl-d", "command": "/plugin/acme/cmd/do-thing" }
                     ]
-                }}
-            }}"#
-        );
+                }
+            }"#;
         let m: Manifest = parse_manifest_bytes(
             json.as_bytes(),
             FsPath::new("/test/manifest.json"),

@@ -1197,8 +1197,10 @@ mod tests {
         use std::collections::HashMap;
         let mut ws = Editor::open(None).unwrap();
         let mut scopes = HashMap::new();
-        let mut keyword_style = ViewStyle::default();
-        keyword_style.fg = Some(Color::Rgb(1, 2, 3));
+        let keyword_style = ViewStyle {
+            fg: Some(Color::Rgb(1, 2, 3)),
+            ..Default::default()
+        };
         scopes.insert("keyword".to_string(), keyword_style);
         let manifest = Manifest {
             name: "themepack".into(),

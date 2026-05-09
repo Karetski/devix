@@ -13,7 +13,7 @@
 //! `Editor::view`'s `walk_layout` reads) lands together with T-95's
 //! producer materialization. This module ships the supervised worker
 //! + the request channel; the cache + view-producer hook-up is the
-//! follow-on.
+//!   follow-on.
 //!
 //! ## Channel topology
 //!

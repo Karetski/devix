@@ -182,7 +182,7 @@ impl PaneRegistry {
     fn sidebar_content_for(&self, slot: SidebarSlot) -> Option<&dyn Pane> {
         // Walk the tree, find the LayoutSidebar with matching slot,
         // return its `content`'s pane reference.
-        fn walk<'a>(node: &'a dyn Pane, slot: SidebarSlot) -> Option<&'a dyn Pane> {
+        fn walk(node: &dyn Pane, slot: SidebarSlot) -> Option<&dyn Pane> {
             if let Some(sb) = node.as_any().and_then(|a| a.downcast_ref::<LayoutSidebar>()) {
                 if sb.slot == slot {
                     return sb.content.as_deref();
@@ -303,7 +303,7 @@ fn walk_pane_paths_via_trait(
     }
 }
 
-fn pane_find_frame<'a>(node: &'a dyn Pane, fid: FrameId) -> Option<&'a LayoutFrame> {
+fn pane_find_frame(node: &dyn Pane, fid: FrameId) -> Option<&LayoutFrame> {
     if let Some(frame) = node.as_any().and_then(|a| a.downcast_ref::<LayoutFrame>()) {
         if frame.frame == fid {
             return Some(frame);
@@ -318,10 +318,7 @@ fn pane_find_frame<'a>(node: &'a dyn Pane, fid: FrameId) -> Option<&'a LayoutFra
     None
 }
 
-fn pane_find_frame_mut<'a>(
-    node: &'a mut dyn Pane,
-    fid: FrameId,
-) -> Option<&'a mut LayoutFrame> {
+fn pane_find_frame_mut(node: &mut dyn Pane, fid: FrameId) -> Option<&mut LayoutFrame> {
     let direct_match = node
         .as_any()
         .and_then(|a| a.downcast_ref::<LayoutFrame>())
@@ -337,10 +334,7 @@ fn pane_find_frame_mut<'a>(
     None
 }
 
-fn pane_find_sidebar_mut<'a>(
-    node: &'a mut dyn Pane,
-    slot: SidebarSlot,
-) -> Option<&'a mut LayoutSidebar> {
+fn pane_find_sidebar_mut(node: &mut dyn Pane, slot: SidebarSlot) -> Option<&mut LayoutSidebar> {
     let direct_match = node
         .as_any()
         .and_then(|a| a.downcast_ref::<LayoutSidebar>())
@@ -411,12 +405,12 @@ fn pane_at_path_with_rect<'a>(
     Some((cur_area, cur))
 }
 
-fn pane_hit_test<'a>(
-    node: &'a dyn Pane,
+fn pane_hit_test(
+    node: &dyn Pane,
     area: Rect,
     col: u16,
     row: u16,
-) -> Option<(Rect, &'a dyn Pane)> {
+) -> Option<(Rect, &dyn Pane)> {
     if !rect_contains(area, col, row) {
         return None;
     }
