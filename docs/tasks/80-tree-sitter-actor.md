@@ -1,6 +1,6 @@
 # Task T-80 — Tree-sitter highlighter as supervised actor
 Stage: 8
-Status: partial — supervised actor + Pulse::HighlightsReady ship; Document::apply_tx integration deferred to T-95's producer-materialization sprint
+Status: complete — supervised actor wires onto Editor; cache populates from Pulse::HighlightsReady; apply_tx_to dispatches parse requests; view producer reads cache (with synchronous highlighter fallback)
 Depends on: T-63, T-82
 Blocks:     T-95
 
@@ -67,6 +67,48 @@ already present, with an Amendment-log entry).
   `View::Buffer` carries highlight runs as part of the same
   refactor). For now the actor is an independent primitive — opt-in
   consumers wire it up; default `Document` behaviour is unchanged.
+
+## Notes (2026-05-08) — full close: editor-owned actor + cache
+
+T-80's deferred consumer hookup lands. End state:
+
+- **`Editor` owns the actor + cache.** New fields:
+  - `highlight_cache: Arc<Mutex<HashMap<DocId, Vec<HighlightSpan>>>>` —
+    populated by the editor's bus subscriber for
+    `Pulse::HighlightsReady`.
+  - `highlight_parse_tx: Option<ParseSender>` — the editor's clone of
+    the actor's parse-request channel sender. Declared *before*
+    `highlight_actor` in the struct so it drops first; otherwise the
+    actor's drop-time supervisor join would hang waiting for the
+    receiver to close (the receiver only wakes when every sender
+    clone is gone).
+  - `highlight_actor: Option<HighlightActor>` — supervised handle.
+- **`Editor::open` spawns + subscribes + dispatches initial parses.**
+  Best-effort: `HighlightActor::spawn` failure leaves both fields
+  `None`; the synchronous highlighter fallback keeps highlights
+  working (degraded — runs on the main thread).
+- **`Editor::apply_tx_to(did, tx)`** is the new wrapper command sites
+  call. It applies the transaction to the document and dispatches a
+  fresh `ParseRequest`. The three `editor.documents[did].apply_tx(tx)`
+  call sites in `editor::commands::dispatch` now route through it.
+- **`Editor::highlights_for(did, start, end)`** is the reader-side
+  hook. Reads from the cache; falls back to `doc.highlights(...)`
+  when the cache is cold (just-opened buffer hasn't received its
+  first `HighlightsReady` yet) or the document has no language.
+  `editor::view::materialize_visible_lines` consumes it.
+- **Test:** `editor::editor::tests::apply_tx_to_populates_highlight_cache_for_typed_doc`
+  opens a Rust file, drains the bus until the initial parse lands,
+  applies a transaction through the wrapper, and asserts the cache
+  refreshes (more spans after the second buffer mutation). Round-trip
+  is sub-50ms in practice; deadline is 2s for CI variance.
+
+`Document.highlighter` is *not yet* retired — the legacy direct-paint
+renderer (`editor::buffer`/`editor::tree`) still consumes
+`doc.highlights(...)` synchronously, and that path stays the
+production renderer until T-95 closes. Once `paint_view` is the only
+renderer, `Document.highlighter` retires and the synchronous fallback
+in `Editor::highlights_for` collapses to "empty span list when cache
+is cold."
 
 ## Spec references
 - `docs/principles.md` — *Erlang/OTP — supervised isolation, let it

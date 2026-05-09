@@ -150,8 +150,12 @@ fn build_active_buffer(frame: &LayoutFrame, editor: &Editor) -> View {
         return View::Empty;
     };
     let cursor_mark = char_to_line_col(doc, head.head);
-    let (lines, gutter_width) =
-        materialize_visible_lines(doc, cursor.scroll.0 as usize, &editor.theme);
+    let (lines, gutter_width) = materialize_visible_lines(
+        editor,
+        cursor.doc,
+        cursor.scroll.0 as usize,
+        &editor.theme,
+    );
     View::Buffer {
         id: ViewNodeId(doc_path.clone()),
         path: doc_path,
@@ -295,7 +299,8 @@ fn doc_dirty(cursor_id: CursorId, editor: &Editor) -> bool {
 /// `scroll_top` until the spec gains an explicit
 /// `request_visible_rows` field.
 fn materialize_visible_lines(
-    doc: &Document,
+    editor: &Editor,
+    doc_id: crate::editor::document::DocId,
     scroll_top: usize,
     theme: &Theme,
 ) -> (Vec<BufferLine>, u32) {
@@ -305,6 +310,9 @@ fn materialize_visible_lines(
     /// request payload.
     const MATERIALIZE_WINDOW: usize = 200;
 
+    let Some(doc) = editor.documents.get(doc_id) else {
+        return (Vec::new(), 0);
+    };
     let line_count = doc.buffer.line_count();
     if line_count == 0 {
         return (Vec::new(), 0);
@@ -316,7 +324,11 @@ fn materialize_visible_lines(
     let top = scroll_top.min(line_count);
     let bottom = (top + MATERIALIZE_WINDOW).min(line_count);
 
-    // Highlights for the entire visible byte range.
+    // Highlights for the entire visible byte range. Reads from the
+    // editor's `highlight_cache` first (populated by the supervised
+    // `HighlightActor` per Pulse::HighlightsReady); falls back to
+    // the document's synchronous highlighter when the cache is cold
+    // or unset. T-80 wire-up.
     let rope = doc.buffer.rope();
     let start_byte = rope.line_to_byte(top);
     let end_byte = if bottom >= line_count {
@@ -324,7 +336,7 @@ fn materialize_visible_lines(
     } else {
         rope.line_to_byte(bottom)
     };
-    let highlights = doc.highlights(start_byte, end_byte);
+    let highlights = editor.highlights_for(doc_id, start_byte, end_byte);
 
     let mut out = Vec::with_capacity(bottom.saturating_sub(top));
     for line_idx in top..bottom {

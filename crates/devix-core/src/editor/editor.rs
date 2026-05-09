@@ -14,9 +14,11 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
+use devix_text::Transaction;
+use devix_syntax::HighlightSpan;
 use crate::{Pane, Rect};
 
 use crate::editor::cursor::{Cursor, CursorId};
@@ -25,6 +27,7 @@ use crate::editor::document::{DocId, Document};
 use crate::editor::focus_chain::FocusChain;
 use crate::editor::frame::{FrameId, mint_id};
 use crate::editor::modal_slot::ModalSlot;
+use crate::highlight_actor::{HighlightActor, ParseRequest, ParseSender, send_parse};
 use crate::SidebarSlot;
 use crate::editor::registry::PaneRegistry;
 use crate::editor::tree::frame_pane;
@@ -124,6 +127,37 @@ pub struct Editor {
     /// `Editor` so command paths and plugin runtimes share one
     /// source of truth; mutations publish `Pulse::SettingChanged`.
     pub settings_store: Arc<std::sync::Mutex<SettingsStore>>,
+    /// Tree-sitter highlight cache, keyed by `DocId`. Populated by
+    /// the editor's `Pulse::HighlightsReady` subscriber from the
+    /// supervised `HighlightActor` (T-80). View producers
+    /// (`editor::view::materialize_visible_lines`) read from this
+    /// cache; absence falls back to the document's synchronous
+    /// highlighter until T-95 retires the legacy renderer entirely.
+    /// `Arc<Mutex<…>>` lets the bus subscriber populate from any
+    /// thread without coupling Editor to its own subscription
+    /// closure's borrow shape.
+    pub highlight_cache: Arc<Mutex<HashMap<DocId, Vec<HighlightSpan>>>>,
+    /// Sender clone for the highlight actor's parse-request channel.
+    /// `apply_tx_to` dispatches a `ParseRequest` here after every
+    /// transaction; cloned out of `highlight_actor.parse_sender()`
+    /// at startup so it survives `&self` borrow stalls. `None`
+    /// mirrors `highlight_actor`.
+    ///
+    /// **Drop order matters**: this field is declared *before*
+    /// `highlight_actor` so it drops first when the editor is
+    /// dropped. The actor's drop joins the supervisor thread; the
+    /// supervisor's worker is parked on `rx.recv().await` waiting
+    /// on the parse-request channel, so the receiver only wakes
+    /// when *every* sender clone is dropped. If this clone outlived
+    /// the actor's drop, the join would hang forever.
+    highlight_parse_tx: Option<ParseSender>,
+    /// Supervised tree-sitter highlighter handle (T-80). Holding
+    /// `Some` keeps the worker thread alive; the Editor's `Drop`
+    /// drops the handle and the supervisor tears down. `None` only
+    /// when actor spawn failed at startup (best-effort — the
+    /// synchronous highlighter still works as a fallback).
+    #[allow(dead_code)]
+    pub(crate) highlight_actor: Option<HighlightActor>,
 }
 
 impl Editor {
@@ -154,6 +188,52 @@ impl Editor {
         for id in documents.keys().collect::<Vec<_>>() {
             install_bus_watcher_for_doc(&mut documents, id, &bus);
         }
+        // Subscribe to Pulse::HighlightsReady so the supervised
+        // highlighter actor's results land in the editor's cache.
+        // The subscriber is `Send + Sync`; the cache is wrapped in
+        // `Arc<Mutex<…>>` to satisfy that bound.
+        let highlight_cache: Arc<Mutex<HashMap<DocId, Vec<HighlightSpan>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        {
+            let cache = highlight_cache.clone();
+            bus.subscribe(
+                devix_protocol::pulse::PulseFilter::kind(
+                    devix_protocol::pulse::PulseKind::HighlightsReady,
+                ),
+                move |pulse| {
+                    if let devix_protocol::pulse::Pulse::HighlightsReady { doc, highlights } =
+                        pulse
+                    {
+                        let Some(did) = DocId::id_from_path(doc) else { return };
+                        if let Ok(mut c) = cache.lock() {
+                            c.insert(did, highlights.clone());
+                        }
+                    }
+                },
+            );
+        }
+        let (highlight_actor, highlight_parse_tx) = match HighlightActor::spawn(bus.clone()) {
+            Ok(actor) => {
+                let tx = actor.parse_sender();
+                (Some(actor), Some(tx))
+            }
+            Err(_) => (None, None),
+        };
+        // Dispatch initial parse requests so the cache populates
+        // before the first paint reads it. Documents without a
+        // detected language stay out of the cache; the view
+        // producer's fallback handles that case.
+        if let Some(tx) = highlight_parse_tx.as_ref() {
+            for (did, doc) in documents.iter() {
+                let Some(language) = doc.language() else { continue };
+                let req = ParseRequest {
+                    doc: did.to_path(),
+                    language,
+                    rope: doc.buffer.rope().clone(),
+                };
+                let _ = send_parse(tx, req);
+            }
+        }
         Ok(Self {
             documents,
             cursors,
@@ -165,8 +245,64 @@ impl Editor {
             active_theme_id: None,
             theme_store: ThemeStore::new(),
             settings_store: Arc::new(std::sync::Mutex::new(SettingsStore::new())),
+            highlight_cache,
+            highlight_parse_tx,
+            highlight_actor,
             bus,
         })
+    }
+
+    /// Apply `tx` to `did` and dispatch a fresh parse request to
+    /// the supervised highlighter actor (T-80 wire-up). Callers that
+    /// need the cache to update after a buffer change should use
+    /// this rather than `editor.documents[did].apply_tx(tx)`
+    /// directly — the latter only updates the document's
+    /// synchronous highlighter (the legacy renderer's source) and
+    /// leaves `highlight_cache` stale.
+    pub fn apply_tx_to(&mut self, did: DocId, tx: Transaction) {
+        let doc = match self.documents.get_mut(did) {
+            Some(d) => d,
+            None => return,
+        };
+        let language = doc.language();
+        doc.apply_tx(tx);
+        let Some(language) = language else { return };
+        let Some(tx_handle) = self.highlight_parse_tx.as_ref() else { return };
+        let _ = send_parse(
+            tx_handle,
+            ParseRequest {
+                doc: did.to_path(),
+                language,
+                rope: doc.buffer.rope().clone(),
+            },
+        );
+    }
+
+    /// Resolve highlight spans for `did` against `[start_byte, end_byte)`.
+    /// Reads from `highlight_cache` first; falls back to the
+    /// document's synchronous highlighter when the actor hasn't
+    /// published yet (cold start, just-opened buffer) or when the
+    /// document has no language set. T-80 wire-up's reader-side
+    /// hook for the View producer.
+    pub fn highlights_for(
+        &self,
+        did: DocId,
+        start_byte: usize,
+        end_byte: usize,
+    ) -> Vec<HighlightSpan> {
+        if let Ok(cache) = self.highlight_cache.lock() {
+            if let Some(spans) = cache.get(&did) {
+                return spans
+                    .iter()
+                    .filter(|s| s.end_byte > start_byte && s.start_byte < end_byte)
+                    .cloned()
+                    .collect();
+            }
+        }
+        match self.documents.get(did) {
+            Some(doc) => doc.highlights(start_byte, end_byte),
+            None => Vec::new(),
+        }
     }
 
 
@@ -442,6 +578,68 @@ mod tests {
         assert_eq!(ws.cursors.len(), 1);
         assert_eq!(ws.documents.len(), 1);
         assert!(ws.active_cursor().is_some());
+    }
+
+    /// T-80 wire-up — `Editor::apply_tx_to` dispatches a parse
+    /// request to the supervised highlighter actor. The cache is
+    /// populated when the actor publishes `Pulse::HighlightsReady`
+    /// after the editor drains the bus.
+    #[test]
+    fn apply_tx_to_populates_highlight_cache_for_typed_doc() {
+        use devix_text::{Selection, replace_selection_tx};
+        let dir = std::env::temp_dir().join(format!("devix-hl-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("a.rs");
+        std::fs::write(&p, "fn a() {}").unwrap();
+
+        let mut ws = Editor::open(Some(p.clone())).unwrap();
+        let did = ws.active_cursor().unwrap().doc;
+
+        // Spin until the initial parse from `Editor::open`
+        // materializes via the bus subscriber. With a healthy actor
+        // the round-trip is sub-50ms; cap at 2s.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            ws.bus.drain();
+            if let Ok(c) = ws.highlight_cache.lock() {
+                if c.get(&did).is_some_and(|v| !v.is_empty()) {
+                    break;
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("highlight cache stayed empty after Editor::open");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        // Apply a transaction through the editor wrapper and
+        // confirm a fresh parse lands.
+        let prev_count = ws.highlight_cache.lock().unwrap()
+            .get(&did)
+            .map(|v| v.len())
+            .unwrap_or(0);
+        let tx = replace_selection_tx(
+            &ws.documents[did].buffer,
+            &Selection::point(ws.documents[did].buffer.len_chars()),
+            "\nfn b() {}",
+        );
+        ws.apply_tx_to(did, tx);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            ws.bus.drain();
+            if let Ok(c) = ws.highlight_cache.lock() {
+                let new_len = c.get(&did).map(|v| v.len()).unwrap_or(0);
+                if new_len > prev_count {
+                    break;
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("highlight cache did not refresh after apply_tx_to");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

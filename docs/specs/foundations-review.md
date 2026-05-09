@@ -426,6 +426,49 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-08 — T-80 full close: HighlightActor wires onto Editor.**
+
+  Editor gains three highlight fields: `highlight_cache:
+  Arc<Mutex<HashMap<DocId, Vec<HighlightSpan>>>>`, `highlight_parse_tx:
+  Option<ParseSender>`, and `highlight_actor: Option<HighlightActor>`.
+  `Editor::open` spawns the supervised actor (best-effort —
+  spawn-failure leaves both as `None` and the synchronous fallback
+  carries the editor), subscribes a bus handler that fans
+  `Pulse::HighlightsReady` payloads into the cache, and dispatches
+  initial parse requests for every typed document so the cache is
+  warm before the first paint.
+
+  `Editor::apply_tx_to(did, tx)` is the new mutation entry point.
+  Applies the transaction to the document, then dispatches a fresh
+  `ParseRequest` through the editor's `highlight_parse_tx`. The three
+  `editor.documents[did].apply_tx(tx)` call sites in
+  `editor::commands::dispatch` (`replace_selection`, `delete_each_or`,
+  `do_cut`) all migrate to it.
+
+  `Editor::highlights_for(did, start, end)` is the reader-side hook.
+  Reads from the cache (filtered to byte range); falls back to
+  `doc.highlights(...)` when the cache is cold for `did` (T-95 will
+  retire that fallback once the synchronous `Document.highlighter`
+  goes away).
+  `editor::view::materialize_visible_lines` (the View producer's
+  per-line span builder) reads through this.
+
+  **Drop-order constraint locked in struct field declaration.**
+  `highlight_parse_tx` is declared *before* `highlight_actor` in
+  `Editor`, so on `Editor::drop` the editor's clone of the parse
+  channel's sender drops first, then the actor's drop joins the
+  supervisor's worker, which by then sees `rx.recv()` returning
+  `None` and exits cleanly. Reversed order would deadlock — the
+  worker is parked in `runtime.block_on(rx.recv().await)` and only
+  wakes when every sender clone is gone.
+
+  Test:
+  `editor::editor::tests::apply_tx_to_populates_highlight_cache_for_typed_doc`
+  opens a Rust file, drains the bus until the initial parse lands,
+  applies a transaction through the wrapper, and asserts the cache
+  grows on the second pass (within a 2s deadline; sub-50ms in
+  practice).
+
 - **2026-05-08 — T-95 partial: producer materialization shipped.**
 
   Design choice **(a) producer materializes full buffer state**

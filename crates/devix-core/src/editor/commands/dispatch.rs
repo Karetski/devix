@@ -78,7 +78,7 @@ pub(crate) fn replace_selection(cx: &mut Context<'_>, text: &str) {
         text,
     );
     let after = tx.selection_after.clone();
-    cx.editor.documents[did].apply_tx(tx);
+    cx.editor.apply_tx_to(did, tx);
     let c = &mut cx.editor.cursors[cid];
     c.selection = after;
     reset_motion_state(c);
@@ -105,7 +105,7 @@ pub(crate) fn delete_each_or(
         return;
     }
     let after = tx.selection_after.clone();
-    cx.editor.documents[did].apply_tx(tx);
+    cx.editor.apply_tx_to(did, tx);
     let c = &mut cx.editor.cursors[cid];
     c.selection = after;
     reset_motion_state(c);
@@ -158,7 +158,7 @@ pub(crate) fn do_cut(cx: &mut Context<'_>) {
         start, end,
     );
     let after = tx.selection_after.clone();
-    cx.editor.documents[did].apply_tx(tx);
+    cx.editor.apply_tx_to(did, tx);
     cx.editor.cursors[cid].adopt_selection(after);
 }
 
