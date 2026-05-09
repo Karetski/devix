@@ -11,6 +11,8 @@
 //! (`LayoutFrame`, `LayoutSidebar`, `LayoutSplit`) when typed access is
 //! required.
 
+use std::collections::HashMap;
+
 use ratatui::Frame;
 
 use crate::editor::frame::FrameId;
@@ -25,11 +27,51 @@ pub struct PaneRegistry {
     /// `LayoutSidebar`, `LayoutSplit`). Walks go through the trait;
     /// typed access uses `Pane::as_any` / `as_any_mut`.
     root: Box<dyn Pane>,
+    /// Plugin pane addressing — maps `(plugin_name, pane_id)` to the
+    /// sidebar slot the pane is mounted into. Populated by
+    /// `install_with_manifest` when manifest-declared panes install;
+    /// resolved by [`PaneRegistry::pane_at`] when the path begins
+    /// with `/plugin/<name>/pane/<id>` per `namespace.md` § *Migration
+    /// table*. T-111 follow-up — closes the path-addressing
+    /// deferred from the original Stage-11 partial.
+    plugin_panes: HashMap<(String, String), SidebarSlot>,
 }
 
 impl PaneRegistry {
     pub fn new(root: Box<dyn Pane>) -> Self {
-        Self { root }
+        Self {
+            root,
+            plugin_panes: HashMap::new(),
+        }
+    }
+
+    /// Record `(plugin_name, pane_id) -> slot` so that
+    /// `panes.pane_at("/plugin/<plugin_name>/pane/<pane_id>")`
+    /// resolves to the installed sidebar pane. Idempotent: a
+    /// re-register (e.g. after a supervised restart) overwrites the
+    /// slot mapping.
+    pub fn register_plugin_pane(
+        &mut self,
+        plugin_name: &str,
+        pane_id: &str,
+        slot: SidebarSlot,
+    ) {
+        self.plugin_panes
+            .insert((plugin_name.to_string(), pane_id.to_string()), slot);
+    }
+
+    /// Iterate the registered `(plugin_name, pane_id, slot)`
+    /// triples. For tests + future debugging UIs.
+    pub fn plugin_pane_paths(&self) -> Vec<devix_protocol::path::Path> {
+        let mut out = Vec::new();
+        for (name, id) in self.plugin_panes.keys() {
+            if let Ok(path) = devix_protocol::path::Path::parse(&format!(
+                "/plugin/{name}/pane/{id}",
+            )) {
+                out.push(path);
+            }
+        }
+        out
     }
 
     /// Read-only access to the root pane. Typed access (e.g.
@@ -100,11 +142,21 @@ impl PaneRegistry {
         self.root.render(area, &mut rctx);
     }
 
-    /// Resolve a `/pane(/<i>)*` path to the corresponding `&dyn Pane`.
-    /// Path segments after `pane` are 0-based indices into
-    /// `Pane::children`. Per `docs/specs/namespace.md` § *Migration
-    /// table* and T-52.
+    /// Resolve a path-addressed pane.
+    ///
+    /// Two forms are supported:
+    /// * `/pane(/<i>)*` — structural tree walk, child indices.
+    /// * `/plugin/<name>/pane/<id>` — plugin-contributed pane,
+    ///   resolved through `register_plugin_pane`'s slot table to
+    ///   the installed sidebar's content pane.
+    ///
+    /// Per `docs/specs/namespace.md` § *Migration table* and T-52
+    /// (structural form) + T-111 follow-up (plugin form).
     pub fn pane_at(&self, path: &devix_protocol::path::Path) -> Option<&dyn Pane> {
+        if let Some((name, id)) = plugin_pane_segments(path) {
+            let slot = self.plugin_panes.get(&(name.to_string(), id.to_string()))?;
+            return self.sidebar_content_for(*slot);
+        }
         let indices = pane_path_indices(path)?;
         pane_at_path(self.root.as_ref(), &indices)
     }
@@ -113,9 +165,40 @@ impl PaneRegistry {
         &mut self,
         path: &devix_protocol::path::Path,
     ) -> Option<&mut dyn Pane> {
+        if let Some((name, id)) = plugin_pane_segments(path) {
+            let slot = self
+                .plugin_panes
+                .get(&(name.to_string(), id.to_string()))
+                .copied()?;
+            let sb = self.find_sidebar_mut(slot)?;
+            return sb.content.as_deref_mut().map(|c| c as &mut dyn Pane);
+        }
         let indices = pane_path_indices(path)?;
         pane_at_path_mut(self.root.as_mut(), &indices)
     }
+
+    /// Read the installed `LayoutSidebar.content` for `slot`. Used
+    /// to back `pane_at` / `pane_at_mut`'s plugin path branch.
+    fn sidebar_content_for(&self, slot: SidebarSlot) -> Option<&dyn Pane> {
+        // Walk the tree, find the LayoutSidebar with matching slot,
+        // return its `content`'s pane reference.
+        fn walk<'a>(node: &'a dyn Pane, slot: SidebarSlot) -> Option<&'a dyn Pane> {
+            if let Some(sb) = node.as_any().and_then(|a| a.downcast_ref::<LayoutSidebar>()) {
+                if sb.slot == slot {
+                    return sb.content.as_deref();
+                }
+            }
+            let zero = Rect::default();
+            for (_, child) in node.children(zero) {
+                if let Some(found) = walk(child, slot) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        walk(self.root.as_ref(), slot)
+    }
+
 
     /// Pre-order enumeration of every reachable pane path. `/pane` is
     /// the root; each composite pane (today: `LayoutSplit`; tomorrow:
@@ -179,6 +262,28 @@ fn pane_path_indices(path: &devix_protocol::path::Path) -> Option<Vec<usize>> {
     }
     segs.map(|s| s.parse::<usize>().ok())
         .collect::<Option<Vec<_>>>()
+}
+
+/// Decode `/plugin/<name>/pane/<id>` into `(name, id)`. Returns
+/// `None` for any other path shape, including plugin-rooted paths
+/// that aren't pane-keyed (e.g. `/plugin/<name>/cmd/<id>` resolves
+/// at the command registry, not here).
+fn plugin_pane_segments(
+    path: &devix_protocol::path::Path,
+) -> Option<(&str, &str)> {
+    let mut segs = path.segments();
+    if segs.next()? != "plugin" {
+        return None;
+    }
+    let name = segs.next()?;
+    if segs.next()? != "pane" {
+        return None;
+    }
+    let id = segs.next()?;
+    if segs.next().is_some() {
+        return None;
+    }
+    Some((name, id))
 }
 
 /// Pane-trait-driven walker for `/pane(/<i>)*`. Generic over the

@@ -426,6 +426,22 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-08 — T-111 follow-up: plugin pane path addressing.**
+
+  `PaneRegistry` gains `plugin_panes: HashMap<(String, String),
+  SidebarSlot>` and a `register_plugin_pane(plugin_name, pane_id,
+  slot)` setter. `pane_at(path)` and `pane_at_mut(path)` accept
+  `/plugin/<name>/pane/<id>` in addition to `/pane(/<i>)*`; when
+  the path matches, the registry resolves through the slot map to
+  the installed sidebar's `LayoutSidebar.content`.
+  `PluginRuntime::install_with_manifest` calls
+  `register_plugin_pane` for every manifest-declared pane whose
+  slot has a matching runtime-side `register_pane`. Closes the
+  Plan-9-addressing gap from T-111's original partial close
+  ("manifest's `id` is documented but unused as a registry key").
+  Test:
+  `editor::editor::tests::pane_at_resolves_plugin_pane_path_after_registration`.
+
 - **2026-05-08 — T-111 follow-up: plugin pane reinstall on Lua restart.**
 
   Closes the documented limitation from T-81's full-close entry

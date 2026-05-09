@@ -768,6 +768,23 @@ impl PluginRuntime {
             );
             editor.install_sidebar_pane(slot, Box::new(pane));
         }
+        // Register `/plugin/<name>/pane/<id>` addressing for every
+        // manifest-declared pane that has a matching slot in the
+        // runtime's contributions. T-111 follow-up — closes the
+        // path-based addressing deferred from the original Stage-11
+        // partial. The mapping is keyed (name, id) so multiple panes
+        // per plugin (future) just register each entry.
+        for decl in &manifest.contributes.panes {
+            let core_slot: SidebarSlot = match decl.slot {
+                devix_protocol::view::SidebarSlot::Left => SidebarSlot::Left,
+                devix_protocol::view::SidebarSlot::Right => SidebarSlot::Right,
+            };
+            if self.contributions.panes.iter().any(|p| p.slot == core_slot) {
+                editor
+                    .panes
+                    .register_plugin_pane(&manifest.name, &decl.id, core_slot);
+            }
+        }
         count
     }
 

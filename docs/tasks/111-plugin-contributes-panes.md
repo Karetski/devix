@@ -93,11 +93,20 @@ tree the host marshals into the canonical `View` IR.
     `install_with_manifest`, so the reinstall mounts the same
     Arcs main.rs is about to mount; subsequent restarts swap to
     fresh Arcs).
+- **2026-05-08 follow-up (path-based plugin pane addressing).**
+  `PaneRegistry` gains a `plugin_panes:
+  HashMap<(String, String), SidebarSlot>` map populated by
+  `register_plugin_pane(plugin_name, pane_id, slot)`.
+  `PluginRuntime::install_with_manifest` calls it for every
+  manifest-declared pane that has a matching slot in the
+  runtime's contributions. `PaneRegistry::pane_at(path)` and
+  `pane_at_mut(path)` accept the `/plugin/<name>/pane/<id>` shape
+  in addition to `/pane(/<i>)*` — when the path matches, the
+  registry resolves through the slot map to the installed
+  sidebar's `LayoutSidebar.content`. Test:
+  `editor::editor::tests::pane_at_resolves_plugin_pane_path_after_registration`.
+
 - *Still deferred*:
-  - **`/plugin/<name>/pane/<id>` path-based addressing**. Panes
-    install on the editor's structural tree by slot today; the
-    `id` is documented but unused as a registry key. Lands when a
-    consumer of `panes.pane_at(/plugin/<name>/pane/<id>)` arrives.
   - **`StableViewIds` capability gating**. Synthetic IDs are
     generated under `/synthetic/plugin/<kind>-<n>` per render — the
     `StableViewIds` advert is purely informational at v0.

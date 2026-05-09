@@ -1007,6 +1007,45 @@ mod tests {
         assert!(editor.panes.pane_at(&p_bad).is_none());
     }
 
+    /// T-111 follow-up: `/plugin/<name>/pane/<id>` resolves to the
+    /// installed sidebar's content pane after `register_plugin_pane`
+    /// has been called for that mapping.
+    #[test]
+    fn pane_at_resolves_plugin_pane_path_after_registration() {
+        use crate::pane::Pane as PaneTrait;
+        let mut editor = Editor::open(None).unwrap();
+        // Toggle the sidebar open + install a placeholder pane so the
+        // sidebar's `content` is `Some` and the registry has a target
+        // to resolve.
+        struct PlaceholderPane;
+        impl PaneTrait for PlaceholderPane {
+            fn render(&self, _area: crate::Rect, _ctx: &mut crate::pane::RenderCtx<'_, '_>) {}
+            fn handle(
+                &mut self,
+                _ev: &crate::Event,
+                _area: crate::Rect,
+                _ctx: &mut crate::pane::HandleCtx<'_>,
+            ) -> crate::pane::Outcome {
+                crate::pane::Outcome::Ignored
+            }
+        }
+        editor.install_sidebar_pane(SidebarSlot::Left, Box::new(PlaceholderPane));
+        editor
+            .panes
+            .register_plugin_pane("file-tree", "main", SidebarSlot::Left);
+
+        let p = devix_protocol::path::Path::parse("/plugin/file-tree/pane/main").unwrap();
+        assert!(editor.panes.pane_at(&p).is_some());
+
+        // Unregistered plugin path → None.
+        let p_unknown = devix_protocol::path::Path::parse("/plugin/other/pane/main").unwrap();
+        assert!(editor.panes.pane_at(&p_unknown).is_none());
+
+        // Wrong shape rejected.
+        let p_bad = devix_protocol::path::Path::parse("/plugin/file-tree/cmd/main").unwrap();
+        assert!(editor.panes.pane_at(&p_bad).is_none());
+    }
+
     #[test]
     fn pane_at_rejects_non_pane_root() {
         let editor = Editor::open(None).unwrap();
