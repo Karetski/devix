@@ -69,6 +69,30 @@ tree the host marshals into the canonical `View` IR.
   - Test: `pane_set_view_stores_view_ir_for_render` exercises a
     nested stack-of-text from Lua and asserts the deserialized
     structure.
+- **2026-05-08 follow-up (pane reinstall on Lua restart).**
+  Closes the T-81 documented limitation: after a supervised
+  restart the editor's installed `LuaPane` pointed at the dead
+  host's `Arc<Mutex<Vec<String>>>`. Now:
+
+  - The factory closure publishes `Pulse::PluginLoaded` (via
+    `publish_async` from the worker thread) on every successful
+    spawn — initial *and* every restart.
+  - `PluginRuntime` carries `live_contributions: Arc<Mutex<Contributions>>`
+    that the factory writes after each successful `host.load_file`,
+    so the latest `PaneSpec.lines` / `.scroll` / `.visible_rows`
+    Arcs are always reachable from the runtime.
+  - `PluginRuntime::current_contributions(&self)` returns a clone
+    of the live state; `PluginRuntime::reinstall_panes(&self,
+    editor)` builds fresh `LuaPane`s from it and calls
+    `editor.install_sidebar_pane` to swap them in.
+  - `Application::dispatch_typed_pulses` adds a `Pulse::PluginLoaded`
+    arm: when the bus delivers one, the runtime's
+    `reinstall_panes` runs, the editor's sidebar swaps to the new
+    Arcs, and `dirty` flips so the pane repaints. Idempotent on
+    initial load (the first PluginLoaded arrives before main.rs's
+    `install_with_manifest`, so the reinstall mounts the same
+    Arcs main.rs is about to mount; subsequent restarts swap to
+    fresh Arcs).
 - *Still deferred*:
   - **`/plugin/<name>/pane/<id>` path-based addressing**. Panes
     install on the editor's structural tree by slot today; the

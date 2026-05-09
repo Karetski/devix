@@ -1001,6 +1001,22 @@ mod tests {
         });
         let sink: MsgSink = std::sync::Arc::new(|_| {});
         let _rt = PluginRuntime::load_supervised(&p, sink, bus.clone()).unwrap();
+        // The factory now publishes via `publish_async`; drain the
+        // cross-thread queue so the subscriber observes the pulse.
+        // Spin-wait briefly because the publish runs on the worker
+        // thread and may race the test's lock acquisition.
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_secs(1);
+        loop {
+            bus.drain();
+            if !captured.lock().unwrap().is_empty() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         let pulses = captured.lock().unwrap();
         assert_eq!(pulses.len(), 1, "PluginLoaded fires once on supervised load");
         if let Pulse::PluginLoaded { plugin, .. } = &pulses[0] {

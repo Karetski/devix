@@ -199,6 +199,20 @@ impl<B: Backend> Application<B> {
                 Pulse::ShutdownRequested => {
                     self.quit = true;
                 }
+                Pulse::PluginLoaded { .. } => {
+                    // T-111 follow-up: rebuild any installed plugin
+                    // sidebar panes against the active host's
+                    // Contributions. After a supervised restart the
+                    // editor's installed `LuaPane` still points at
+                    // the dead host's `Arc<Mutex<Vec<String>>>`;
+                    // `reinstall_panes` swaps in fresh `LuaPane`s
+                    // referencing the live host's Arcs. Idempotent
+                    // on initial load.
+                    if let Some(rt) = self.plugin.as_ref() {
+                        rt.reinstall_panes(&mut self.editor);
+                        self.dirty = true;
+                    }
+                }
                 // Other variants land in T-63 as more producers
                 // migrate. Unhandled pulses fall back to bus
                 // subscribers via `drain` immediately after.

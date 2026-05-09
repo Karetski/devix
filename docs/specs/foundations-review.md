@@ -426,6 +426,44 @@ strict policy is meant to prevent.
 
 ### Amendment log
 
+- **2026-05-08 — T-111 follow-up: plugin pane reinstall on Lua restart.**
+
+  Closes the documented limitation from T-81's full-close entry
+  ("pane content shared via `Arc<Mutex<Vec<String>>>` doesn't refresh
+  on restart"). End state:
+
+  - `PluginRuntime` gains `live_contributions: Arc<Mutex<Contributions>>`
+    — a restart-aware mirror of the active host's contributions.
+    The factory closure writes into it on every successful
+    `host.load_file` (initial + each restart).
+  - The factory closure publishes `Pulse::PluginLoaded` via
+    `publish_async` on every successful spawn. The historical
+    main-thread post-init publish is removed; the factory's
+    publish is now the canonical lifecycle event.
+  - `PluginRuntime::current_contributions(&self)` returns a clone
+    of the live state.
+  - `PluginRuntime::reinstall_panes(&self, editor: &mut Editor)`
+    builds fresh `LuaPane`s from the live state and calls
+    `editor.install_sidebar_pane` to swap them in.
+  - `devix-tui::Application::dispatch_typed_pulses` adds a
+    `Pulse::PluginLoaded` arm calling
+    `runtime.reinstall_panes(&mut editor)` and flipping `dirty`.
+    Idempotent on initial load (first PluginLoaded fires before
+    main.rs's `install_with_manifest`, so the reinstall mounts
+    the same Arcs main.rs is about to mount); after a supervised
+    restart the new Arcs swap in transparently.
+
+  Erlang principle realized at the plugin runtime: the supervisor
+  knows what to restart and re-publishes the lifecycle event;
+  consumers (Application) react to the event and rebuild from the
+  live state. The old, dead-host Arcs collected by the editor's
+  pre-restart `LuaPane` are released as part of the swap.
+
+  Existing test: `supervised_load_publishes_plugin_loaded_pulse`
+  updated to drain the bus across the publish_async hop (the worker
+  thread's `publish_async` puts the pulse on the cross-thread queue;
+  test spins until `bus.drain()` delivers it).
+
 - **2026-05-08 — T-110 follow-up: engines version negotiation gate.**
 
   `devix-protocol::protocol` gains three constants —

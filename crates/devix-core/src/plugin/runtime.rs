@@ -98,6 +98,16 @@ pub struct PluginRuntime {
     /// `tokio::select!` from observing channel close, so an explicit
     /// signal is required.
     shutdown_tx: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    /// Restart-aware mirror of `contributions`. The factory
+    /// overwrites this on every successful (re)load so consumers
+    /// — chiefly [`PluginRuntime::reinstall_panes`] — can see the
+    /// current incarnation's pane Arcs after a supervised restart.
+    /// The original `contributions` field stays a frozen snapshot
+    /// of the first load (existing call sites are stable across
+    /// restarts because the Lua entry's registration order is
+    /// deterministic — handle N in the new host == handle N in the
+    /// dead host).
+    live_contributions: Arc<Mutex<Contributions>>,
     /// Supervised plugin worker thread. On panic the supervisor's
     /// restart policy decides whether to respawn (channel refresh
     /// happens inside the factory closure); on shutdown (drop sends
@@ -229,6 +239,13 @@ impl PluginRuntime {
         // through its own clone during Lua execution.
         let setting_callbacks: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
 
+        // Restart-aware Contributions mirror. Filled with the
+        // first-spawn snapshot below (after `init_rx.recv()`); the
+        // factory writes a fresh value on every successful (re)load
+        // so reinstall_panes can see post-restart Arcs.
+        let live_contributions: Arc<Mutex<Contributions>> =
+            Arc::new(Mutex::new(Contributions::default()));
+
         let factory_invoke = invoke_tx.clone();
         let factory_input = input_tx.clone();
         let factory_shutdown = shutdown_tx.clone();
@@ -237,6 +254,13 @@ impl PluginRuntime {
         let factory_msg_sink = msg_sink.clone();
         let factory_path = path.clone();
         let factory_settings = settings_store.clone();
+        let factory_live_contributions = live_contributions.clone();
+        let factory_bus = bus.clone();
+        let factory_plugin_segment = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(sanitize_plugin_segment)
+            .unwrap_or_else(|| "plugin".to_string());
         let factory_setting_cbs = setting_callbacks.clone();
 
         let factory = move || {
@@ -276,6 +300,9 @@ impl PluginRuntime {
             };
             let settings_for_host = factory_settings.clone();
             let host_setting_cbs = factory_setting_cbs.clone();
+            let live_contributions_clone = factory_live_contributions.clone();
+            let bus_clone = factory_bus.clone();
+            let plugin_segment = factory_plugin_segment.clone();
             runtime.block_on(async move {
                 let host = match PluginHost::new_with(settings_for_host) {
                     Ok(h) => h,
@@ -304,11 +331,32 @@ impl PluginRuntime {
                 ) {
                     *shared = host_cbs.clone();
                 }
+                // Mirror the freshly-loaded contributions into the
+                // restart-aware shared slot so Application can re-
+                // build `LuaPane`s with the new host's Arcs (T-111
+                // pane-reinstall on Lua restart).
+                if let Ok(mut shared_live) = live_contributions_clone.lock() {
+                    *shared_live = contributions.clone();
+                }
                 forward_messages(&host, &msg_tx_clone, msg_sink_clone.as_ref());
                 if let Some(tx) = init_tx {
                     if tx.send(Ok(contributions)).is_err() {
                         return;
                     }
+                }
+                // Per-spawn lifecycle pulse. Initial spawn fires
+                // before main.rs's `install_with_manifest`; each
+                // restart fires too so subscribers (Application's
+                // typed-pulse dispatcher) re-build pane content from
+                // the new host's Arcs.
+                if let Ok(plugin_path) = devix_protocol::path::Path::parse(&format!(
+                    "/plugin/{}",
+                    plugin_segment,
+                )) {
+                    bus_clone.publish_async(devix_protocol::pulse::Pulse::PluginLoaded {
+                        plugin: plugin_path,
+                        version: "0.0.0".to_string(),
+                    });
                 }
                 // After the first spawn's init delivery, subsequent
                 // restarts discard the fresh `Contributions`. The
@@ -396,23 +444,12 @@ impl PluginRuntime {
             );
         }
 
-        // Plugin lifecycle: announce the load on the bus the caller
-        // cares about. Plugin name is taken from the source file's
-        // stem; production uses the manifest's name when the
-        // manifest-driven loader takes over.
-        let plugin_segment = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map(sanitize_plugin_segment)
-            .unwrap_or_else(|| "plugin".to_string());
-        if let Ok(plugin_path) =
-            devix_protocol::path::Path::parse(&format!("/plugin/{}", plugin_segment))
-        {
-            bus.publish(devix_protocol::pulse::Pulse::PluginLoaded {
-                plugin: plugin_path,
-                version: "0.0.0".to_string(),
-            });
-        }
+        // Plugin lifecycle pulses fire from the factory itself
+        // (per-spawn), so initial + every restart publish a
+        // `Pulse::PluginLoaded`. The historical post-init publish
+        // (factory → fresh main-thread `bus.publish`) is replaced
+        // by the factory's `bus.publish_async` to keep restart
+        // semantics symmetric.
 
         Ok(Self {
             invoke_tx,
@@ -422,12 +459,53 @@ impl PluginRuntime {
             capabilities,
             leaked_strings: Vec::new(),
             shutdown_tx,
+            live_contributions,
             supervised: Some(supervised),
         })
     }
 
     pub fn contributions(&self) -> &Contributions {
         &self.contributions
+    }
+
+    /// Snapshot of the current incarnation's `Contributions` —
+    /// includes the post-restart Arcs the active host wrote into.
+    /// Use [`Self::reinstall_panes`] to rebuild the editor's
+    /// installed panes against this state after a supervised
+    /// restart fires `Pulse::PluginLoaded`. T-111 follow-up.
+    pub fn current_contributions(&self) -> Contributions {
+        self.live_contributions
+            .lock()
+            .map(|c| c.clone())
+            .unwrap_or_default()
+    }
+
+    /// Replace the editor's installed sidebar panes with fresh
+    /// `LuaPane` instances built against the *current*
+    /// `Contributions` (post-restart Arcs). Idempotent: calling on
+    /// initial load reinstalls the same Arcs main.rs's
+    /// `install_with_manifest` already mounted; calling after a
+    /// supervised restart swaps in panes whose shared state points
+    /// at the new host. T-111 follow-up — wired into Application's
+    /// `Pulse::PluginLoaded` typed-pulse handler.
+    pub fn reinstall_panes(&self, editor: &mut Editor) {
+        let pane_specs: Vec<(SidebarSlot, PaneSpec)> = match self.live_contributions.lock() {
+            Ok(c) => c.panes.iter().map(|p| (p.slot, p.clone())).collect(),
+            Err(_) => return,
+        };
+        for (slot, spec) in pane_specs {
+            let pane = LuaPane::new(
+                spec.pane_id,
+                spec.lines.clone(),
+                spec.scroll.clone(),
+                spec.visible_rows.clone(),
+                spec.has_on_key.clone(),
+                spec.has_on_click.clone(),
+                spec.view.clone(),
+                self.input_tx.clone(),
+            );
+            editor.install_sidebar_pane(slot, Box::new(pane));
+        }
     }
 
     /// Negotiated capabilities for this plugin. Read by the editor
