@@ -110,6 +110,17 @@ impl Keymap {
     pub fn chord_for(&self, id: CommandId) -> Option<Chord> {
         self.chord_for.get(&id).copied()
     }
+
+    /// CommandId bound to `chord`, when the chord resolves to a
+    /// registered command (not a direct `Binding::Action`). Used at
+    /// keymap-dispatch to publish `Pulse::CommandInvoked` with the
+    /// resolved path — F-5 follow-up, 2026-05-12.
+    pub fn chord_command_id(&self, chord: Chord) -> Option<CommandId> {
+        match self.bindings.get(&chord)? {
+            Binding::Command(id) => Some(*id),
+            Binding::Action(_) => None,
+        }
+    }
 }
 
 impl Default for Keymap {
@@ -313,6 +324,25 @@ mod path_tests {
         k.bind_action(chord, Arc::new(cmd::Quit));
         let paths: Vec<Path> = k.paths().collect();
         assert!(paths.is_empty());
+    }
+
+    #[test]
+    fn chord_command_id_returns_id_for_command_binding() {
+        let mut k = Keymap::new();
+        let chord = Chord::new(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        k.bind_command(chord, CommandId::builtin("editor.save"));
+        assert_eq!(
+            k.chord_command_id(chord),
+            Some(CommandId::builtin("editor.save"))
+        );
+    }
+
+    #[test]
+    fn chord_command_id_returns_none_for_direct_action() {
+        let mut k = Keymap::new();
+        let chord = Chord::new(KeyCode::Char('h'), KeyModifiers::NONE);
+        k.bind_action(chord, Arc::new(cmd::Quit));
+        assert_eq!(k.chord_command_id(chord), None);
     }
 
     #[test]

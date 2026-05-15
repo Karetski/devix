@@ -67,28 +67,43 @@ fn main() -> Result<()> {
         Arc::new(move |msg| {
             match msg {
                 PluginMsg::PaneChanged => {
-                    bus.publish_async(devix_protocol::pulse::Pulse::RenderDirty {
+                    let _ = bus.publish_async(devix_protocol::pulse::Pulse::RenderDirty {
                         reason: devix_protocol::pulse::DirtyReason::Frontend,
                     });
                 }
                 PluginMsg::Status(_) => return,
                 PluginMsg::OpenPath(fs_path) => {
-                    bus.publish_async(devix_protocol::pulse::Pulse::OpenPathRequested {
+                    let _ = bus.publish_async(devix_protocol::pulse::Pulse::OpenPathRequested {
                         fs_path,
                         source: devix_protocol::pulse::InvocationSource::Plugin,
                     });
                 }
             }
+            // Wake the main loop regardless of whether the typed
+            // pulse made it onto the bus — drop-newest may have
+            // shed it under load, but the wake/dispatch is what
+            // actually moves the loop forward.
             let _ = wake_sink.wake();
         })
     };
 
-    // Manifest-driven plugin discovery (T-110). Walk every directory
-    // under `plugin_dir()` with a `manifest.json`; for each, load the
-    // plugin's Lua entry under the supervisor and wire its
-    // manifest-declared commands at `/plugin/<name>/cmd/<id>`. Errors
-    // surface as `Pulse::PluginError` on the editor's bus.
-    let mut plugin_runtimes: Vec<PluginRuntime> = Vec::new();
+    // Manifest-driven plugin discovery (T-110, F-3 follow-up
+    // 2026-05-12). Three phases so a plugin's startup-time
+    // `devix.setting("my.key")` already observes both its
+    // manifest-declared defaults *and* the user's overrides:
+    //   1. Walk `plugin_dir()`, parse every `manifest.json`, and
+    //      register its themes + settings on the editor stores.
+    //   2. Apply user settings overrides from
+    //      `$XDG_CONFIG_HOME/devix/settings.json` so plugin runtimes
+    //      observe overrides during startup, not just defaults.
+    //   3. For each parsed manifest, load the runtime and install
+    //      commands/keymap/panes. Errors surface as `Pulse::PluginError`
+    //      on the editor's bus or to stderr at this entry-point.
+    struct PendingPlugin {
+        manifest: devix_protocol::manifest::Manifest,
+        entry: PathBuf,
+    }
+    let mut pending: Vec<PendingPlugin> = Vec::new();
     if let Some(dir) = plugin_dir() {
         match discover_plugin_manifests(&dir) {
             Ok(manifests) => {
@@ -121,31 +136,15 @@ fn main() -> Result<()> {
                         );
                         continue;
                     }
-                    let msg_sink = make_msg_sink(editor.bus.clone(), sink.clone());
-                    let mut runtime = match PluginRuntime::load_supervised_with_settings(
-                        &entry,
-                        msg_sink,
-                        editor.bus.clone(),
-                        editor.settings_store.clone(),
-                    ) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            eprintln!(
-                                "devix: plugin `{}` failed to load: {}",
-                                manifest.name, e
-                            );
-                            continue;
-                        }
-                    };
-                    let bus_for_install = editor.bus.clone();
-                    runtime.install_with_manifest(
-                        &mut commands,
-                        &mut keymap,
-                        &mut editor,
-                        &manifest,
-                        &bus_for_install,
-                    );
-                    plugin_runtimes.push(runtime);
+                    // Phase 1: register theme + settings before any
+                    // runtime can call `devix.setting(...)`.
+                    editor.theme_store.register_from_manifest(&manifest);
+                    editor
+                        .settings_store
+                        .lock()
+                        .unwrap()
+                        .register_from_manifest(&manifest);
+                    pending.push(PendingPlugin { manifest, entry });
                 }
             }
             Err(e) => {
@@ -157,11 +156,64 @@ fn main() -> Result<()> {
         }
     }
 
+    // Phase 2: apply user settings overrides from
+    // `$XDG_CONFIG_HOME/devix/settings.json`. Type mismatches and
+    // out-of-list enum values surface to stderr; the rest of the
+    // file's keys still apply. Runs **before** plugin runtime load
+    // so plugins observe overrides during startup.
+    if let Some(p) = settings_overrides_path() {
+        if let Err(e) = editor
+            .settings_store
+            .lock()
+            .unwrap()
+            .apply_overrides_from_file(&p)
+        {
+            eprintln!("devix: settings overrides ignored ({}): {e}", p.display());
+        }
+    }
+
+    // Phase 3: load each plugin's runtime, install its contributions,
+    // and remember the runtime under its manifest name so subsequent
+    // per-plugin events (e.g., `Pulse::PluginLoaded` after a supervised
+    // restart) route back to the right runtime.
+    let mut plugin_runtimes: Vec<(String, PluginRuntime)> = Vec::new();
+    for PendingPlugin { manifest, entry } in pending {
+        let msg_sink = make_msg_sink(editor.bus.clone(), sink.clone());
+        let mut runtime = match PluginRuntime::load_supervised_with_settings(
+            &entry,
+            msg_sink,
+            editor.bus.clone(),
+            editor.settings_store.clone(),
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!(
+                    "devix: plugin `{}` failed to load: {}",
+                    manifest.name, e
+                );
+                continue;
+            }
+        };
+        let bus_for_install = editor.bus.clone();
+        runtime.install_with_manifest(
+            &mut commands,
+            &mut keymap,
+            &mut editor,
+            &manifest,
+            &bus_for_install,
+        );
+        plugin_runtimes.push((manifest.name, runtime));
+    }
+
     // Backwards-compat single-file path. `DEVIX_PLUGIN` (or its
     // legacy default location) still loads one Lua file with the
     // pre-T-110 in-Lua registration semantics. Manifest-driven
     // plugins land at `/plugin/<name>/cmd/<id>`; this path keeps
-    // working at `/cmd/<id>` until callers migrate.
+    // working at `/cmd/<id>` until callers migrate. Loaded after
+    // settings overrides apply so it sees the same store state
+    // as manifest-driven plugins. The legacy path has no manifest
+    // name; we synthesize one stable key so it lives in the same
+    // map as manifest-driven plugins.
     if let Some(p) = default_plugin_path() {
         let msg_sink = make_msg_sink(editor.bus.clone(), sink.clone());
         if let Ok(mut rt) = PluginRuntime::load_supervised_with_settings(
@@ -171,31 +223,7 @@ fn main() -> Result<()> {
             editor.settings_store.clone(),
         ) {
             rt.install(&mut commands, &mut keymap, &mut editor);
-            plugin_runtimes.push(rt);
-        }
-    }
-
-    // Plugin manifests can also contribute themes + settings;
-    // register them so `editor.set_theme(id)` and the settings store
-    // see plugin-declared keys.
-    if let Some(dir) = plugin_dir() {
-        if let Ok(manifests) = discover_plugin_manifests(&dir) {
-            for manifest_path in manifests {
-                if let Ok(m) = load_manifest(&manifest_path) {
-                    editor.theme_store.register_from_manifest(&m);
-                    editor.settings_store.lock().unwrap().register_from_manifest(&m);
-                }
-            }
-        }
-    }
-
-    // Apply user settings overrides from
-    // `$XDG_CONFIG_HOME/devix/settings.json` if present. Type
-    // mismatches and out-of-list enum values surface to stderr; the
-    // rest of the file's keys still apply.
-    if let Some(p) = settings_overrides_path() {
-        if let Err(e) = editor.settings_store.lock().unwrap().apply_overrides_from_file(&p) {
-            eprintln!("devix: settings overrides ignored ({}): {e}", p.display());
+            plugin_runtimes.push(("__legacy_single_file__".to_string(), rt));
         }
     }
 
@@ -203,19 +231,15 @@ fn main() -> Result<()> {
 
     let mut app = Application::new(editor, commands, keymap, clipboard, sink, rx)?;
 
-    // The Application currently holds at most one plugin runtime
-    // handle (legacy shape). Multi-plugin handles stay alive for the
-    // lifetime of the binary by shadowing into a Vec; the first one
-    // (if any) goes through the legacy `set_plugin` slot. T-110
-    // follow-up: extend `Application::set_plugin` to a Vec or have
-    // the bus carry the message-routing fully.
-    let mut plugin_runtimes = plugin_runtimes;
-    if let Some(rt) = plugin_runtimes.pop() {
-        app.set_plugin(rt);
+    // F-4 follow-up 2026-05-12: hand every loaded runtime to the
+    // application keyed by its manifest name. The previous shape
+    // held at most one runtime and `std::mem::forget`-ed the rest
+    // (no drop on shutdown; `Pulse::PluginLoaded` for restarts
+    // routed to the wrong runtime). The map now keeps every worker
+    // alive and routable.
+    for (name, rt) in plugin_runtimes {
+        app.add_plugin(name, rt);
     }
-    // Remaining runtimes leak alive through the binary's lifetime;
-    // their senders are clones held by the editor's installed panes.
-    std::mem::forget(plugin_runtimes);
 
     app.run()
 }

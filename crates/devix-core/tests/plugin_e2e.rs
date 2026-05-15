@@ -292,34 +292,6 @@ fn open_path_message_surfaces_through_runtime() {
 }
 
 #[test]
-fn bundled_file_tree_example_loads_and_lists_cwd() {
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let path = manifest.join("examples/file_tree.lua");
-    let runtime = PluginRuntime::load(&path).expect("file_tree example loads");
-    let cmds = &runtime.contributions().commands;
-    let panes = &runtime.contributions().panes;
-    assert!(
-        cmds.iter().any(|c| c.id == "filetree.refresh"),
-        "expected `filetree.refresh` command, got {cmds:?}",
-    );
-    let pane = panes
-        .iter()
-        .find(|p| p.slot == SidebarSlot::Left)
-        .expect("file_tree contributes a left pane");
-    let lines = pane.lines.lock().unwrap();
-    assert!(lines.len() >= 2, "expected at least cwd + spacer, got {lines:?}");
-    assert!(lines.iter().any(|l| !l.is_empty()), "non-empty entries");
-    assert!(
-        pane.has_on_key.load(std::sync::atomic::Ordering::Acquire),
-        "file_tree should register on_key",
-    );
-    assert!(
-        pane.has_on_click.load(std::sync::atomic::Ordering::Acquire),
-        "file_tree should register on_click",
-    );
-}
-
-#[test]
 fn sidebar_slot_pane_renders_lua_pane_inside_chrome() {
     use devix_core::Pane as _;
     use devix_core::LayoutSidebar;

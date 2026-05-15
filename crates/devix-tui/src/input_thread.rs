@@ -46,9 +46,14 @@ impl InputThread {
                             Ok(ev) => {
                                 // Publish typed pulse first (observer
                                 // notification); send to dispatch
-                                // channel second.
+                                // channel second. Dropping the typed
+                                // pulse on a wedged bus is fine — the
+                                // dispatch channel still wakes the
+                                // main loop. (F-1 follow-up
+                                // 2026-05-12: publish_async is
+                                // non-blocking.)
                                 if let Some(input) = crossterm_to_input_event(&ev) {
-                                    bus.publish_async(
+                                    let _ = bus.publish_async(
                                         devix_protocol::pulse::Pulse::InputReceived {
                                             event: input,
                                         },

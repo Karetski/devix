@@ -291,6 +291,182 @@ mod tests {
     }
 
     #[test]
+    fn palette_accept_publishes_command_invoked_with_palette_source() {
+        use crate::editor::commands::cmd::Quit;
+        use crate::editor::commands::registry::{Command, CommandId};
+        use crate::editor::commands::modal::PalettePane;
+        use devix_protocol::pulse::{InvocationSource, Pulse, PulseFilter, PulseKind};
+
+        let mut ws = Editor::open(None).unwrap();
+        let mut commands = CommandRegistry::new();
+        let quit_id = CommandId::builtin("test.quit");
+        commands.register(Command {
+            id: quit_id,
+            label: "Quit",
+            category: None,
+            action: std::sync::Arc::new(Quit),
+        });
+
+        let log: std::sync::Arc<std::sync::Mutex<Vec<Pulse>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let l = log.clone();
+            ws.bus.subscribe(
+                PulseFilter::kind(PulseKind::CommandInvoked),
+                move |p| {
+                    l.lock().unwrap().push(p.clone());
+                },
+            );
+        }
+
+        // Open the palette with our one-command registry; the
+        // default filter matches every command, so selected=0 picks
+        // our `test.quit` entry without needing a query.
+        let pane = PalettePane::from_registry(&commands);
+        ws.open_modal(Box::new(pane), devix_protocol::pulse::ModalKind::Palette);
+
+        let mut clipboard = crate::NoClipboard;
+        let mut quit = false;
+        let cache = RenderCache::default();
+        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands, &cache);
+        palette::PaletteAccept.invoke(&mut ctx);
+
+        // Quit's invoke flips the quit flag — sanity that the action
+        // actually ran on top of firing the pulse.
+        assert!(quit, "selected action should have run");
+        let entries = log.lock().unwrap().clone();
+        let invoked: Vec<_> = entries
+            .iter()
+            .filter_map(|p| match p {
+                Pulse::CommandInvoked { command, source } => Some((command.clone(), *source)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(invoked.len(), 1, "expected exactly one CommandInvoked");
+        assert_eq!(invoked[0].0, quit_id.to_path());
+        assert!(matches!(invoked[0].1, InvocationSource::Palette));
+    }
+
+    #[test]
+    fn palette_accept_with_no_match_publishes_nothing() {
+        use crate::editor::commands::modal::PalettePane;
+        use devix_protocol::pulse::{PulseFilter, PulseKind};
+
+        let mut ws = Editor::open(None).unwrap();
+        // Empty registry: any selection resolves to None, so no
+        // action runs and no pulse fires.
+        let commands = CommandRegistry::new();
+        let log: std::sync::Arc<std::sync::Mutex<Vec<_>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let l = log.clone();
+            ws.bus.subscribe(
+                PulseFilter::kind(PulseKind::CommandInvoked),
+                move |p| {
+                    l.lock().unwrap().push(p.clone());
+                },
+            );
+        }
+        ws.open_modal(
+            Box::new(PalettePane::from_registry(&commands)),
+            devix_protocol::pulse::ModalKind::Palette,
+        );
+
+        let mut clipboard = crate::NoClipboard;
+        let mut quit = false;
+        let cache = RenderCache::default();
+        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands, &cache);
+        palette::PaletteAccept.invoke(&mut ctx);
+
+        assert!(log.lock().unwrap().is_empty());
+        assert!(ws.modal.is_none(), "PaletteAccept always dismisses");
+    }
+
+    #[test]
+    fn undo_redo_publish_buffer_changed() {
+        use crate::editor::commands::cmd::edit::{Redo, Undo};
+        use devix_protocol::pulse::{Pulse, PulseFilter, PulseKind};
+
+        let mut ws = surface_with_text("hello");
+        let did = ws.active_cursor().unwrap().doc;
+        let log: std::sync::Arc<std::sync::Mutex<Vec<Pulse>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let l = log.clone();
+            ws.bus.subscribe(
+                PulseFilter::kind(PulseKind::BufferChanged),
+                move |p| {
+                    l.lock().unwrap().push(p.clone());
+                },
+            );
+        }
+
+        let mut clipboard = crate::NoClipboard;
+        let mut quit = false;
+        let commands = CommandRegistry::default();
+        let cache = RenderCache::default();
+        {
+            let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands, &cache);
+            Undo.invoke(&mut ctx);
+        }
+        {
+            let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands, &cache);
+            Redo.invoke(&mut ctx);
+        }
+
+        let revisions: Vec<u64> = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|p| match p {
+                Pulse::BufferChanged { path, revision } if path == &did.to_path() => {
+                    Some(*revision)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            revisions.len(),
+            2,
+            "undo and redo each publish exactly one BufferChanged"
+        );
+        // Both revisions are post-mutation values; redo's must be
+        // strictly greater than undo's (revision counter is
+        // monotonic across undo/redo per Buffer::undo/redo).
+        assert!(revisions[1] > revisions[0], "revision is monotonic");
+    }
+
+    #[test]
+    fn undo_with_empty_stack_is_silent() {
+        use crate::editor::commands::cmd::edit::Undo;
+        use devix_protocol::pulse::{PulseFilter, PulseKind};
+
+        let mut ws = Editor::open(None).unwrap();
+        let log: std::sync::Arc<std::sync::Mutex<Vec<_>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        {
+            let l = log.clone();
+            ws.bus.subscribe(
+                PulseFilter::kind(PulseKind::BufferChanged),
+                move |p| {
+                    l.lock().unwrap().push(p.clone());
+                },
+            );
+        }
+
+        let mut clipboard = crate::NoClipboard;
+        let mut quit = false;
+        let commands = CommandRegistry::default();
+        let cache = RenderCache::default();
+        let mut ctx = make_ctx(&mut ws, &mut clipboard, &mut quit, &commands, &cache);
+        Undo.invoke(&mut ctx);
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "undo on an empty stack must not publish BufferChanged",
+        );
+    }
+
+    #[test]
     fn close_modal_clears_any_modal() {
         let mut ws = Editor::open(None).unwrap();
         ws.open_modal(

@@ -15,8 +15,28 @@ impl<'a> Action<Context<'a>> for Quit {
 pub struct Save;
 impl<'a> Action<Context<'a>> for Save {
     fn invoke(&self, ctx: &mut Context<'a>) {
-        let Some(d) = ctx.editor.active_doc_mut() else { return };
-        let _ = d.buffer.save();
+        let Some((_, _, did)) = ctx.editor.active_ids() else { return };
+        let d = match ctx.editor.documents.get_mut(did) {
+            Some(d) => d,
+            None => return,
+        };
+        if d.buffer.save().is_err() {
+            return;
+        }
+        // F-5 follow-up 2026-05-12: announce the successful save so
+        // subscribers (e.g., autoformatters, status-bar plugins)
+        // can react. `BufferSaved.path` is the document path; the
+        // disk path is included so subscribers don't need to
+        // re-resolve it.
+        let fs_path = d.buffer.path().map(|p| p.to_path_buf());
+        if let Some(fs_path) = fs_path {
+            ctx.editor
+                .bus
+                .publish(devix_protocol::pulse::Pulse::BufferSaved {
+                    path: did.to_path(),
+                    fs_path,
+                });
+        }
     }
 }
 

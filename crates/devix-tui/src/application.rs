@@ -5,6 +5,7 @@
 //! around what is in practice one input thread plus a plugin runtime.
 //! UIKit analogue: `UIApplication` collapsed with the one true delegate.
 
+use std::collections::HashMap;
 use std::io::{Stdout, stdout};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::Receiver;
@@ -41,10 +42,15 @@ pub struct Application<B: Backend = CrosstermBackend<Stdout>> {
     /// hit-test and command paths read it through `AppContext`.
     pub layout_cache: RenderCache,
 
-    /// Plugin host, if one was loaded. Holding the runtime keeps its
-    /// worker thread alive; dropping it closes the channels and the
-    /// worker exits.
-    plugin: Option<PluginRuntime>,
+    /// Plugin hosts, keyed by manifest name. Holding each runtime
+    /// keeps its worker thread alive; dropping the map (on
+    /// `Application` shutdown) closes the channels and every worker
+    /// exits. F-4 follow-up 2026-05-12: replaced the single-slot
+    /// `Option<PluginRuntime>` so multi-plugin loads no longer
+    /// leak runtimes through `std::mem::forget` and so
+    /// `Pulse::PluginLoaded` restart events route to the runtime
+    /// that actually restarted.
+    plugins: HashMap<String, PluginRuntime>,
 
     sink: EventSink,
     rx: Receiver<LoopMessage>,
@@ -79,7 +85,7 @@ impl Application<CrosstermBackend<Stdout>> {
             keymap,
             clipboard,
             layout_cache: RenderCache::default(),
-            plugin: None,
+            plugins: HashMap::new(),
             sink,
             rx,
             terminal,
@@ -98,8 +104,11 @@ impl<B: Backend> Application<B> {
     /// Hand a loaded plugin runtime to the application. The runtime
     /// already wired its message sink into the loop channel at load
     /// time; the application just holds it so the worker stays alive.
-    pub fn set_plugin(&mut self, runtime: PluginRuntime) {
-        self.plugin = Some(runtime);
+    /// `name` is the manifest's plugin name; it's used to route
+    /// per-runtime events like `Pulse::PluginLoaded` (restart) back
+    /// to the runtime that emitted them.
+    pub fn add_plugin(&mut self, name: String, runtime: PluginRuntime) {
+        self.plugins.insert(name, runtime);
     }
 
     pub fn run(mut self) -> Result<()> {
@@ -130,9 +139,12 @@ impl<B: Backend> Application<B> {
             self.editor.bus.drain();
         }
         input.shutdown(SHUTDOWN_DEADLINE);
-        // Dropping the plugin runtime closes its channels; its worker
-        // exits its `tokio::select!` loop.
-        drop(self.plugin.take());
+        // Dropping the plugin map closes each runtime's channels; the
+        // workers exit their `tokio::select!` loops. Each
+        // `PluginRuntime::drop` already signals its supervised loop
+        // and waits for the join, so this returns within
+        // `SHUTDOWN_DEADLINE` per runtime in aggregate.
+        self.plugins.clear();
         let _ = self.terminal.show_cursor();
         Ok(())
     }
@@ -199,7 +211,7 @@ impl<B: Backend> Application<B> {
                 Pulse::ShutdownRequested => {
                     self.quit = true;
                 }
-                Pulse::PluginLoaded { .. } => {
+                Pulse::PluginLoaded { plugin, .. } => {
                     // T-111 follow-up: rebuild any installed plugin
                     // sidebar panes against the active host's
                     // Contributions. After a supervised restart the
@@ -208,18 +220,27 @@ impl<B: Backend> Application<B> {
                     // `reinstall_panes` swaps in fresh `LuaPane`s
                     // referencing the live host's Arcs. Idempotent
                     // on initial load.
-                    if let Some(rt) = self.plugin.as_ref() {
-                        rt.reinstall_panes(&mut self.editor);
-                        self.dirty = true;
+                    //
+                    // F-4 follow-up 2026-05-12: route to the exact
+                    // runtime that emitted the pulse. The pulse
+                    // carries `/plugin/<name>` so the last segment
+                    // is the runtime's key in `plugins`.
+                    if let Some(name) = plugin.segments().last() {
+                        if let Some(rt) = self.plugins.get(name) {
+                            rt.reinstall_panes(&mut self.editor);
+                            self.dirty = true;
+                        }
                     }
                 }
                 // Other variants land in T-63 as more producers
-                // migrate. Unhandled pulses fall back to bus
-                // subscribers via `drain` immediately after.
+                // migrate. Unhandled pulses go directly to bus
+                // subscribers via synchronous `publish` — we're
+                // already on the main thread and own `&mut self`, so
+                // the cross-thread queue (and its risk of dropping
+                // under load) is the wrong tool here. F-1 follow-up,
+                // 2026-05-12.
                 _ => {
-                    // Re-enqueue so bus subscribers see it. Cheap —
-                    // round-trips through the cross-thread queue.
-                    self.editor.bus.publish_async(pulse);
+                    self.editor.bus.publish(pulse);
                 }
             }
         }
@@ -310,7 +331,7 @@ mod test_support {
                 keymap,
                 clipboard,
                 layout_cache: RenderCache::default(),
-                plugin: None,
+                plugins: HashMap::new(),
                 sink,
                 rx,
                 terminal,

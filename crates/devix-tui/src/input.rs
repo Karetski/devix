@@ -70,6 +70,20 @@ fn handle_key(ev: Event, code: KeyCode, mods: KeyModifiers, ctx: &mut AppContext
 
     let chord = chord_from_key(code, mods);
     if let Some(action) = ctx.keymap.resolve_chord(chord, ctx.commands) {
+        // F-5 follow-up 2026-05-12: publish `Pulse::CommandInvoked`
+        // for keymap-dispatched commands. Direct `Binding::Action`
+        // entries (continuous motion, character insertion) have no
+        // CommandId — they're invisible to the palette and to
+        // subscribers that key on command path; we deliberately
+        // skip them.
+        if let Some(id) = ctx.keymap.chord_command_id(chord) {
+            ctx.editor
+                .bus
+                .publish(devix_protocol::pulse::Pulse::CommandInvoked {
+                    command: id.to_path(),
+                    source: devix_protocol::pulse::InvocationSource::Keymap,
+                });
+        }
         run_arc(ctx, action);
         return;
     }

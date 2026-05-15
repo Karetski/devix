@@ -63,10 +63,20 @@ impl<'a> Action<Context<'a>> for PaletteAccept {
             .and_then(|p| {
                 p.state
                     .selected_command_id()
-                    .and_then(|id| ctx.commands.resolve(id))
+                    .map(|id| (id, ctx.commands.resolve(id)))
             });
         ctx.editor.dismiss_modal();
-        if let Some(action) = chosen {
+        if let Some((id, Some(action))) = chosen {
+            // F-5 follow-up 2026-05-12: palette-driven invocations
+            // get a typed pulse so subscribers can distinguish them
+            // from keymap-driven ones (e.g., usage analytics, macro
+            // recorders).
+            ctx.editor
+                .bus
+                .publish(devix_protocol::pulse::Pulse::CommandInvoked {
+                    command: id.to_path(),
+                    source: devix_protocol::pulse::InvocationSource::Palette,
+                });
             action.invoke(ctx);
         }
     }

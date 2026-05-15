@@ -176,10 +176,16 @@ impl PulseBus {
     /// runs before publish() returns. See "Delivery semantics" below.
     pub fn publish(&self, pulse: Pulse);
 
-    /// Queue a pulse from a background thread. The main loop calls
-    /// `drain()` once per tick; each queued pulse is then `publish`-ed
-    /// synchronously on the main thread.
-    pub fn publish_async(&self, pulse: Pulse);
+    /// Queue a pulse from a background thread. **Non-blocking**: on a
+    /// full queue the pulse is dropped, the overflow counter is
+    /// bumped, and `PublishError::Full(pulse)` is returned. The main
+    /// loop calls `drain()` once per tick; each queued pulse is then
+    /// `publish`-ed synchronously on the main thread.
+    pub fn publish_async(&self, pulse: Pulse) -> Result<(), PublishError>;
+
+    /// Snapshot of overflow diagnostics: total dropped count plus
+    /// the most-recent dropped `PulseKind`s in arrival order.
+    pub fn overflow_snapshot(&self) -> (u64, Vec<PulseKind>);
 
     /// Drain async-queued pulses. Called by the main loop between ticks.
     /// Returns the count drained, mostly for tests.
@@ -327,15 +333,23 @@ Pushes the pulse onto an MPSC queue inside the bus. Background threads call
 `publish_async` only — never `publish` — because subscribers run on the
 main thread.
 
-The queue is **bounded at 1024 pulses with block-on-full** (matches today's
-`EventSink::sync_channel(1024)` cap). When the queue is full,
-`publish_async` blocks the publishing thread until the main loop drains a
-slot. This applies backpressure on producers (disk watcher, plugin worker,
-frontend) when the main loop falls behind, instead of growing memory
-unboundedly.
+The queue is **bounded at 1024 pulses with drop-newest on full**
+(F-1 follow-up, 2026-05-12; supersedes the original block-on-full
+design). When the queue is full, `publish_async` returns
+`PublishError::Full(pulse)` immediately, bumps an internal
+`overflow_count`, and stashes the dropped `PulseKind` in a 16-slot
+diagnostics ring. Producers that care can inspect the result and
+retry/coalesce; most ignore it.
 
-The capacity is configurable on `PulseBus::with_capacity(usize)` for tests
-that want a tighter bound to provoke backpressure deterministically.
+The block-on-full design deadlocked: the input thread publishes a
+typed pulse *before* it sends the wake/input message that's supposed
+to drain the queue. A full queue therefore blocked the only producer
+that could move the loop forward. Drop-newest sheds load instead.
+
+The capacity is configurable on `PulseBus::with_capacity(usize)` for
+tests that want a tighter bound to provoke overflow deterministically.
+`bus.overflow_snapshot()` exposes the counter + recent-kinds ring
+for tests and future `/dev/pulses` diagnostics.
 
 Once per main-loop tick, the runtime calls `bus.drain()`, which pops every
 queued pulse and calls `publish` for each. Subscribers see them in queue

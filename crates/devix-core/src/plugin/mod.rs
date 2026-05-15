@@ -1131,6 +1131,126 @@ mod tests {
     }
 
     #[test]
+    fn devix_setting_observes_default_at_startup() {
+        // F-3 follow-up (2026-05-12): a plugin's top-level
+        // `devix.setting("k")` runs during `load_file` — before
+        // any command is invoked — and must already see the
+        // manifest-declared default. main.rs's discovery loop
+        // registers settings on the store *before* it loads the
+        // runtime; this test pins that contract at the host level.
+        use crate::settings_store::SettingsStore;
+        use devix_protocol::manifest::{
+            Contributes, Engines, Manifest, SettingSpec,
+        };
+        use devix_protocol::protocol::ProtocolVersion;
+        use std::collections::HashMap;
+
+        let p = write_temp(
+            "settings_default_startup",
+            r#"
+                -- Read the setting at top-level so it's observed
+                -- during load, not inside a command invocation.
+                devix.status(tostring(devix.setting("ui.compact")))
+            "#,
+        );
+
+        let mut settings_map = HashMap::new();
+        settings_map.insert(
+            "ui.compact".to_string(),
+            SettingSpec::Boolean { default: true, label: "Compact".into() },
+        );
+        let manifest = Manifest {
+            name: "settings_default_startup".into(),
+            version: "0.1.0".into(),
+            engines: Engines {
+                protocol_version: ProtocolVersion::new(0, 1),
+                pulse_bus: ProtocolVersion::new(0, 1),
+                manifest: ProtocolVersion::new(0, 1),
+            },
+            entry: None,
+            contributes: Contributes {
+                settings: settings_map,
+                ..Default::default()
+            },
+            subscribe: Vec::new(),
+        };
+
+        let store = std::sync::Arc::new(std::sync::Mutex::new(SettingsStore::new()));
+        store.lock().unwrap().register_from_manifest(&manifest);
+
+        let host = PluginHost::new_with(Some(store)).unwrap();
+        let _ = host.load_file(&p).unwrap();
+        let msgs = host.drain_messages();
+        assert!(
+            matches!(&msgs[..], [PluginMsg::Status(s)] if s == "true"),
+            "expected manifest default `true` at startup; got {msgs:?}",
+        );
+    }
+
+    #[test]
+    fn devix_setting_observes_user_override_at_startup() {
+        // F-3 follow-up (2026-05-12): user settings overrides
+        // (loaded from `$XDG_CONFIG_HOME/devix/settings.json` in
+        // production) must apply *before* plugin runtime load so a
+        // plugin's startup-time `devix.setting(...)` returns the
+        // user-chosen value, not the manifest default.
+        use crate::settings_store::SettingsStore;
+        use devix_protocol::manifest::{
+            Contributes, Engines, Manifest, SettingSpec, SettingValue,
+        };
+        use devix_protocol::protocol::ProtocolVersion;
+        use std::collections::HashMap;
+
+        let p = write_temp(
+            "settings_override_startup",
+            r#"
+                devix.status(tostring(devix.setting("ui.compact")))
+            "#,
+        );
+
+        let mut settings_map = HashMap::new();
+        settings_map.insert(
+            "ui.compact".to_string(),
+            SettingSpec::Boolean { default: true, label: "Compact".into() },
+        );
+        let manifest = Manifest {
+            name: "settings_override_startup".into(),
+            version: "0.1.0".into(),
+            engines: Engines {
+                protocol_version: ProtocolVersion::new(0, 1),
+                pulse_bus: ProtocolVersion::new(0, 1),
+                manifest: ProtocolVersion::new(0, 1),
+            },
+            entry: None,
+            contributes: Contributes {
+                settings: settings_map,
+                ..Default::default()
+            },
+            subscribe: Vec::new(),
+        };
+
+        let store = std::sync::Arc::new(std::sync::Mutex::new(SettingsStore::new()));
+        // 1. Register the manifest's settings.
+        store.lock().unwrap().register_from_manifest(&manifest);
+        // 2. Apply user override (stand-in for
+        //    `apply_overrides_from_file`).
+        let bus = crate::PulseBus::new();
+        store
+            .lock()
+            .unwrap()
+            .set("ui.compact", SettingValue::Boolean(false), &bus);
+        // 3. Now load the runtime; the startup read must see the
+        //    override, not the default.
+        let host = PluginHost::new_with(Some(store)).unwrap();
+        let _ = host.load_file(&p).unwrap();
+        let msgs = host.drain_messages();
+        assert!(
+            matches!(&msgs[..], [PluginMsg::Status(s)] if s == "false"),
+            "expected user override `false` at startup; got {msgs:?}",
+        );
+    }
+
+    #[test]
     fn pane_set_view_stores_view_ir_for_render() {
         use devix_protocol::view::View;
 
@@ -1577,6 +1697,78 @@ mod tests {
         assert!(
             msgs.iter().any(|m| matches!(m, PluginMsg::OpenPath(p) if p == &PathBuf::from("/tmp/devix-test-target"))),
             "expected OpenPath message, got {msgs:?}",
+        );
+    }
+
+    #[test]
+    fn install_with_manifest_sets_runtime_manifest_name_for_pulse_routing() {
+        use devix_protocol::manifest::{
+            CommandSpec as ManifestCommandSpec, Contributes, Engines, Manifest,
+        };
+        use devix_protocol::protocol::ProtocolVersion;
+
+        // F-4 follow-up 2026-05-12: `Pulse::PluginLoaded` from a
+        // post-install restart must carry the manifest's plugin
+        // name, not the entry file's stem — otherwise the
+        // Application's per-runtime routing (keyed by manifest
+        // name) misses on restart. install_with_manifest writes
+        // the name into the runtime's shared slot; the factory
+        // closure reads it on every (re)spawn.
+        let p = write_temp(
+            "stub-entry",
+            r#"
+                devix.register_action({
+                    id = "noop",
+                    label = "Noop",
+                    run = function() end,
+                })
+            "#,
+        );
+
+        let manifest = Manifest {
+            name: "actual-name".to_string(),
+            version: "0.1.0".to_string(),
+            engines: Engines {
+                protocol_version: ProtocolVersion::new(0, 1),
+                pulse_bus: ProtocolVersion::new(0, 1),
+                manifest: ProtocolVersion::new(0, 1),
+            },
+            entry: None,
+            contributes: Contributes {
+                commands: vec![ManifestCommandSpec {
+                    id: "noop".to_string(),
+                    label: "Noop".to_string(),
+                    category: None,
+                    lua_handle: None,
+                }],
+                ..Default::default()
+            },
+            subscribe: Vec::new(),
+        };
+
+        let mut rt = PluginRuntime::load(&p).unwrap();
+        assert!(
+            rt.manifest_name().is_none(),
+            "pre-install: name unset, factory falls back to file_stem"
+        );
+
+        let bus = crate::PulseBus::new();
+        let mut commands = CommandRegistry::new();
+        let mut keymap = Keymap::new();
+        let mut editor = Editor::open(None).unwrap();
+        rt.install_with_manifest(
+            &mut commands,
+            &mut keymap,
+            &mut editor,
+            &manifest,
+            &bus,
+        );
+
+        assert_eq!(
+            rt.manifest_name().as_deref(),
+            Some("actual-name"),
+            "install_with_manifest must populate the manifest-name slot \
+             so post-install restart pulses route to the right runtime"
         );
     }
 }

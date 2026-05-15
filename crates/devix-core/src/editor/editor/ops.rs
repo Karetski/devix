@@ -117,6 +117,19 @@ impl Editor {
             let id = self.documents.insert(doc);
             self.doc_index.insert(key, id);
             super::install_bus_watcher_for_doc(&mut self.documents, id, &self.bus);
+            // F-5 follow-up 2026-05-12: announce the new buffer.
+            // Fires only on the *new Document insert* branch — the
+            // reuse-cached-doc branch above must stay silent so a
+            // second tab onto the same path doesn't double-fire.
+            let fs_path = self
+                .documents
+                .get(id)
+                .and_then(|d| d.buffer.path().map(|p| p.to_path_buf()));
+            self.bus
+                .publish(devix_protocol::pulse::Pulse::BufferOpened {
+                    path: id.to_path(),
+                    fs_path,
+                });
             id
         };
         // Resolve the active frame and old cursor BEFORE allocating the

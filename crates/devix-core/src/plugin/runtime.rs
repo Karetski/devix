@@ -108,6 +108,15 @@ pub struct PluginRuntime {
     /// deterministic — handle N in the new host == handle N in the
     /// dead host).
     live_contributions: Arc<Mutex<Contributions>>,
+    /// Manifest name override for `Pulse::PluginLoaded` segment.
+    /// `None` → factory falls back to the entry file's stem; once
+    /// `install_with_manifest` ran the slot carries
+    /// `manifest.name`. Restart-spawn lifecycle pulses then carry
+    /// the manifest name so the Application's per-runtime routing
+    /// (F-4 follow-up 2026-05-12) can look the runtime up by its
+    /// HashMap key. Shared `Arc<Mutex<…>>` so the factory closure
+    /// observes the updated value across restarts.
+    manifest_name: Arc<Mutex<Option<String>>>,
     /// Supervised plugin worker thread. On panic the supervisor's
     /// restart policy decides whether to respawn (channel refresh
     /// happens inside the factory closure); on shutdown (drop sends
@@ -246,6 +255,13 @@ impl PluginRuntime {
         let live_contributions: Arc<Mutex<Contributions>> =
             Arc::new(Mutex::new(Contributions::default()));
 
+        // Shared manifest-name slot — populated by
+        // `install_with_manifest`. Used by the factory closure (on
+        // each spawn, including restarts) to choose between the
+        // entry's file-stem and the manifest name when forming the
+        // `Pulse::PluginLoaded` path. F-4 follow-up 2026-05-12.
+        let manifest_name: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
         let factory_invoke = invoke_tx.clone();
         let factory_input = input_tx.clone();
         let factory_shutdown = shutdown_tx.clone();
@@ -262,6 +278,7 @@ impl PluginRuntime {
             .map(sanitize_plugin_segment)
             .unwrap_or_else(|| "plugin".to_string());
         let factory_setting_cbs = setting_callbacks.clone();
+        let factory_manifest_name = manifest_name.clone();
 
         let factory = move || {
             // Per-spawn channels. The fresh receivers stay local to
@@ -303,6 +320,7 @@ impl PluginRuntime {
             let live_contributions_clone = factory_live_contributions.clone();
             let bus_clone = factory_bus.clone();
             let plugin_segment = factory_plugin_segment.clone();
+            let factory_manifest_name = factory_manifest_name.clone();
             runtime.block_on(async move {
                 let host = match PluginHost::new_with(settings_for_host) {
                     Ok(h) => h,
@@ -349,11 +367,28 @@ impl PluginRuntime {
                 // restart fires too so subscribers (Application's
                 // typed-pulse dispatcher) re-build pane content from
                 // the new host's Arcs.
+                //
+                // F-4 follow-up 2026-05-12: prefer the manifest
+                // name (set by `install_with_manifest`) over the
+                // entry file's stem when forming the path, so the
+                // pulse routes to the correct runtime in
+                // `Application::plugins` after a supervised
+                // restart. Initial spawn — before install runs —
+                // falls back to file-stem and is harmless: the
+                // application hasn't stored the runtime yet, so
+                // the lookup misses; `install_with_manifest`
+                // installs panes the next moment regardless.
+                let segment = factory_manifest_name
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.clone())
+                    .map(|n| sanitize_plugin_segment(&n))
+                    .unwrap_or_else(|| plugin_segment.clone());
                 if let Ok(plugin_path) = devix_protocol::path::Path::parse(&format!(
                     "/plugin/{}",
-                    plugin_segment,
+                    segment,
                 )) {
-                    bus_clone.publish_async(devix_protocol::pulse::Pulse::PluginLoaded {
+                    let _ = bus_clone.publish_async(devix_protocol::pulse::Pulse::PluginLoaded {
                         plugin: plugin_path,
                         version: "0.0.0".to_string(),
                     });
@@ -460,8 +495,16 @@ impl PluginRuntime {
             leaked_strings: Vec::new(),
             shutdown_tx,
             live_contributions,
+            manifest_name,
             supervised: Some(supervised),
         })
+    }
+
+    /// Manifest name used to form `Pulse::PluginLoaded`'s segment.
+    /// `None` until `install_with_manifest` has run. Exposed for
+    /// tests; production reads through the pulse payload.
+    pub fn manifest_name(&self) -> Option<String> {
+        self.manifest_name.lock().ok().and_then(|g| g.clone())
     }
 
     pub fn contributions(&self) -> &Contributions {
@@ -599,6 +642,14 @@ impl PluginRuntime {
     ) -> usize {
         let plugin_name: &'static str = leak_str(&manifest.name);
         self.leaked_strings.push(plugin_name);
+
+        // F-4 follow-up 2026-05-12: announce the manifest name to
+        // the factory closure so subsequent restart spawns publish
+        // `Pulse::PluginLoaded` with the manifest-name segment that
+        // matches the Application's plugin-map key.
+        if let Ok(mut slot) = self.manifest_name.lock() {
+            *slot = Some(manifest.name.clone());
+        }
 
         let plugin_path = devix_protocol::path::Path::parse(&format!(
             "/plugin/{}",

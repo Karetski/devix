@@ -260,12 +260,22 @@ impl Editor {
     /// synchronous highlighter (the legacy renderer's source) and
     /// leaves `highlight_cache` stale.
     pub fn apply_tx_to(&mut self, did: DocId, tx: Transaction) {
-        let doc = match self.documents.get_mut(did) {
-            Some(d) => d,
-            None => return,
+        let (language, revision, rope_for_parse) = {
+            let Some(doc) = self.documents.get_mut(did) else { return };
+            let language = doc.language();
+            doc.apply_tx(tx);
+            (language, doc.buffer.revision(), doc.buffer.rope().clone())
         };
-        let language = doc.language();
-        doc.apply_tx(tx);
+        // F-5 follow-up 2026-05-12: announce the in-memory edit on
+        // the bus. Disk-watcher reloads publish their own pulse
+        // (`Pulse::DiskChanged`); this one covers every typed edit,
+        // replace, etc. Undo/redo publish from their own sites
+        // because they don't flow through `apply_tx_to`.
+        self.bus
+            .publish(devix_protocol::pulse::Pulse::BufferChanged {
+                path: did.to_path(),
+                revision,
+            });
         let Some(language) = language else { return };
         let Some(tx_handle) = self.highlight_parse_tx.as_ref() else { return };
         let _ = send_parse(
@@ -273,7 +283,7 @@ impl Editor {
             ParseRequest {
                 doc: did.to_path(),
                 language,
-                rope: doc.buffer.rope().clone(),
+                rope: rope_for_parse,
             },
         );
     }
@@ -560,7 +570,7 @@ pub(crate) fn install_bus_watcher_for_doc(
     let path = id.to_path();
     let bus = bus.clone();
     doc.install_disk_watcher(Box::new(move || {
-        bus.publish_async(devix_protocol::pulse::Pulse::DiskChanged {
+        let _ = bus.publish_async(devix_protocol::pulse::Pulse::DiskChanged {
             path: path.clone(),
             fs_path: fs_path.clone(),
         });
@@ -570,6 +580,198 @@ pub(crate) fn install_bus_watcher_for_doc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn collect_pulses(
+        bus: &crate::PulseBus,
+        filter: devix_protocol::pulse::PulseFilter,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<devix_protocol::pulse::Pulse>>> {
+        let log: std::sync::Arc<std::sync::Mutex<Vec<devix_protocol::pulse::Pulse>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let l = log.clone();
+        bus.subscribe(filter, move |p| {
+            l.lock().unwrap().push(p.clone());
+        });
+        log
+    }
+
+    #[test]
+    fn apply_tx_to_publishes_buffer_changed() {
+        use devix_protocol::pulse::{Pulse, PulseFilter, PulseKind};
+        use devix_text::{Selection, replace_selection_tx};
+
+        let mut ws = Editor::open(None).unwrap();
+        let did = ws.active_cursor().unwrap().doc;
+        let log = collect_pulses(&ws.bus, PulseFilter::kind(PulseKind::BufferChanged));
+
+        let tx = replace_selection_tx(&ws.documents[did].buffer, &Selection::point(0), "hi");
+        ws.apply_tx_to(did, tx);
+
+        let entries = log.lock().unwrap().clone();
+        let buffer_changes: Vec<_> = entries
+            .iter()
+            .filter_map(|p| match p {
+                Pulse::BufferChanged { path, revision } => Some((path.clone(), *revision)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(buffer_changes.len(), 1, "expected one BufferChanged");
+        assert_eq!(buffer_changes[0].0, did.to_path());
+        assert_eq!(buffer_changes[0].1, ws.documents[did].buffer.revision());
+    }
+
+    #[test]
+    fn close_then_reopen_fires_buffer_opened_again() {
+        use devix_protocol::pulse::{Pulse, PulseFilter, PulseKind};
+
+        let dir = std::env::temp_dir().join(format!("devix-bopen-close-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("a.txt");
+        std::fs::write(&p, "abc").unwrap();
+
+        let mut ws = Editor::open(None).unwrap();
+        let log = collect_pulses(&ws.bus, PulseFilter::kind(PulseKind::BufferOpened));
+
+        let _ = ws.open_path_replace_current(p.clone()).unwrap();
+        // Force-close the tab — this drops the only cursor and the
+        // cached document is GC'd via try_remove_orphan_doc.
+        assert!(ws.close_active_tab(true), "force close succeeds");
+        // Reopen — should fire BufferOpened again because the cache
+        // was evicted.
+        let _ = ws.open_path_replace_current(p.clone()).unwrap();
+
+        let opens: Vec<_> = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|p| match p {
+                Pulse::BufferOpened { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(opens.len(), 2, "close-and-reopen fires BufferOpened twice");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_path_publishes_buffer_opened_once_per_unique_doc() {
+        use devix_protocol::pulse::{Pulse, PulseFilter, PulseKind};
+
+        let dir = std::env::temp_dir().join(format!("devix-bopen-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("a.txt");
+        std::fs::write(&p, "abc").unwrap();
+
+        let mut ws = Editor::open(None).unwrap();
+        let log = collect_pulses(&ws.bus, PulseFilter::kind(PulseKind::BufferOpened));
+
+        // First open: should publish BufferOpened.
+        let c1 = ws.open_path_replace_current(p.clone()).unwrap();
+        let did1 = ws.cursors[c1].doc;
+        // Second open of same path: must NOT republish (cached doc).
+        ws.new_tab();
+        let _ = ws.open_path_replace_current(p.clone()).unwrap();
+
+        let entries: Vec<_> = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|p| match p {
+                Pulse::BufferOpened { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "BufferOpened must fire only on new-doc insert; got {entries:?}"
+        );
+        assert_eq!(entries[0], did1.to_path());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_without_path_publishes_nothing() {
+        use crate::editor::commands::cmd::file::Save;
+        use crate::editor::commands::context::{Context, Viewport};
+        use crate::{Action, CommandRegistry, NoClipboard, RenderCache};
+        use devix_protocol::pulse::{PulseFilter, PulseKind};
+
+        // Fresh editor: the seed document has no path (empty).
+        // Save must early-return on the inner buffer.save() error
+        // and not publish BufferSaved.
+        let mut ws = Editor::open(None).unwrap();
+        let log = collect_pulses(&ws.bus, PulseFilter::kind(PulseKind::BufferSaved));
+
+        let mut clipboard = NoClipboard;
+        let mut quit = false;
+        let commands = CommandRegistry::default();
+        let cache = RenderCache::default();
+        let mut ctx = Context {
+            editor: &mut ws,
+            commands: &commands,
+            clipboard: &mut clipboard,
+            quit: &mut quit,
+            layout_cache: &cache,
+            viewport: Viewport::default(),
+        };
+        Save.invoke(&mut ctx);
+
+        assert!(log.lock().unwrap().is_empty(), "no BufferSaved without path");
+    }
+
+    #[test]
+    fn save_publishes_buffer_saved() {
+        use crate::editor::commands::cmd::file::Save;
+        use crate::editor::commands::context::{Context, Viewport};
+        use crate::{Action, CommandRegistry, NoClipboard, RenderCache};
+        use devix_protocol::pulse::{Pulse, PulseFilter, PulseKind};
+        use devix_text::{Selection, replace_selection_tx};
+
+        let dir = std::env::temp_dir().join(format!("devix-bsave-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("b.txt");
+        std::fs::write(&p, "abc").unwrap();
+
+        let mut ws = Editor::open(Some(p.clone())).unwrap();
+        let did = ws.active_cursor().unwrap().doc;
+        let tx = replace_selection_tx(
+            &ws.documents[did].buffer,
+            &Selection::point(ws.documents[did].buffer.len_chars()),
+            "X",
+        );
+        ws.apply_tx_to(did, tx);
+
+        let log = collect_pulses(&ws.bus, PulseFilter::kind(PulseKind::BufferSaved));
+        let mut clipboard = NoClipboard;
+        let mut quit = false;
+        let commands = CommandRegistry::default();
+        let cache = RenderCache::default();
+        let mut ctx = Context {
+            editor: &mut ws,
+            commands: &commands,
+            clipboard: &mut clipboard,
+            quit: &mut quit,
+            layout_cache: &cache,
+            viewport: Viewport::default(),
+        };
+        Save.invoke(&mut ctx);
+
+        let entries: Vec<_> = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|p| match p {
+                Pulse::BufferSaved { path, fs_path } => Some((path.clone(), fs_path.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(entries.len(), 1, "expected one BufferSaved");
+        assert_eq!(entries[0].0, did.to_path());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn fresh_workspace_has_one_frame_one_cursor() {

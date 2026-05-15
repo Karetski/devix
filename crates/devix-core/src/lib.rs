@@ -43,7 +43,7 @@ pub mod theme_store;
 pub mod walk;
 pub mod widgets;
 
-pub use bus::PulseBus;
+pub use bus::{PublishError, PulseBus};
 
 // Trait surface (pre-Stage-1: was `devix-panes`'s public surface).
 pub use action::Action;

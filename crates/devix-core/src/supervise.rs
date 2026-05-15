@@ -168,7 +168,7 @@ fn escalate(bus: &PulseBus, name: &str, policy: &RestartPolicy) {
     use devix_protocol::pulse::Pulse;
     let plugin_path = Path::parse(&format!("/plugin/{}", sanitize_segment(name)))
         .unwrap_or_else(|_| Path::parse("/plugin/supervisor").expect("/plugin/supervisor canonical"));
-    bus.publish_async(Pulse::PluginError {
+    let _ = bus.publish_async(Pulse::PluginError {
         plugin: plugin_path,
         message: format!(
             "supervised child `{}` exhausted restart budget ({} restarts in {:?})",

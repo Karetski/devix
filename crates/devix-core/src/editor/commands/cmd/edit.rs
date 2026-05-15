@@ -12,6 +12,16 @@ impl<'a> Action<Context<'a>> for Undo {
         let Some((_, cid, did)) = ctx.editor.active_ids() else { return };
         if let Some(sel) = ctx.editor.documents[did].undo() {
             ctx.editor.cursors[cid].adopt_selection(sel);
+            // F-5 follow-up 2026-05-12: undo mutates the rope; the
+            // bus contract treats every revision bump as a
+            // `Pulse::BufferChanged`.
+            let revision = ctx.editor.documents[did].buffer.revision();
+            ctx.editor
+                .bus
+                .publish(devix_protocol::pulse::Pulse::BufferChanged {
+                    path: did.to_path(),
+                    revision,
+                });
         }
     }
 }
@@ -22,6 +32,13 @@ impl<'a> Action<Context<'a>> for Redo {
         let Some((_, cid, did)) = ctx.editor.active_ids() else { return };
         if let Some(sel) = ctx.editor.documents[did].redo() {
             ctx.editor.cursors[cid].adopt_selection(sel);
+            let revision = ctx.editor.documents[did].buffer.revision();
+            ctx.editor
+                .bus
+                .publish(devix_protocol::pulse::Pulse::BufferChanged {
+                    path: did.to_path(),
+                    revision,
+                });
         }
     }
 }
